@@ -61,6 +61,7 @@ void gmac_handler_cb(void);
 void tcpip_init_done(void *arg);
 void gmac_task(void *pvParameters);
 void task_led_create();
+void task_link_monitor_create();
 
 typedef struct tag_gmac_device {
 	/** Reference to lwIP netif structure. */

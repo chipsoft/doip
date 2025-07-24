@@ -176,7 +176,8 @@ $(BUILD_DIR)/hal/src/hal_cache.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/tcpip.o \
 $(BUILD_DIR)/app_libs/SEGGER_RTT_V794b/RTT/SEGGER_RTT.o \
 $(BUILD_DIR)/app_libs/printf/printf.o \
-$(BUILD_DIR)/rtt_printf.o
+$(BUILD_DIR)/rtt_printf.o \
+$(BUILD_DIR)/network_events.o
 
 # List the directories containing header files
 DIR_INCLUDES += \

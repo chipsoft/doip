@@ -794,6 +794,30 @@
 
 // </e>
 
+/*
+ * Network Event Logging Configuration
+ * Enhanced debugging and event logging for lwIP network stack
+ */
+
+/* Enable link status callbacks */
+#ifndef LWIP_NETIF_LINK_CALLBACK
+#define LWIP_NETIF_LINK_CALLBACK 1
+#endif
+
+/* Enable selective debug output for network events */
+#undef DHCP_DEBUG
+#define DHCP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)
+
+#undef NETIF_DEBUG  
+#define NETIF_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)
+
+#undef ETHARP_DEBUG
+#define ETHARP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)
+
+/* Enable printf output redirection for lwIP debug */
+#define LWIP_PLATFORM_DIAG(x) do { printf x; } while(0)
+#define LWIP_PLATFORM_ASSERT(x) do { printf("Assertion \"%s\" failed at line %d in %s\n", x, __LINE__, __FILE__); } while(0)
+
 // <<< end of configuration section >>>
 
 #endif // LWIPOPTS_H

@@ -56,6 +56,7 @@ void basic_socket()
 {
 	/* Create application tasks */
 	task_led_create();
+	task_link_monitor_create();
 
 	/* Create task for Ethernet */
 	if (xTaskCreate(socket_basic_ethernet,

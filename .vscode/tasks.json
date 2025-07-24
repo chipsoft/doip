@@ -4,11 +4,61 @@
         {
             "type": "shell",
             "label": "Build Project",
-            "command": "make -C gcc all -j8",
+            "command": "make",
+            "args": ["all", "-j8"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
             "group": {
                 "kind": "build",
                 "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "type": "shell",
+            "label": "Clean Project",
+            "command": "make",
+            "args": ["clean"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
             }
+        },
+        {
+            "type": "shell",
+            "label": "Rebuild Project",
+            "command": "make",
+            "args": ["rebuild", "-j8"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": ["$gcc"]
         }
     ]
 } 
