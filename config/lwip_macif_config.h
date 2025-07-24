@@ -11,7 +11,7 @@
 // <i> Set by the DHCP code when starting or stopping DHCP.
 // <id> macif_dhcp
 #ifndef CONF_TCPIP_STACK_INTERFACE_0_DHCP
-#define CONF_TCPIP_STACK_INTERFACE_0_DHCP 0
+#define CONF_TCPIP_STACK_INTERFACE_0_DHCP 1
 #endif
 
 // <q> Enable Broadcast
@@ -78,7 +78,7 @@
 // <i> Enable Static IP Address Configuration
 // <id> macif_enable_static_ip
 #ifndef CONF_TCPIP_STACK_INTERFACE_0_STATIC_IP
-#define CONF_TCPIP_STACK_INTERFACE_0_STATIC_IP 1
+#define CONF_TCPIP_STACK_INTERFACE_0_STATIC_IP 0
 #endif
 
 #if CONF_TCPIP_STACK_INTERFACE_0_DHCP == 1 && CONF_TCPIP_STACK_INTERFACE_0_STATIC_IP == 1

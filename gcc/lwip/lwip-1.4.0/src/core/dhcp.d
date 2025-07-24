@@ -35,7 +35,26 @@ lwip/lwip-1.4.0/src/core/dhcp.d lwip/lwip-1.4.0/src/core/dhcp.o: \
  /Applications/ARM/arm-none-eabi/include/sys/stdio.h \
  /Applications/ARM/lib/gcc/arm-none-eabi/10.3.1/include/stdint.h \
  /Applications/ARM/arm-none-eabi/include/stdint.h \
- /Applications/ARM/arm-none-eabi/include/sys/_intsup.h
+ /Applications/ARM/arm-none-eabi/include/sys/_intsup.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/stats.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/mem.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/memp.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/memp_std.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/udp.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/pbuf.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/err.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/netif.h \
+ ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip_addr.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/def.h \
+ ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h \
+ ../lwip/lwip-1.4.0/src/include/ipv4/lwip/autoip.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/dns.h \
+ ../lwip/lwip-1.4.0/src/include/netif/etharp.h \
+ /Applications/ARM/arm-none-eabi/include/string.h \
+ /Applications/ARM/arm-none-eabi/include/sys/_locale.h \
+ /Applications/ARM/arm-none-eabi/include/strings.h \
+ /Applications/ARM/arm-none-eabi/include/sys/string.h
 ../lwip/lwip-1.4.0/src/include/lwip/opt.h:
 ../config/lwipopts.h:
 ../lwip/lwip-1.4.0/src/include/lwip/debug.h:
@@ -73,3 +92,22 @@ lwip/lwip-1.4.0/src/core/dhcp.d lwip/lwip-1.4.0/src/core/dhcp.o: \
 /Applications/ARM/lib/gcc/arm-none-eabi/10.3.1/include/stdint.h:
 /Applications/ARM/arm-none-eabi/include/stdint.h:
 /Applications/ARM/arm-none-eabi/include/sys/_intsup.h:
+../lwip/lwip-1.4.0/src/include/lwip/stats.h:
+../lwip/lwip-1.4.0/src/include/lwip/mem.h:
+../lwip/lwip-1.4.0/src/include/lwip/memp.h:
+../lwip/lwip-1.4.0/src/include/lwip/memp_std.h:
+../lwip/lwip-1.4.0/src/include/lwip/udp.h:
+../lwip/lwip-1.4.0/src/include/lwip/pbuf.h:
+../lwip/lwip-1.4.0/src/include/lwip/err.h:
+../lwip/lwip-1.4.0/src/include/lwip/netif.h:
+../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip_addr.h:
+../lwip/lwip-1.4.0/src/include/lwip/def.h:
+../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip.h:
+../lwip/lwip-1.4.0/src/include/lwip/dhcp.h:
+../lwip/lwip-1.4.0/src/include/ipv4/lwip/autoip.h:
+../lwip/lwip-1.4.0/src/include/lwip/dns.h:
+../lwip/lwip-1.4.0/src/include/netif/etharp.h:
+/Applications/ARM/arm-none-eabi/include/string.h:
+/Applications/ARM/arm-none-eabi/include/sys/_locale.h:
+/Applications/ARM/arm-none-eabi/include/strings.h:
+/Applications/ARM/arm-none-eabi/include/sys/string.h:

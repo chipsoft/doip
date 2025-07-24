@@ -145,6 +145,7 @@ eth_ipstack_main.d eth_ipstack_main.o: ../eth_ipstack_main.c \
  ../lwip/lwip-1.4.0/src/include/netif/etharp.h \
  ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip.h \
  ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/udp.h \
  /Applications/ARM/arm-none-eabi/include/string.h \
  /Applications/ARM/arm-none-eabi/include/sys/_locale.h \
  /Applications/ARM/arm-none-eabi/include/strings.h \
@@ -396,6 +397,7 @@ eth_ipstack_main.d eth_ipstack_main.o: ../eth_ipstack_main.c \
 ../lwip/lwip-1.4.0/src/include/netif/etharp.h:
 ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip.h:
 ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h:
+../lwip/lwip-1.4.0/src/include/lwip/udp.h:
 /Applications/ARM/arm-none-eabi/include/string.h:
 /Applications/ARM/arm-none-eabi/include/sys/_locale.h:
 /Applications/ARM/arm-none-eabi/include/strings.h:

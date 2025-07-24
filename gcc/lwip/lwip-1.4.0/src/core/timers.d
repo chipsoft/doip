@@ -72,6 +72,7 @@ lwip/lwip-1.4.0/src/core/timers.d lwip/lwip-1.4.0/src/core/timers.o: \
  ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip_frag.h \
  ../lwip/lwip-1.4.0/src/include/netif/etharp.h \
  ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/udp.h \
  ../lwip/lwip-1.4.0/src/include/ipv4/lwip/autoip.h \
  ../lwip/lwip-1.4.0/src/include/lwip/dns.h
 ../lwip/lwip-1.4.0/src/include/lwip/opt.h:
@@ -148,5 +149,6 @@ lwip/lwip-1.4.0/src/core/timers.d lwip/lwip-1.4.0/src/core/timers.o: \
 ../lwip/lwip-1.4.0/src/include/ipv4/lwip/ip_frag.h:
 ../lwip/lwip-1.4.0/src/include/netif/etharp.h:
 ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h:
+../lwip/lwip-1.4.0/src/include/lwip/udp.h:
 ../lwip/lwip-1.4.0/src/include/ipv4/lwip/autoip.h:
 ../lwip/lwip-1.4.0/src/include/lwip/dns.h:

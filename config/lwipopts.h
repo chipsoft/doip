@@ -9,7 +9,7 @@
 // <q> Enable DHCP
 // <id> lwip_dhcp
 #ifndef LWIP_DHCP
-#define LWIP_DHCP 0
+#define LWIP_DHCP 1
 #endif
 
 // <q> NO RTOS

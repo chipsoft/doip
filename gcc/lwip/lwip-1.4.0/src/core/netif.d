@@ -51,7 +51,9 @@ lwip/lwip-1.4.0/src/core/netif.d lwip/lwip-1.4.0/src/core/netif.o: \
  ../lwip/lwip-1.4.0/src/include/netif/etharp.h \
  ../lwip/lwip-1.4.0/src/include/lwip/stats.h \
  ../lwip/lwip-1.4.0/src/include/lwip/memp.h \
- ../lwip/lwip-1.4.0/src/include/lwip/memp_std.h
+ ../lwip/lwip-1.4.0/src/include/lwip/memp_std.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/dhcp.h \
+ ../lwip/lwip-1.4.0/src/include/lwip/udp.h
 ../lwip/lwip-1.4.0/src/include/lwip/opt.h:
 ../config/lwipopts.h:
 ../lwip/lwip-1.4.0/src/include/lwip/debug.h:
@@ -105,3 +107,5 @@ lwip/lwip-1.4.0/src/core/netif.d lwip/lwip-1.4.0/src/core/netif.o: \
 ../lwip/lwip-1.4.0/src/include/lwip/stats.h:
 ../lwip/lwip-1.4.0/src/include/lwip/memp.h:
 ../lwip/lwip-1.4.0/src/include/lwip/memp_std.h:
+../lwip/lwip-1.4.0/src/include/lwip/dhcp.h:
+../lwip/lwip-1.4.0/src/include/lwip/udp.h:
