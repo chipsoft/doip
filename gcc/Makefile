@@ -59,7 +59,9 @@ hpl/mclk \
 lwip/lwip-1.4.0/src/core/snmp \
 hpl/sercom \
 hpl/core \
-thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/MemMang
+thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/MemMang \
+app_libs/SEGGER_RTT_V794b/RTT \
+app_libs/printf
 
 # List the object files
 OBJS +=  \
@@ -167,7 +169,10 @@ lwip/lwip-1.4.0/src/api/sockets.o \
 thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/GCC/ARM_CM4F/port.o \
 lwip/lwip-1.4.0/src/core/netif.o \
 hal/src/hal_cache.o \
-lwip/lwip-1.4.0/src/api/tcpip.o
+lwip/lwip-1.4.0/src/api/tcpip.o \
+app_libs/SEGGER_RTT_V794b/RTT/SEGGER_RTT.o \
+app_libs/printf/printf.o \
+rtt_printf.o
 
 OBJS_AS_ARGS +=  \
 "stdio_redirect/stdio_io.o" \
@@ -274,7 +279,10 @@ OBJS_AS_ARGS +=  \
 "thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/GCC/ARM_CM4F/port.o" \
 "lwip/lwip-1.4.0/src/core/netif.o" \
 "hal/src/hal_cache.o" \
-"lwip/lwip-1.4.0/src/api/tcpip.o"
+"lwip/lwip-1.4.0/src/api/tcpip.o" \
+"app_libs/SEGGER_RTT_V794b/RTT/SEGGER_RTT.o" \
+"app_libs/printf/printf.o" \
+"rtt_printf.o"
 
 # List the directories containing header files
 DIR_INCLUDES +=  \
@@ -317,7 +325,10 @@ DIR_INCLUDES +=  \
 -I"../stdio_redirect" \
 -I"../" \
 -I"../CMSIS/Core/Include" \
--I"../include"
+-I"../include" \
+-I"../app_libs/SEGGER_RTT_V794b/RTT" \
+-I"../app_libs/SEGGER_RTT_V794b/Config" \
+-I"../app_libs/printf"
 
 # List the dependency files
 DEPS := $(OBJS:%.o=%.d)

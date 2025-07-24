@@ -34,6 +34,7 @@ test_sm/googletest/
 [Rr]elease/
 [Rr]eleases/
 [Bb]uild/
+build/
 x64/
 x86/
 [Ww][Ii][Nn]32/

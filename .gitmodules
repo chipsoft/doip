@@ -1,0 +1,6 @@
+[submodule "app_libs/printf"]
+	path = app_libs/printf
+	url = https://github.com/mpaland/printf.git
+[submodule "app_libs/FreeRTOS-Kernel"]
+	path = app_libs/FreeRTOS-Kernel
+	url = https://github.com/FreeRTOS/FreeRTOS-Kernel.git

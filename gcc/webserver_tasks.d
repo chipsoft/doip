@@ -151,7 +151,7 @@ webserver_tasks.d webserver_tasks.o: ../webserver_tasks.c \
  ../lwip/lwip-1.4.0/src/include/lwip/api.h \
  ../lwip/lwip-1.4.0/src/include/lwip/netbuf.h \
  ../lwip/lwip-1.4.0/src/include/lwip/netifapi.h \
- ../lwip/lwip-1.4.0/src/include/lwip/timers.h
+ ../lwip/lwip-1.4.0/src/include/lwip/timers.h ../app_libs/printf/printf.h
 ../atmel_start.h:
 ../driver_init.h:
 ../atmel_start_pins.h:
@@ -407,3 +407,4 @@ webserver_tasks.d webserver_tasks.o: ../webserver_tasks.c \
 ../lwip/lwip-1.4.0/src/include/lwip/netbuf.h:
 ../lwip/lwip-1.4.0/src/include/lwip/netifapi.h:
 ../lwip/lwip-1.4.0/src/include/lwip/timers.h:
+../app_libs/printf/printf.h:

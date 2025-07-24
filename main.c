@@ -33,6 +33,10 @@
 
 #include "atmel_start.h"
 #include "lwip_socket_api.h"
+#include "printf.h"
+
+/* RTT printf integration */
+extern void rtt_printf_init(void);
 
 /* define to avoid compilation warning */
 // #define LWIP_TIMEVAL_PRIVATE 0
@@ -65,6 +69,9 @@ int main(void)
 {
 	/* Initializes MCU, drivers and middleware */
 	atmel_start_init();
+
+	/* Initialize SEGGER RTT for debug output */
+	rtt_printf_init();
 
 	/*Handles Socket API */
 	printf("\r\nSocket API implementation\r\n");

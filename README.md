@@ -4,25 +4,41 @@ This project implements a TCP/IP networking solution on the SAME54 microcontroll
 
 ## 🔧 Build & Flash
 
-### GCC Toolchain (Recommended)
+### Root Directory Build (Recommended)
 ```bash
+# Clean and build from project root
+make clean
+make all
+
+# Check firmware size
+make size
+
+# Rebuild everything
+make rebuild
+
+# Show available targets
+make help
+```
+
+### Legacy Build (Still Available)
+```bash
+# GCC toolchain in subdirectory
 cd gcc
 make clean
 make all
-```
 
-### ARM Compiler (ARMCC)
-```bash
+# ARM Compiler (ARMCC)
 cd armcc
 make clean
 make all
 ```
 
-**Build Outputs:**
-- `AtmelStart.elf` - Main executable
-- `AtmelStart.bin` - Binary firmware for flashing
-- `AtmelStart.hex` - Intel HEX format
-- `AtmelStart.map` - Memory map file
+**Build Outputs (in `build/` directory):**
+- `build/AtmelStart.elf` - Main executable
+- `build/AtmelStart.bin` - Binary firmware for flashing
+- `build/AtmelStart.hex` - Intel HEX format
+- `build/AtmelStart.map` - Memory map file
+- `build/AtmelStart.lss` - Assembly listing
 
 ## ⚙️ Network Configuration
 
@@ -155,8 +171,8 @@ The system uses UART for debug output via `stdio_redirect/` functionality.
 
 1. **Configure Network:** Edit `config/lwip_macif_config.h` for your network
 2. **Customize Web Page:** Modify `socket_webpage[]` in `lwip_socket_api.c`  
-3. **Build:** Run `cd gcc && make all`
-4. **Flash:** Program `AtmelStart.bin` to your SAME54 device
+3. **Build:** Run `make all` from project root
+4. **Flash:** Program `build/AtmelStart.bin` to your SAME54 device
 5. **Connect:** Access web server at device IP address (check DHCP or use static IP)
 
 ## 📈 Performance Tuning

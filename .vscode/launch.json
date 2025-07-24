@@ -3,7 +3,7 @@
     "configurations": [
         {
             "cwd": "${workspaceRoot}",
-            "executable": "${workspaceRoot}/gcc/AtmelStart.elf",
+            "executable": "${workspaceRoot}/build/AtmelStart.elf",
             "name": "Debug OpenOCD",
             "request": "launch",
             "type": "cortex-debug",
@@ -26,6 +26,64 @@
             "interface": "swd",
             "runToEntryPoint": "main",
             "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd"
+        },
+        {
+            "type": "cortex-debug",
+            "request": "launch",
+            "name": "Debug J-Link",
+            "cwd": "${workspaceRoot}",
+            "preLaunchTask": "Build Project",
+            "executable": "${workspaceRoot}/build/AtmelStart.elf",
+            "windows": {
+                "serverpath": "C:/Program Files/SEGGER/JLink/JLinkGDBServerCL.exe"
+            },
+            "osx": {
+                "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "linux": {
+                "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "servertype": "jlink",
+            "device": "ATSAME54P20A",
+            "interface": "swd",
+            "serialNumber": "",
+            "runToEntryPoint": "main",
+            "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd",
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto"
+            }
+        },
+        {
+            "type": "cortex-debug",
+            "request": "attach",
+            "name": "Attach J-Link",
+            "cwd": "${workspaceRoot}",
+            "preLaunchTask": "Build Project",
+            "executable": "${workspaceRoot}/build/AtmelStart.elf",
+            "windows": {
+                "serverpath": "C:/Program Files/SEGGER/JLink/JLinkGDBServerCL.exe"
+            },
+            "osx": {
+                "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "linux": {
+                "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServerCLExe",
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "servertype": "jlink",
+            "device": "ATSAME54P20A",
+            "interface": "swd",
+            "serialNumber": "",
+            "runToEntryPoint": "main",
+            "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd",
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto"
+            }
         }
     ]
 }

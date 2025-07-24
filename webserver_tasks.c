@@ -34,6 +34,7 @@
 #include "atmel_start.h"
 #include "webserver_tasks.h"
 #include "lwip/tcpip.h"
+#include "printf.h"
 
 uint16_t led_blink_rate = BLINK_NORMAL;
 

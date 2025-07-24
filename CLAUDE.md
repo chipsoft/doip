@@ -13,27 +13,32 @@ This is an embedded systems project for the SAME54 microcontroller featuring:
 
 ## Build System
 
-The project supports multiple toolchains through separate Makefiles:
+The project has been modernized with a root-level Makefile for easier builds:
 
-### GCC Toolchain (Recommended)
+### Root Directory Build (Recommended)
 ```bash
-cd gcc
 make clean
 make all
+make size     # Check memory usage
+make rebuild  # Clean and build
+make help     # Show available targets
 ```
 
-### ARM Compiler (ARMCC)
+### Legacy Build (Still Available)
 ```bash
-cd armcc  
-make clean
-make all
+# GCC toolchain in subdirectory
+cd gcc && make all
+
+# ARM Compiler (ARMCC)
+cd armcc && make all
 ```
 
-Build outputs:
-- `AtmelStart.elf` - Main executable
-- `AtmelStart.bin` - Binary firmware image
-- `AtmelStart.hex` - Intel HEX format
-- `AtmelStart.map` - Memory map
+Build outputs (in `build/` directory):
+- `build/AtmelStart.elf` - Main executable
+- `build/AtmelStart.bin` - Binary firmware image
+- `build/AtmelStart.hex` - Intel HEX format
+- `build/AtmelStart.map` - Memory map
+- `build/AtmelStart.lss` - Assembly listing
 
 ## Architecture
 
@@ -86,3 +91,7 @@ The project uses heap_2.c memory management with 42KB heap (`configTOTAL_HEAP_SI
 - Debug: UART stdio redirection available
 
 The codebase follows Microchip's ASF (Advanced Software Framework) conventions and is generated from Atmel Start configuration tool.
+
+## Build Optimization
+
+- When build project use as many cores as possible

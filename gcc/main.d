@@ -139,7 +139,8 @@ main.d main.o: ../main.c ../atmel_start.h ../driver_init.h \
  ../lwip/lwip-1.4.0/src/include/lwip/pbuf.h ../ethernet_phy_main.h \
  ../ethernet_phy/ethernet_phy.h \
  ../ethernet_phy/ieee8023_mii_standard_register.h ../stdio_start.h \
- ../stdio_redirect/stdio_io.h ../lwip_socket_api.h
+ ../stdio_redirect/stdio_io.h ../lwip_socket_api.h \
+ ../app_libs/printf/printf.h
 ../atmel_start.h:
 ../driver_init.h:
 ../atmel_start_pins.h:
@@ -383,3 +384,4 @@ main.d main.o: ../main.c ../atmel_start.h ../driver_init.h \
 ../stdio_start.h:
 ../stdio_redirect/stdio_io.h:
 ../lwip_socket_api.h:
+../app_libs/printf/printf.h:
