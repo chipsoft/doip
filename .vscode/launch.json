@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "cwd": "${workspaceRoot}",
+            "executable": "${workspaceRoot}/gcc/AtmelStart.elf",
+            "name": "Debug OpenOCD",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            "preLaunchTask": "Build Project",
+            "device": "cmsis-dap",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/atsame5x.cfg"
+            ],
+            "windows": {
+                "armToolchainPath": "C:/Program Files (x86)/GNU Arm Embedded Toolchain/10 2021.10/bin"
+            },
+            "osx": {
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "linux": {
+                "armToolchainPath": "/Applications/ARM/bin"
+            },
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd"
+        }
+    ]
+}

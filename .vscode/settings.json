@@ -1,0 +1,5 @@
+{
+    "files.associations": {
+        "lwip_socket_api.h": "c"
+    }
+}
