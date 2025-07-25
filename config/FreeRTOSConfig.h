@@ -1,12 +1,40 @@
-/* Auto-generated config file FreeRTOSConfig.h */
-#ifndef FREERTOSCONFIG_H
-#define FREERTOSCONFIG_H
+/*
+ * FreeRTOS Kernel V11.1.0
+ * Copyright (C) 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * https://www.FreeRTOS.org
+ * https://github.com/FreeRTOS
+ */
 
-// <<< Use Configuration Wizard in Context Menu >>>
+#ifndef FREERTOS_CONFIG_H
+#define FREERTOS_CONFIG_H
+
+/******************************************************************************/
+/* Compiler and platform specific includes ***********************************/
+/******************************************************************************/
 
 #if defined(__GNUC__) || defined(__ICCARM__)
-/* Important: put #includes here unless they are also meant for the assembler.
- */
+/* Important: put #includes here unless they are also meant for the assembler. */
 #include <stdint.h>
 void assert_triggered(const char *file, uint32_t line);
 #endif
@@ -17,297 +45,402 @@ void assert_triggered(const char *file, uint32_t line);
 
 #include <peripheral_clk_config.h>
 
-// <h> Basic
+/******************************************************************************/
+/* Hardware description related definitions. **********************************/
+/******************************************************************************/
 
+/* configCPU_CLOCK_HZ must be set to the frequency of the clock that drives 
+ * the peripheral used to generate the kernels periodic tick interrupt. */
 #ifndef configCPU_CLOCK_HZ
-#define configCPU_CLOCK_HZ (CONF_CPU_FREQUENCY)
+#define configCPU_CLOCK_HZ    (CONF_CPU_FREQUENCY)
 #endif
 
-// <o> Max Priority for task <5-128>
-// <i> Defines the max priority of task
-// <i> Default: 5
-// <id> freertos_max_priorities
-#ifndef configMAX_PRIORITIES
-#define configMAX_PRIORITIES ((uint32_t)5)
-#endif
+/******************************************************************************/
+/* Scheduling behaviour related definitions. **********************************/
+/******************************************************************************/
 
-// <o> Minimal stack size<64-1024>
-// <i> Defines minimal number of stack size
-// <i> Default: 64
-// <id> freertos_minimal_stack_size
-#ifndef configMINIMAL_STACK_SIZE
-#define configMINIMAL_STACK_SIZE ((uint16_t)64)
-#endif
-
-/* configTOTAL_HEAP_SIZE is not used when heap_3.c is used. */
-// <o> Heap size<64-1048576:4>
-// <i> Defines the heap size(byte) on system
-// <i> value should be multiples of 4
-// <i> Default: 2400
-// <id> freertos_total_heap_size
-#ifndef configTOTAL_HEAP_SIZE
-#define configTOTAL_HEAP_SIZE ((size_t)(42000))
-#endif
-
-// <q> Enable mutex
-// <id> freertos_use_mutexes
-#ifndef configUSE_MUTEXES
-#define configUSE_MUTEXES 1
-#endif
-
-// <q> Enable counting semaphore
-// <id> freertos_use_counting_semaphores
-#ifndef configUSE_COUNTING_SEMAPHORES
-#define configUSE_COUNTING_SEMAPHORES 1
-#endif
-
-// </h>
-
-// <e> Advanced
-// <id> freertos_advanced
-#ifndef FREERTOS_ADVANCED_CONFIG
-#define FREERTOS_ADVANCED_CONFIG 1
-#endif
-
-// <q> Enable preemption
-// <id> freertos_use_preemption
-#ifndef configUSE_PREEMPTION
-#define configUSE_PREEMPTION 1
-#endif
-
-// <q> Use recursive mutex
-// <id> freertos_use_recursive_mutexes
-#ifndef configUSE_RECURSIVE_MUTEXES
-#define configUSE_RECURSIVE_MUTEXES 1
-#endif
-
-// <q> Generate runtime stats
-// <id> freertos_generate_run_time_stats
-#ifndef configGENERATE_RUN_TIME_STATS
-#define configGENERATE_RUN_TIME_STATS 0
-#endif
-
-// <q> Use 16bit tick
-// <id> freertos_use_16_bit_ticks
-#ifndef configUSE_16_BIT_TICKS
-#define configUSE_16_BIT_TICKS 0
-#endif
-
-// <q> Check stack overflow
-// <id> freertos_check_for_stack_overflow
-#ifndef configCHECK_FOR_STACK_OVERFLOW
-#define configCHECK_FOR_STACK_OVERFLOW 0
-#endif
-
-// <q> Use maclloc failed hook
-// <id> freertos_use_malloc_failed_hook
-#ifndef configUSE_MALLOC_FAILED_HOOK
-#define configUSE_MALLOC_FAILED_HOOK 0
-#endif
-
-// <q> Use idle hook
-// <id> freertos_use_idle_hook
-#ifndef configUSE_IDLE_HOOK
-#define configUSE_IDLE_HOOK 0
-#endif
-
-// <q> Use tick hook
-// <i> if open, you must realize vApplicationTickHook function
-// <id> freertos_use_tick_hook
-#ifndef configUSE_TICK_HOOK
-#define configUSE_TICK_HOOK 0
-#endif
-
-// <q> Use tickless idle
-// <id> freertos_use_tickless_idle
-#ifndef configUSE_TICKLESS_IDLE
-#define configUSE_TICKLESS_IDLE 0
-#endif
-
-// <q> Use trace facility
-// <id> freertos_use_trace_facility
-#ifndef configUSE_TRACE_FACILITY
-#define configUSE_TRACE_FACILITY 1
-#endif
-
-// <q> Use statistics formating functions
-// <id> freertos_use_stats_formatting_functions
-#ifndef configUSE_STATS_FORMATTING_FUNCTIONS
-#define configUSE_STATS_FORMATTING_FUNCTIONS 1
-#endif
-
-// <q> Use port optimised selection functions
-// <i> default is not supposed for Cortex-M0
-// <id> freertos_use_port_optimised_functions
-#ifndef configUSE_PORT_OPTIMISED_TASK_SELECTION
-#define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
-#endif
-
-// <q> Use application task tag functions
-// <id> freertos_use_application_task_tag_functions
-#ifndef configUSE_APPLICATION_TASK_TAG
-#define configUSE_APPLICATION_TASK_TAG 0
-#endif
-
-// <q> Use co-routines
-// <id> freertos_use_co_routines
-/* Co-routine definitions. */
-#ifndef configUSE_CO_ROUTINES
-#define configUSE_CO_ROUTINES 0
-#endif
-
-// <o> Co-routine max priority <1-2>
-// <i> Default is 2
-// <id> freertos_max_co_routine_priorities
-#ifndef configMAX_CO_ROUTINE_PRIORITIES
-#define configMAX_CO_ROUTINE_PRIORITIES (2)
-#endif
-
-// <o> Tick Rate (Hz) <1-1000000>
-// <i> Default is 1KHz
-// <id> freertos_tick_rate_hz
+/* configTICK_RATE_HZ sets frequency of the tick interrupt in Hz */
 #ifndef configTICK_RATE_HZ
-#define configTICK_RATE_HZ ((TickType_t)1000)
+#define configTICK_RATE_HZ                         ((TickType_t)1000)
 #endif
 
-/* Software timer definitions. */
-// <q> Enable timer
-// <id> freertos_use_timers
+/* Set configUSE_PREEMPTION to 1 to use pre-emptive scheduling */
+#ifndef configUSE_PREEMPTION
+#define configUSE_PREEMPTION                       1
+#endif
+
+/* Set configUSE_TIME_SLICING to 1 to have the scheduler switch between Ready
+ * state tasks of equal priority on every tick interrupt */
+#ifndef configUSE_TIME_SLICING
+#define configUSE_TIME_SLICING                     1
+#endif
+
+/* Set configUSE_PORT_OPTIMISED_TASK_SELECTION for Cortex-M4F optimization */
+#ifndef configUSE_PORT_OPTIMISED_TASK_SELECTION
+#define configUSE_PORT_OPTIMISED_TASK_SELECTION    0
+#endif
+
+/* Set configUSE_TICKLESS_IDLE to 1 to use the low power tickless mode */
+#ifndef configUSE_TICKLESS_IDLE
+#define configUSE_TICKLESS_IDLE                    0
+#endif
+
+/* configMAX_PRIORITIES Sets the number of available task priorities */
+#ifndef configMAX_PRIORITIES
+#define configMAX_PRIORITIES                       5
+#endif
+
+/* configMINIMAL_STACK_SIZE defines the size of the stack used by the Idle task */
+#ifndef configMINIMAL_STACK_SIZE
+#define configMINIMAL_STACK_SIZE                   64
+#endif
+
+/* configMAX_TASK_NAME_LEN sets the maximum length of a task's name */
+#ifndef configMAX_TASK_NAME_LEN
+#define configMAX_TASK_NAME_LEN                    8
+#endif
+
+/* Configure tick type for 32-bit systems */
+#ifndef configTICK_TYPE_WIDTH_IN_BITS
+#define configTICK_TYPE_WIDTH_IN_BITS              TICK_TYPE_WIDTH_32_BITS
+#endif
+
+/* Set configIDLE_SHOULD_YIELD to 1 to have the Idle task yield */
+#ifndef configIDLE_SHOULD_YIELD
+#define configIDLE_SHOULD_YIELD                    1
+#endif
+
+/* configTASK_NOTIFICATION_ARRAY_ENTRIES sets the number of task notifications */
+#ifndef configTASK_NOTIFICATION_ARRAY_ENTRIES
+#define configTASK_NOTIFICATION_ARRAY_ENTRIES      1
+#endif
+
+/* configQUEUE_REGISTRY_SIZE for kernel aware debugger */
+#ifndef configQUEUE_REGISTRY_SIZE
+#define configQUEUE_REGISTRY_SIZE                  0
+#endif
+
+/* Set configENABLE_BACKWARD_COMPATIBILITY to 1 for V8.2.3 compatibility */
+#ifndef configENABLE_BACKWARD_COMPATIBILITY
+#define configENABLE_BACKWARD_COMPATIBILITY        1
+#endif
+
+/* configNUM_THREAD_LOCAL_STORAGE_POINTERS for thread local storage */
+#ifndef configNUM_THREAD_LOCAL_STORAGE_POINTERS
+#define configNUM_THREAD_LOCAL_STORAGE_POINTERS    0
+#endif
+
+/* configUSE_MINI_LIST_ITEM optimization */
+#ifndef configUSE_MINI_LIST_ITEM
+#define configUSE_MINI_LIST_ITEM                   1
+#endif
+
+/* configSTACK_DEPTH_TYPE sets the type used for stack size parameters */
+#ifndef configSTACK_DEPTH_TYPE
+#define configSTACK_DEPTH_TYPE                     uint16_t
+#endif
+
+/* configMESSAGE_BUFFER_LENGTH_TYPE for message buffers */
+#ifndef configMESSAGE_BUFFER_LENGTH_TYPE
+#define configMESSAGE_BUFFER_LENGTH_TYPE           size_t
+#endif
+
+/******************************************************************************/
+/* Software timer related definitions. ****************************************/
+/******************************************************************************/
+
+/* Set configUSE_TIMERS to 1 to include software timer functionality */
 #ifndef configUSE_TIMERS
-#define configUSE_TIMERS 1
+#define configUSE_TIMERS                1
 #endif
 
-// <o> Timer task priority <1-10>
-// <i> Default is 2
-// <id> freertos_timer_task_priority
+/* configTIMER_TASK_PRIORITY sets the priority used by the timer task */
 #ifndef configTIMER_TASK_PRIORITY
-#define configTIMER_TASK_PRIORITY (2)
+#define configTIMER_TASK_PRIORITY       2
 #endif
 
-#define configTIMER_QUEUE_LENGTH 2
-
-// <o> Timer task stack size <32-512:4>
-// <i> Default is 64
-// <id> freertos_timer_task_stack_depth
-#ifndef TIMER_TASK_STACK_DEPTH
-#define configTIMER_TASK_STACK_DEPTH (256)
+/* configTIMER_TASK_STACK_DEPTH sets the size of the stack allocated to the timer task */
+#ifndef configTIMER_TASK_STACK_DEPTH
+#define configTIMER_TASK_STACK_DEPTH    256
 #endif
 
+/* configTIMER_QUEUE_LENGTH sets the length of the timer command queue */
+#ifndef configTIMER_QUEUE_LENGTH
+#define configTIMER_QUEUE_LENGTH        2
+#endif
+
+/******************************************************************************/
+/* Event Group related definitions. *******************************************/
+/******************************************************************************/
+
+/* Set configUSE_EVENT_GROUPS to 1 to include event group functionality */
+#ifndef configUSE_EVENT_GROUPS
+#define configUSE_EVENT_GROUPS    1
+#endif
+
+/******************************************************************************/
+/* Stream Buffer related definitions. *****************************************/
+/******************************************************************************/
+
+/* Set configUSE_STREAM_BUFFERS to 1 to include stream buffer functionality */
+#ifndef configUSE_STREAM_BUFFERS
+#define configUSE_STREAM_BUFFERS    1
+#endif
+
+/******************************************************************************/
+/* Memory allocation related definitions. *************************************/
+/******************************************************************************/
+
+/* Set configSUPPORT_STATIC_ALLOCATION to include static allocation */
+#ifndef configSUPPORT_STATIC_ALLOCATION
+#define configSUPPORT_STATIC_ALLOCATION              0
+#endif
+
+/* Set configSUPPORT_DYNAMIC_ALLOCATION to include dynamic allocation */
+#ifndef configSUPPORT_DYNAMIC_ALLOCATION
+#define configSUPPORT_DYNAMIC_ALLOCATION             1
+#endif
+
+/* configTOTAL_HEAP_SIZE sets the total size of the FreeRTOS heap - preserve 42KB */
+#ifndef configTOTAL_HEAP_SIZE
+#define configTOTAL_HEAP_SIZE                        42000
+#endif
+
+/* Set configAPPLICATION_ALLOCATED_HEAP to 0 to have the linker allocate heap */
+#ifndef configAPPLICATION_ALLOCATED_HEAP
+#define configAPPLICATION_ALLOCATED_HEAP             0
+#endif
+
+/* Set configSTACK_ALLOCATION_FROM_SEPARATE_HEAP to 0 for standard heap */
+#ifndef configSTACK_ALLOCATION_FROM_SEPARATE_HEAP
+#define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP    0
+#endif
+
+/* Set configENABLE_HEAP_PROTECTOR to 0 for compatibility */
+#ifndef configENABLE_HEAP_PROTECTOR
+#define configENABLE_HEAP_PROTECTOR                  0
+#endif
+
+/******************************************************************************/
+/* Interrupt nesting behaviour configuration. *********************************/
+/******************************************************************************/
+
+/* Interrupt priority configuration for SAME54 Cortex-M4F */
 #define configPRIO_BITS 3
 
-#define configMAX_TASK_NAME_LEN (8)
-#define configIDLE_SHOULD_YIELD 1
-#define configQUEUE_REGISTRY_SIZE 0
-#define configUSE_QUEUE_SETS 1
-#define configENABLE_BACKWARD_COMPATIBILITY 1
+/* configKERNEL_INTERRUPT_PRIORITY sets the priority of the tick interrupt */
+#ifndef configKERNEL_INTERRUPT_PRIORITY
+#define configKERNEL_INTERRUPT_PRIORITY          (configLIBRARY_LOWEST_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+#endif
 
-/* Set the following definitions to 1 to include the API function, or zero
-to exclude the API function. */
+/* configMAX_SYSCALL_INTERRUPT_PRIORITY sets the highest interrupt priority that can call FreeRTOS APIs */
+#ifndef configMAX_SYSCALL_INTERRUPT_PRIORITY
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY     (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+#endif
 
-// <q> Include function to set task priority
-// <id> freertos_vtaskpriorityset
+/* The lowest interrupt priority that can be used in a call to a "set priority" function */
+#ifndef configLIBRARY_LOWEST_INTERRUPT_PRIORITY
+#define configLIBRARY_LOWEST_INTERRUPT_PRIORITY 0x07
+#endif
+
+/* The highest interrupt priority that can be used by any interrupt service routine that makes calls to interrupt safe FreeRTOS API functions */
+#ifndef configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 4
+#endif
+
+/******************************************************************************/
+/* Hook and callback function related definitions. ****************************/
+/******************************************************************************/
+
+/* Set hook function usage - preserve original settings */
+#ifndef configUSE_IDLE_HOOK
+#define configUSE_IDLE_HOOK                   0
+#endif
+
+#ifndef configUSE_TICK_HOOK
+#define configUSE_TICK_HOOK                   0
+#endif
+
+#ifndef configUSE_MALLOC_FAILED_HOOK
+#define configUSE_MALLOC_FAILED_HOOK          0
+#endif
+
+#ifndef configUSE_DAEMON_TASK_STARTUP_HOOK
+#define configUSE_DAEMON_TASK_STARTUP_HOOK    0
+#endif
+
+/* Set configUSE_SB_COMPLETED_CALLBACK for stream buffer callbacks */
+#ifndef configUSE_SB_COMPLETED_CALLBACK
+#define configUSE_SB_COMPLETED_CALLBACK       0
+#endif
+
+/* Set configCHECK_FOR_STACK_OVERFLOW to 0 - preserve original setting */
+#ifndef configCHECK_FOR_STACK_OVERFLOW
+#define configCHECK_FOR_STACK_OVERFLOW        0
+#endif
+
+/******************************************************************************/
+/* Run time and task stats gathering related definitions. *********************/
+/******************************************************************************/
+
+/* Set configGENERATE_RUN_TIME_STATS to collect processing time data */
+#ifndef configGENERATE_RUN_TIME_STATS
+#define configGENERATE_RUN_TIME_STATS           0
+#endif
+
+/* Set configUSE_TRACE_FACILITY for trace and visualisation functions */
+#ifndef configUSE_TRACE_FACILITY
+#define configUSE_TRACE_FACILITY                1
+#endif
+
+/* Set configUSE_STATS_FORMATTING_FUNCTIONS for vTaskList() and vTaskGetRunTimeStats() */
+#ifndef configUSE_STATS_FORMATTING_FUNCTIONS
+#define configUSE_STATS_FORMATTING_FUNCTIONS    1
+#endif
+
+/******************************************************************************/
+/* Co-routine related definitions. ********************************************/
+/******************************************************************************/
+
+/* Set configUSE_CO_ROUTINES to include co-routine functionality */
+#ifndef configUSE_CO_ROUTINES
+#define configUSE_CO_ROUTINES              0
+#endif
+
+/* configMAX_CO_ROUTINE_PRIORITIES defines the number of co-routine priorities */
+#ifndef configMAX_CO_ROUTINE_PRIORITIES
+#define configMAX_CO_ROUTINE_PRIORITIES    2
+#endif
+
+/******************************************************************************/
+/* Definitions that include or exclude functionality. *************************/
+/******************************************************************************/
+
+/* Set the following configUSE_* constants to 1 to include the named feature */
+#ifndef configUSE_TASK_NOTIFICATIONS
+#define configUSE_TASK_NOTIFICATIONS           1
+#endif
+
+#ifndef configUSE_MUTEXES
+#define configUSE_MUTEXES                      1
+#endif
+
+#ifndef configUSE_RECURSIVE_MUTEXES
+#define configUSE_RECURSIVE_MUTEXES            1
+#endif
+
+#ifndef configUSE_COUNTING_SEMAPHORES
+#define configUSE_COUNTING_SEMAPHORES          1
+#endif
+
+#ifndef configUSE_QUEUE_SETS
+#define configUSE_QUEUE_SETS                   1
+#endif
+
+#ifndef configUSE_APPLICATION_TASK_TAG
+#define configUSE_APPLICATION_TASK_TAG         0
+#endif
+
+/* USE_POSIX_ERRNO enables per-task errno */
+#ifndef configUSE_POSIX_ERRNO
+#define configUSE_POSIX_ERRNO                  0
+#endif
+
+/******************************************************************************/
+/* INCLUDE_* constants to include API functions ******************************/
+/******************************************************************************/
+
+/* Set the following INCLUDE_* constants to 1 to include the named API function */
 #ifndef INCLUDE_vTaskPrioritySet
-#define INCLUDE_vTaskPrioritySet 1
+#define INCLUDE_vTaskPrioritySet               1
 #endif
 
-// <q> Include function to get task priority
-// <id> freertos_uxtaskpriorityget
 #ifndef INCLUDE_uxTaskPriorityGet
-#define INCLUDE_uxTaskPriorityGet 1
+#define INCLUDE_uxTaskPriorityGet              1
 #endif
 
-// <q> Include function to delete task
-// <id> freertos_vtaskdelete
 #ifndef INCLUDE_vTaskDelete
-#define INCLUDE_vTaskDelete 1
+#define INCLUDE_vTaskDelete                    1
 #endif
 
-// <q> Include function to suspend task
-// <id> freertos_vtasksuspend
 #ifndef INCLUDE_vTaskSuspend
-#define INCLUDE_vTaskSuspend 1
+#define INCLUDE_vTaskSuspend                   1
 #endif
 
-// <q> Include function to resume task from ISR
-// <id> freertos_xresumefromisr
-#ifndef INCLUDE_xResumeFromISR
-#define INCLUDE_xResumeFromISR 1
-#endif
-
-// <q> Include task delay utilities
-// <id> freertos_vtaskdelayuntil
 #ifndef INCLUDE_vTaskDelayUntil
-#define INCLUDE_vTaskDelayUntil 0
+#define INCLUDE_vTaskDelayUntil                0
 #endif
 
-// <q> Include task delay function
-// <id> freertos_vtaskdelay
 #ifndef INCLUDE_vTaskDelay
-#define INCLUDE_vTaskDelay 1
+#define INCLUDE_vTaskDelay                     1
 #endif
 
-#define INCLUDE_xTaskGetSchedulerState 0
+#ifndef INCLUDE_xTaskGetSchedulerState
+#define INCLUDE_xTaskGetSchedulerState         0
+#endif
 
-// <q> Include the function to get current task handler
-// <id> freertos_xtaskgetcurrenttaskhandle
 #ifndef INCLUDE_xTaskGetCurrentTaskHandle
-#define INCLUDE_xTaskGetCurrentTaskHandle 0
+#define INCLUDE_xTaskGetCurrentTaskHandle      0
 #endif
 
-#define INCLUDE_uxTaskGetStackHighWaterMark 0
+#ifndef INCLUDE_uxTaskGetStackHighWaterMark
+#define INCLUDE_uxTaskGetStackHighWaterMark    0
+#endif
 
-// <q> Include the function to get idle task handler
-// <id> freertos_xtaskgetidletaskhandle
 #ifndef INCLUDE_xTaskGetIdleTaskHandle
-#define INCLUDE_xTaskGetIdleTaskHandle 0
+#define INCLUDE_xTaskGetIdleTaskHandle         0
 #endif
 
+#ifndef INCLUDE_xTimerGetTimerDaemonTaskHandle
 #define INCLUDE_xTimerGetTimerDaemonTaskHandle 0
+#endif
 
-// <q> Include the function to get task name
-// <id> freertos_pctaskgettaskname
 #ifndef INCLUDE_pcTaskGetTaskName
-#define INCLUDE_pcTaskGetTaskName 0
+#define INCLUDE_pcTaskGetTaskName              0
 #endif
 
-// <q> Include the function to get task state
-// <id> freertos_etaskgetstate
 #ifndef INCLUDE_eTaskGetState
-#define INCLUDE_eTaskGetState 0
+#define INCLUDE_eTaskGetState                  0
 #endif
 
-// <q> Include the function to clean task resources
-// <id> freertos_vtaskcleanupresources
 #ifndef INCLUDE_vTaskCleanUpResources
-#define INCLUDE_vTaskCleanUpResources 0
+#define INCLUDE_vTaskCleanUpResources          0
 #endif
 
-// <q> Include the function to pend timer call
-// <id> freertos_xtimerpendfunctioncall
 #ifndef INCLUDE_xTimerPendFunctionCall
-#define INCLUDE_xTimerPendFunctionCall 0
+#define INCLUDE_xTimerPendFunctionCall         0
 #endif
 
-// </e>
+#ifndef INCLUDE_xResumeFromISR
+#define INCLUDE_xResumeFromISR                 1
+#endif
 
-/* Normal assert() semantics without relying on the provision of an assert.h
-header file. */
-#define configASSERT(x)                                                                                                \
-	if ((x) == 0) {                                                                                                    \
-		taskDISABLE_INTERRUPTS();                                                                                      \
-		for (;;)                                                                                                       \
-			;                                                                                                          \
+/******************************************************************************/
+/* Debugging assistance. ******************************************************/
+/******************************************************************************/
+
+/* configASSERT() has the same semantics as the standard C assert() */
+#define configASSERT(x)                                                        \
+	if ((x) == 0) {                                                            \
+		taskDISABLE_INTERRUPTS();                                              \
+		for (;;)                                                               \
+			;                                                                  \
 	}
 
-/* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS
-standard names - or at least those used in the unmodified vector table. */
+/******************************************************************************/
+/* FreeRTOS port interrupt handlers mapped to CMSIS standard names. ***********/
+/******************************************************************************/
 
+/* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS standard names */
 #define vPortSVCHandler SVCall_Handler
-
 #define xPortPendSVHandler PendSV_Handler
 #define xPortSysTickHandler SysTick_Handler
 
-/* Used when configGENERATE_RUN_TIME_STATS is 1. */
+/******************************************************************************/
+/* Run time stats configuration. **********************************************/
+/******************************************************************************/
+
+/* Used when configGENERATE_RUN_TIME_STATS is 1 */
 #if configGENERATE_RUN_TIME_STATS
 extern void     vConfigureTimerForRunTimeStats(void);
 extern uint32_t vGetRunTimeCounterValue(void);
@@ -315,21 +448,4 @@ extern uint32_t vGetRunTimeCounterValue(void);
 #define portGET_RUN_TIME_COUNTER_VALUE() vGetRunTimeCounterValue()
 #endif
 
-/* The lowest interrupt priority that can be used in a call to a "set priority"
-function. */
-#define configLIBRARY_LOWEST_INTERRUPT_PRIORITY 0x07
-
-/* The highest interrupt priority that can be used by any interrupt service
-routine that makes calls to interrupt safe FreeRTOS API functions.  DO NOT CALL
-INTERRUPT SAFE FREERTOS API FUNCTIONS FROM ANY INTERRUPT THAT HAS A HIGHER
-PRIORITY THAN THIS! (higher priorities are lower numeric values. */
-#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 4
-
-/* Interrupt priorities used by the kernel port layer itself.  These are generic
-to all Cortex-M ports, and do not rely on any particular library functions. */
-#define configKERNEL_INTERRUPT_PRIORITY (configLIBRARY_LOWEST_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
-#define configMAX_SYSCALL_INTERRUPT_PRIORITY (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
-
-// <<< end of configuration section >>>
-
-#endif // FREERTOSCONFIG_H
+#endif /* FREERTOS_CONFIG_H */

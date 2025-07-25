@@ -36,10 +36,9 @@ SUB_DIRS += \
 $(BUILD_DIR) \
 $(BUILD_DIR)/hpl/ramecc \
 $(BUILD_DIR)/hpl/gmac \
-$(BUILD_DIR)/gcc \
 $(BUILD_DIR)/gcc/gcc \
 $(BUILD_DIR)/ethernet_phy \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/GCC/ARM_CM4F \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/GCC/ARM_CM4F \
 $(BUILD_DIR)/examples \
 $(BUILD_DIR)/hpl/oscctrl \
 $(BUILD_DIR)/stdio_redirect \
@@ -49,8 +48,8 @@ $(BUILD_DIR)/hpl/dmac \
 $(BUILD_DIR)/hal/src \
 $(BUILD_DIR)/stdio_redirect/gcc \
 $(BUILD_DIR)/hal/utils/src \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3 \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/MemMang \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4 \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif \
@@ -63,14 +62,14 @@ $(BUILD_DIR)/hpl/mclk \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp \
 $(BUILD_DIR)/hpl/sercom \
 $(BUILD_DIR)/hpl/core \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/MemMang \
+$(BUILD_DIR)/thirdparty/RTOS \
 $(BUILD_DIR)/app_libs/SEGGER_RTT_V794b/RTT \
 $(BUILD_DIR)/app_libs/printf
 
 # List the object files
 OBJS += \
 $(BUILD_DIR)/stdio_redirect/stdio_io.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/queue.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/queue.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/chpms.o \
 $(BUILD_DIR)/hal/utils/src/utils_syscalls.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4/icmp.o \
@@ -93,12 +92,11 @@ $(BUILD_DIR)/hal/src/hal_gpio.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/chap.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/md5.o \
 $(BUILD_DIR)/gcc/gcc/startup_same54.o \
-$(BUILD_DIR)/gcc/system_same54.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/timers.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/err.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/api_msg.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/MemMang/heap_2.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/list.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/MemMang/heap_2.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/list.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/tcp_out.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4/ip_frag.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/pbuf.o \
@@ -115,9 +113,9 @@ $(BUILD_DIR)/main.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp/msg_in.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/memp.o \
 $(BUILD_DIR)/hal/utils/src/utils_event.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/rtos_port.o \
+$(BUILD_DIR)/thirdparty/RTOS/rtos_port.o \
 $(BUILD_DIR)/hal/src/hal_mac_async.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/croutine.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/croutine.o \
 $(BUILD_DIR)/hpl/cmcc/hpl_cmcc.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/lcp.o \
 $(BUILD_DIR)/atmel_start.o \
@@ -137,7 +135,7 @@ $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/api_lib.o \
 $(BUILD_DIR)/eth_ipstack_main.o \
 $(BUILD_DIR)/hal/src/hal_delay.o \
 $(BUILD_DIR)/hpl/core/hpl_init.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/event_groups.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/event_groups.o \
 $(BUILD_DIR)/hpl/oscctrl/hpl_oscctrl.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp/asn1_enc.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/pap.o \
@@ -150,7 +148,7 @@ $(BUILD_DIR)/hpl/sercom/hpl_sercom.o \
 $(BUILD_DIR)/webserver_tasks.o \
 $(BUILD_DIR)/hal/src/hal_sleep.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/init.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/timers.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/timers.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4/inet_chksum.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/dns.o \
 $(BUILD_DIR)/lwip_socket_api.o \
@@ -166,11 +164,11 @@ $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4/ip_addr.o \
 $(BUILD_DIR)/hpl/mclk/hpl_mclk.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp/mib_structs.o \
 $(BUILD_DIR)/rtos_start.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/tasks.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/tasks.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/netifapi.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/auth.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/sockets.o \
-$(BUILD_DIR)/thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/GCC/ARM_CM4F/port.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/GCC/ARM_CM4F/port.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/netif.o \
 $(BUILD_DIR)/hal/src/hal_cache.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/tcpip.o \
@@ -200,10 +198,10 @@ DIR_INCLUDES += \
 -I"hri" \
 -I"config" \
 -I"thirdparty/RTOS" \
--I"thirdparty/RTOS/freertos/FreeRTOSV8.2.3" \
--I"thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/include" \
--I"thirdparty/RTOS/freertos/FreeRTOSV8.2.3/Source/portable/GCC/ARM_CM4F" \
--I"thirdparty/RTOS/freertos/FreeRTOSV8.2.3/module_config" \
+-I"app_libs/FreeRTOS-Kernel/include" \
+-I"thirdparty/RTOS" \
+-I"app_libs/FreeRTOS-Kernel/portable/GCC/ARM_CM4F" \
+-I"app_libs/FreeRTOS-Kernel/portable/MemMang" \
 -I"lwip/lwip-1.4.0/port" \
 -I"lwip/lwip-1.4.0/port/include" \
 -I"lwip/lwip-1.4.0/src/include" \
