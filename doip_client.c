@@ -100,27 +100,21 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
         return false;
     }
 
-    /* Copy payload if available */
-    if (data_len >= DOIP_HEADER_SIZE + msg->payload_length) {
-        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
-    } else {
-        msg->payload_length = 0;
-    }
-
-    return true;
-}
-
     if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
         return false;
     }
 
-    /* Copy payload if present */
-    if (data_len > DOIP_HEADER_SIZE && msg->payload_length > 0) {
+    /* Copy payload if available */
+    if (data_len >= DOIP_HEADER_SIZE + msg->payload_length) {
+        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+    } else if (data_len > DOIP_HEADER_SIZE && msg->payload_length > 0) {
         size_t copy_len = (data_len - DOIP_HEADER_SIZE);
         if (copy_len > msg->payload_length) {
             copy_len = msg->payload_length;
         }
         memcpy(msg->payload, &data[DOIP_HEADER_SIZE], copy_len);
+    } else {
+        msg->payload_length = 0;
     }
 
     return true;
