@@ -15,7 +15,6 @@ extern "C" {
 #include <FreeRTOS.h>
 #include <task.h>
 #include <semphr.h>
-#include <hal_rtos.h>
 
 void FREERTOS_V823_0_example(void);
 

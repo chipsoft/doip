@@ -62,7 +62,6 @@ $(BUILD_DIR)/hpl/mclk \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp \
 $(BUILD_DIR)/hpl/sercom \
 $(BUILD_DIR)/hpl/core \
-$(BUILD_DIR)/thirdparty/RTOS \
 $(BUILD_DIR)/app_libs/SEGGER_RTT_V794b/RTT \
 $(BUILD_DIR)/app_libs/printf
 
@@ -113,7 +112,6 @@ $(BUILD_DIR)/main.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/snmp/msg_in.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/memp.o \
 $(BUILD_DIR)/hal/utils/src/utils_event.o \
-$(BUILD_DIR)/thirdparty/RTOS/rtos_port.o \
 $(BUILD_DIR)/hal/src/hal_mac_async.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/croutine.o \
 $(BUILD_DIR)/hpl/cmcc/hpl_cmcc.o \

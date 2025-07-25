@@ -36,6 +36,8 @@
 #include "lwip/tcpip.h"
 #include "printf.h"
 #include "network_events.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 uint16_t led_blink_rate = BLINK_NORMAL;
 
@@ -54,7 +56,7 @@ static void led_task(void *p)
 	(void)p;
 	for (;;) {
 		gpio_toggle_pin_level(LED_0);
-		os_sleep(led_blink_rate);
+		vTaskDelay(led_blink_rate);
 	}
 }
 
@@ -69,7 +71,7 @@ static void link_monitor_task(void *p)
 	bool previous_link_state = false;
 	
 	/* Wait for network initialization to complete */
-	os_sleep(2000);
+	vTaskDelay(2000);
 	
 	/* Get initial link state */
 	ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &previous_link_state);
@@ -101,7 +103,7 @@ static void link_monitor_task(void *p)
 		}
 		
 		/* Check link status every 500ms */
-		os_sleep(500);
+		vTaskDelay(500);
 	}
 }
 
@@ -139,7 +141,7 @@ void tcpip_init_done(void *arg)
 
 	printf("[INIT] Waiting for Ethernet link...\r\n");
 	while ((ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &link_up)) != ERR_NONE && !(link_up)) {
-		os_sleep(20);
+		vTaskDelay(20);
 	}
 
 	printf("[INIT] Ethernet link detected\r\n");

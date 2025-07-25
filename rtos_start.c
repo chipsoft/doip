@@ -7,6 +7,8 @@
  */
 #include "atmel_start.h"
 #include "rtos_start.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define TASK_EXAMPLE_STACK_SIZE (128 / sizeof(portSTACK_TYPE))
 #define TASK_EXAMPLE_STACK_PRIORITY (tskIDLE_PRIORITY + 1)
@@ -27,7 +29,7 @@ static void example_task(void *p)
 			/* add your code */
 			xSemaphoreGive(disp_mutex);
 		}
-		os_sleep(500);
+		vTaskDelay(500);
 	}
 }
 

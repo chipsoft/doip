@@ -814,9 +814,7 @@
 #undef ETHARP_DEBUG
 #define ETHARP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)
 
-/* Enable printf output redirection for lwIP debug */
-#define LWIP_PLATFORM_DIAG(x) do { printf x; } while(0)
-#define LWIP_PLATFORM_ASSERT(x) do { printf("Assertion \"%s\" failed at line %d in %s\n", x, __LINE__, __FILE__); } while(0)
+/* Debug macros are defined in lwip/lwip-1.4.0/port/include/arch/cc.h */
 
 // <<< end of configuration section >>>
 

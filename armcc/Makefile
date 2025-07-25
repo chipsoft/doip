@@ -103,7 +103,6 @@ main.o \
 lwip/lwip-1.4.0/src/core/snmp/msg_in.o \
 lwip/lwip-1.4.0/src/core/memp.o \
 hal/utils/src/utils_event.o \
-thirdparty/RTOS/rtos_port.o \
 hal/src/hal_mac_async.o \
 app_libs/FreeRTOS-Kernel/croutine.o \
 hpl/cmcc/hpl_cmcc.o \
@@ -208,7 +207,6 @@ OBJS_AS_ARGS +=  \
 "lwip/lwip-1.4.0/src/core/snmp/msg_in.o" \
 "lwip/lwip-1.4.0/src/core/memp.o" \
 "hal/utils/src/utils_event.o" \
-"thirdparty/RTOS/rtos_port.o" \
 "hal/src/hal_mac_async.o" \
 "app_libs/FreeRTOS-Kernel/croutine.o" \
 "hpl/cmcc/hpl_cmcc.o" \
@@ -313,7 +311,6 @@ DEPS_AS_ARGS +=  \
 "lwip/lwip-1.4.0/src/api/netdb.d" \
 "app_libs/FreeRTOS-Kernel/croutine.d" \
 "lwip/lwip-1.4.0/src/core/ipv4/inet_chksum.d" \
-"thirdparty/RTOS/rtos_port.d" \
 "lwip/lwip-1.4.0/src/core/snmp/msg_in.d" \
 "hal/utils/src/utils_event.d" \
 "lwip/lwip-1.4.0/src/core/ipv4/ip.d" \
