@@ -33,12 +33,10 @@ hpl/gmac \
 ethernet_phy \
 examples \
 hpl/oscctrl \
-stdio_redirect/keil \
 hpl/osc32kctrl \
 lwip/lwip-1.4.0/src/api \
 hpl/dmac \
 hal/src \
-stdio_redirect \
 hal/utils/src \
 armcc/arm_addon/armcc \
 app_libs/FreeRTOS-Kernel \
@@ -60,7 +58,6 @@ app_libs/FreeRTOS-Kernel/portable/MemMang
 
 # List the object files
 OBJS +=  \
-stdio_redirect/stdio_io.o \
 app_libs/FreeRTOS-Kernel/queue.o \
 lwip/lwip-1.4.0/src/netif/ppp/chpms.o \
 lwip/lwip-1.4.0/src/core/tcp_in.o \
@@ -72,7 +69,6 @@ lwip/lwip-1.4.0/src/api/netbuf.o \
 lwip/lwip-1.4.0/src/core/sys.o \
 hal/src/hal_usart_sync.o \
 hpl/gclk/hpl_gclk.o \
-stdio_start.o \
 ethernet_phy/ethernet_phy.o \
 lwip/lwip-1.4.0/src/netif/ppp/randm.o \
 lwip/lwip-1.4.0/src/core/ipv4/inet.o \
@@ -93,7 +89,6 @@ ethernet_phy_main.o \
 lwip/lwip-1.4.0/src/core/udp.o \
 hal/utils/src/utils_list.o \
 hpl/dmac/hpl_dmac.o \
-stdio_redirect/keil/Retarget.o \
 lwip/lwip-1.4.0/src/core/snmp/msg_out.o \
 hpl/osc32kctrl/hpl_osc32kctrl.o \
 lwip/lwip-1.4.0/src/api/netdb.o \
@@ -164,7 +159,6 @@ hal/src/hal_cache.o \
 lwip/lwip-1.4.0/src/api/tcpip.o
 
 OBJS_AS_ARGS +=  \
-"stdio_redirect/stdio_io.o" \
 "app_libs/FreeRTOS-Kernel/queue.o" \
 "lwip/lwip-1.4.0/src/netif/ppp/chpms.o" \
 "lwip/lwip-1.4.0/src/core/tcp_in.o" \
@@ -176,7 +170,6 @@ OBJS_AS_ARGS +=  \
 "lwip/lwip-1.4.0/src/core/sys.o" \
 "hal/src/hal_usart_sync.o" \
 "hpl/gclk/hpl_gclk.o" \
-"stdio_start.o" \
 "ethernet_phy/ethernet_phy.o" \
 "lwip/lwip-1.4.0/src/netif/ppp/randm.o" \
 "lwip/lwip-1.4.0/src/core/ipv4/inet.o" \
@@ -197,7 +190,6 @@ OBJS_AS_ARGS +=  \
 "lwip/lwip-1.4.0/src/core/udp.o" \
 "hal/utils/src/utils_list.o" \
 "hpl/dmac/hpl_dmac.o" \
-"stdio_redirect/keil/Retarget.o" \
 "lwip/lwip-1.4.0/src/core/snmp/msg_out.o" \
 "hpl/osc32kctrl/hpl_osc32kctrl.o" \
 "lwip/lwip-1.4.0/src/api/netdb.o" \
@@ -273,14 +265,12 @@ DEPS := $(OBJS:%.o=%.d)
 DEPS_AS_ARGS +=  \
 "app_libs/FreeRTOS-Kernel/queue.d" \
 "lwip/lwip-1.4.0/src/netif/ppp/chpms.d" \
-"stdio_redirect/stdio_io.d" \
 "lwip/lwip-1.4.0/src/core/ipv4/icmp.d" \
 "lwip/lwip-1.4.0/src/core/tcp_in.d" \
 "lwip/lwip-1.4.0/src/core/def.d" \
 "lwip/lwip-1.4.0/src/api/netbuf.d" \
 "lwip/lwip-1.4.0/src/netif/ppp/magic.d" \
 "hpl/pm/hpl_pm.d" \
-"stdio_start.d" \
 "hpl/ramecc/hpl_ramecc.d" \
 "lwip/lwip-1.4.0/src/core/ipv4/inet.d" \
 "lwip/lwip-1.4.0/src/netif/ppp/randm.d" \
@@ -304,7 +294,6 @@ DEPS_AS_ARGS +=  \
 "lwip/lwip-1.4.0/src/core/udp.d" \
 "ethernet_phy_main.d" \
 "lwip/lwip-1.4.0/src/core/snmp/msg_out.d" \
-"stdio_redirect/keil/Retarget.d" \
 "driver_init.d" \
 "lwip/lwip-1.4.0/src/core/snmp/mib2.d" \
 "hpl/osc32kctrl/hpl_osc32kctrl.d" \
@@ -408,7 +397,7 @@ $(OBJS_AS_ARGS)
 	@echo Building file: $<
 	@echo ARMCC Compiler
 	$(QUOTE)armcc$(QUOTE) --c99 -c -DDEBUG -O1 -g --apcs=interwork --split_sections --cpu Cortex-M4 -D__SAME54P20A__ \
--I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config" -I"../stdio_redirect" -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
+-I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config"  -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
 --depend "$@"  -o "$@" "$<"
 
 	@echo Finished building: $<
@@ -417,7 +406,7 @@ $(OBJS_AS_ARGS)
 	@echo Building file: $<
 	@echo ARMCC Assembler
 	$(QUOTE)armasm$(QUOTE) -g --apcs=interwork --cpu Cortex-M4 --pd "D__SAME54P20A__ SETA 1" \
--I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config" -I"../stdio_redirect" -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
+-I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config"  -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
 --depend "$(@:%.o=%.d)" -o "$@" "$<"
 
 	@echo Finished building: $<
@@ -426,7 +415,7 @@ $(OBJS_AS_ARGS)
 	@echo Building file: $<
 	@echo ARMCC Preprocessing Assembler
 	$(QUOTE)armcc$(QUOTE) --c99 -c -DDEBUG -O1 -g --apcs=interwork --split_sections --cpu Cortex-M4 -D__SAME54P20A__ \
--I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config" -I"../stdio_redirect" -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
+-I"../" -I"../config" -I"../examples" -I"../hal/include" -I"../hal/utils/include" -I"../hpl/cmcc" -I"../hpl/core" -I"../hpl/dmac" -I"../hpl/gclk" -I"../hpl/mclk" -I"../hpl/osc32kctrl" -I"../hpl/oscctrl" -I"../hpl/pm" -I"../hpl/port" -I"../hpl/ramecc" -I"../hpl/sercom" -I"../hri" -I"../" -I"../config" -I"../thirdparty/RTOS" -I"../app_libs/FreeRTOS-Kernel" -I"../app_libs/FreeRTOS-Kernel/include" -I"../app_libs/FreeRTOS-Kernel/portable/RVDS/ARM_CM4F" -I"../app_libs/FreeRTOS-Kernel/portable/MemMang" -I"../" -I"../config" -I"../lwip/lwip-1.4.0/port" -I"../lwip/lwip-1.4.0/port/include" -I"../lwip/lwip-1.4.0/src/include" -I"../lwip/lwip-1.4.0/src/include/ipv4" -I"../lwip/lwip-1.4.0/src/include/lwip" -I"../" -I"../config" -I"../ethernet_phy" -I"../" -I"../config"  -I"../" -I"../CMSIS/Core/Include" -I"../include"  \
 --depend "$@"  -o "$@" "$<"
 
 	@echo Finished building: $<

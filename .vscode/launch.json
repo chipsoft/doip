@@ -25,7 +25,18 @@
             },
             "interface": "swd",
             "runToEntryPoint": "main",
-            "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd"
+            "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd",
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto",
+                "decoders": [
+                    {
+                        "label": "",
+                        "port": 0,
+                        "type": "console"
+                    }
+                ]
+            }
         },
         {
             "type": "cortex-debug",
@@ -53,8 +64,15 @@
             "svdFile": "${workspaceRoot}/extra/svd/ATSAME51J19A.svd",
             "rttConfig": {
                 "enabled": true,
-                "address": "auto"
-            }
+                "address": "auto",
+                "decoders": [
+                    {
+                        "label": "",
+                        "port": 0,
+                        "type": "console"
+                    }
+                ]
+            }                        
         },
         {
             "type": "cortex-debug",

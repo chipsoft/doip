@@ -41,12 +41,10 @@ $(BUILD_DIR)/ethernet_phy \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/GCC/ARM_CM4F \
 $(BUILD_DIR)/examples \
 $(BUILD_DIR)/hpl/oscctrl \
-$(BUILD_DIR)/stdio_redirect \
 $(BUILD_DIR)/hpl/osc32kctrl \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/api \
 $(BUILD_DIR)/hpl/dmac \
 $(BUILD_DIR)/hal/src \
-$(BUILD_DIR)/stdio_redirect/gcc \
 $(BUILD_DIR)/hal/utils/src \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/portable/MemMang \
@@ -67,7 +65,6 @@ $(BUILD_DIR)/app_libs/printf
 
 # List the object files
 OBJS += \
-$(BUILD_DIR)/stdio_redirect/stdio_io.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/queue.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/chpms.o \
 $(BUILD_DIR)/hal/utils/src/utils_syscalls.o \
@@ -79,10 +76,7 @@ $(BUILD_DIR)/lwip/lwip-1.4.0/src/api/netbuf.o \
 $(BUILD_DIR)/ethernet_phy_main.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/sys.o \
 $(BUILD_DIR)/hal/src/hal_usart_sync.o \
-$(BUILD_DIR)/stdio_redirect/gcc/read.o \
-$(BUILD_DIR)/stdio_redirect/gcc/write.o \
 $(BUILD_DIR)/hpl/gclk/hpl_gclk.o \
-$(BUILD_DIR)/stdio_start.o \
 $(BUILD_DIR)/ethernet_phy/ethernet_phy.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/netif/ppp/randm.o \
 $(BUILD_DIR)/lwip/lwip-1.4.0/src/core/ipv4/inet.o \
@@ -206,7 +200,6 @@ DIR_INCLUDES += \
 -I"lwip/lwip-1.4.0/src/include/ipv4" \
 -I"lwip/lwip-1.4.0/src/include/lwip" \
 -I"ethernet_phy" \
--I"stdio_redirect" \
 -I"CMSIS/Core/Include" \
 -I"include" \
 -I"app_libs/SEGGER_RTT_V794b/RTT" \
