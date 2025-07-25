@@ -18,11 +18,13 @@ DOIP_TCP_DATA_PORT = 13400
 DOIP_PROTOCOL_VERSION = 0x02
 DOIP_INVERSE_PROTOCOL_VERSION = 0xFD
 
-# DOIP Payload Types
+# DOIP Payload Types (ISO 13400)
 DOIP_VEHICLE_IDENTIFICATION_REQUEST = 0x0001
 DOIP_VEHICLE_IDENTIFICATION_RESPONSE = 0x0004
 DOIP_ROUTING_ACTIVATION_REQUEST = 0x0005
 DOIP_ROUTING_ACTIVATION_RESPONSE = 0x0006
+DOIP_ALIVE_CHECK_REQUEST = 0x0007
+DOIP_ALIVE_CHECK_RESPONSE = 0x0008
 DOIP_DIAGNOSTIC_MESSAGE = 0x8001
 DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK = 0x8002
 DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK = 0x8003
@@ -52,6 +54,11 @@ class DOIPECUEmulator:
         self.tcp_socket = None
         self.running = False
         self.active_connections = []
+        
+        # Alive check functionality
+        self.alive_check_interval = 5.0  # Send alive check every 5 seconds
+        self.last_alive_check = 0
+        self.alive_check_thread = None
 
     def create_doip_header(self, payload_type: int, payload_length: int) -> bytes:
         """Create DOIP protocol header"""
@@ -166,6 +173,55 @@ class DOIPECUEmulator:
         header = self.create_doip_header(DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK, len(payload))
         return header + payload
 
+    def handle_alive_check_request(self, data: bytes, addr) -> bytes:
+        """Handle alive check request (0x0007)"""
+        print(f"Alive check request from {addr}")
+        
+        # Alive check response payload: Source Address (2 bytes)
+        source_address = struct.unpack('>H', data[8:10])[0] if len(data) >= 10 else 0x0000
+        
+        payload = struct.pack('>H', source_address)
+        header = self.create_doip_header(DOIP_ALIVE_CHECK_RESPONSE, len(payload))
+        response = header + payload
+        
+        print(f"Alive check response sent to {addr}")
+        return response
+
+    def send_alive_check_request(self, client_socket):
+        """Send alive check request to client (0x0007)"""
+        try:
+            # Alive check request payload: Source Address (2 bytes)
+            payload = struct.pack('>H', self.logical_address)
+            header = self.create_doip_header(DOIP_ALIVE_CHECK_REQUEST, len(payload))
+            request = header + payload
+            
+            client_socket.send(request)
+            print(f"Alive check request sent")
+            return True
+        except Exception as e:
+            print(f"Failed to send alive check request: {e}")
+            return False
+
+    def send_diagnostic_ack(self, client_socket, ack_type: int = 0x00):
+        """Send diagnostic message acknowledgment (0x8002/0x8003)"""
+        try:
+            # Diagnostic ACK payload: Source Address (2 bytes) + Target Address (2 bytes) + ACK Type (1 byte)
+            payload = struct.pack('>HHB', 
+                                self.logical_address,  # Source Address
+                                0x0E80,               # Target Address (tester)
+                                ack_type)             # ACK type (0x00 = positive, 0x01 = negative)
+            
+            payload_type = DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK if ack_type == 0x00 else DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK
+            header = self.create_doip_header(payload_type, len(payload))
+            ack_message = header + payload
+            
+            client_socket.send(ack_message)
+            print(f"Diagnostic ACK sent: type 0x{ack_type:02x}")
+            return True
+        except Exception as e:
+            print(f"Failed to send diagnostic ACK: {e}")
+            return False
+
     def get_doip_interface_ip(self):
         """Get the IP address for DOIP communication (192.168.100.x network)"""
         try:
@@ -222,8 +278,13 @@ class DOIPECUEmulator:
                         response = self.handle_vehicle_identification_request(addr)
                         self.udp_socket.sendto(response, addr)
                         print("Response sent!")
+                    elif header_info and header_info[1] == DOIP_ALIVE_CHECK_REQUEST:
+                        print("Sending alive check response...")
+                        response = self.handle_alive_check_request(data, addr)
+                        self.udp_socket.sendto(response, addr)
+                        print("Alive check response sent!")
                     else:
-                        print(f"UDP: Invalid header or wrong payload type: {header_info}")
+                        print(f"UDP: Invalid header or unsupported payload type: {header_info}")
                         
                 except socket.timeout:
                     continue
@@ -265,6 +326,13 @@ class DOIPECUEmulator:
                     response = self.handle_diagnostic_message(data)
                     print(f"TCP: Sending diagnostic response ({len(response)} bytes)")
                     client_socket.send(response)
+                elif payload_type == DOIP_ALIVE_CHECK_REQUEST:
+                    print(f"TCP: Handling alive check request from {addr}")
+                    response = self.handle_alive_check_request(data, addr)
+                    print(f"TCP: Sending alive check response ({len(response)} bytes)")
+                    client_socket.send(response)
+                elif payload_type == DOIP_ALIVE_CHECK_RESPONSE:
+                    print(f"TCP: Received alive check response from {addr}")
                 else:
                     print(f"Unsupported payload type: 0x{payload_type:04x}")
                     
@@ -313,22 +381,55 @@ class DOIPECUEmulator:
             if self.tcp_socket:
                 self.tcp_socket.close()
 
+    def alive_check_thread(self):
+        """Thread to send periodic alive check requests to connected clients"""
+        while self.running:
+            try:
+                current_time = time.time()
+                if current_time - self.last_alive_check >= self.alive_check_interval:
+                    # Send alive check to all connected clients
+                    for client_socket in self.active_connections[:]:  # Copy list to avoid modification during iteration
+                        try:
+                            self.send_alive_check_request(client_socket)
+                        except Exception as e:
+                            print(f"Failed to send alive check to client: {e}")
+                            # Remove disconnected client
+                            if client_socket in self.active_connections:
+                                self.active_connections.remove(client_socket)
+                    
+                    self.last_alive_check = current_time
+                
+                time.sleep(1)  # Check every second
+                
+            except Exception as e:
+                if self.running:
+                    print(f"Alive check thread error: {e}")
+                time.sleep(1)
+
     def start(self):
         """Start the DOIP ECU emulator"""
         print(f"Starting DOIP ECU Emulator")
         print(f"VIN: {self.vin}")
         print(f"ECU Address: 0x{self.ecu_address:04x}")
         print(f"Logical Address: 0x{self.logical_address:04x}")
+        print(f"Supported DOIP Payload Types:")
+        print(f"  - Vehicle ID Request/Response (0x0001/0x0004)")
+        print(f"  - Routing Activation Request/Response (0x0005/0x0006)")
+        print(f"  - Alive Check Request/Response (0x0007/0x0008)")
+        print(f"  - Diagnostic Messages (0x8001)")
+        print(f"  - Diagnostic ACKs (0x8002/0x8003)")
         print("Press Ctrl+C to stop")
         
         self.running = True
         
-        # Start UDP and TCP servers
+        # Start UDP, TCP, and alive check threads
         udp_thread = threading.Thread(target=self.udp_server, daemon=True)
         tcp_thread = threading.Thread(target=self.tcp_server, daemon=True)
+        alive_thread = threading.Thread(target=self.alive_check_thread, daemon=True)
         
         udp_thread.start()
         tcp_thread.start()
+        alive_thread.start()
         
         try:
             while True:
