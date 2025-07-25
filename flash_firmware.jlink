@@ -1,0 +1,20 @@
+// J-Link script to flash SAME54 firmware
+// Connect to SAME54P20A target
+device ATSAME54P20A
+si swd
+speed 4000
+connect
+
+// Erase and program the firmware
+erase
+loadfile build/AtmelStart.hex
+
+// Verify programming
+verifybin build/AtmelStart.bin 0x00000000
+
+// Reset and run
+r
+g
+
+// Exit
+qc

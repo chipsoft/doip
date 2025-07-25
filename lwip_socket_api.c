@@ -38,6 +38,7 @@
 #include "FreeRTOS.h"
 #include "sockets.h"
 #include "lwip_socket_api.h"
+#include "doip_client.h"
 #include "string.h"
 
 typedef u32_t socklen_t;
@@ -58,6 +59,9 @@ void basic_socket()
 	task_led_create();
 	task_link_monitor_create();
 
+	/* Initialize DOIP client */
+	doip_client_init();
+
 	/* Create task for Ethernet */
 	if (xTaskCreate(socket_basic_ethernet,
 	                "Ethernet_basic",
@@ -69,6 +73,9 @@ void basic_socket()
 		while (1)
 			;
 	}
+
+	/* Start DOIP client task */
+	doip_client_start_task();
 
 	/* Start FreeRTOS scheduler */
 	vTaskStartScheduler();

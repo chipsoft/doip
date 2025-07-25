@@ -635,7 +635,7 @@ void Reset_Handler(void)
 	pSrc  = &_etext;
 	pDest = &_srelocate;
 
-	if (pSrc != pDest) {
+        if (pSrc != pDest) {
 		for (; pDest < &_erelocate;) {
 			*pDest++ = *pSrc++;
 		}

@@ -8,7 +8,21 @@
       "Bash(arm-none-eabi-size:*)",
       "Bash(cp:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(rm:*)",
+      "Bash(git rm:*)",
+      "Bash(echo $?)",
+      "WebFetch(domain:www.embien.com)",
+      "Bash(python3:*)",
+      "Bash(timeout:*)",
+      "Bash(kill:*)",
+      "Bash(JLinkExe:*)",
+      "Bash(open:*)",
+      "Bash(ping:*)",
+      "Bash(pkill:*)",
+      "Bash(chmod:*)",
+      "Bash(sudo pfctl:*)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }
