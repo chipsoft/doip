@@ -26,11 +26,13 @@ extern "C" {
 /* DOIP Header Size */
 #define DOIP_HEADER_SIZE               8
 
-/* DOIP Payload Types */
+/* DOIP Payload Types (ISO 13400) */
 #define DOIP_VEHICLE_IDENTIFICATION_REQUEST     0x0001
 #define DOIP_VEHICLE_IDENTIFICATION_RESPONSE    0x0004
 #define DOIP_ROUTING_ACTIVATION_REQUEST         0x0005
 #define DOIP_ROUTING_ACTIVATION_RESPONSE        0x0006
+#define DOIP_ALIVE_CHECK_REQUEST                0x0007
+#define DOIP_ALIVE_CHECK_RESPONSE               0x0008
 #define DOIP_DIAGNOSTIC_MESSAGE                 0x8001
 #define DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK    0x8002
 #define DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK    0x8003
@@ -49,6 +51,8 @@ extern "C" {
 #define DOIP_DISCOVERY_TIMEOUT_MS       5000    /* UDP discovery timeout */
 #define DOIP_TCP_TIMEOUT_MS            10000    /* TCP operation timeout */
 #define DOIP_MAX_PAYLOAD_SIZE          1024     /* Maximum payload size */
+#define DOIP_ALIVE_CHECK_INTERVAL_MS   5000     /* Alive check interval (5 seconds) */
+#define DOIP_ALIVE_CHECK_TIMEOUT_MS    3000     /* Alive check response timeout */
 
 /* DOIP Message Structure */
 typedef struct {
@@ -165,6 +169,15 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
 bool doip_send_udp_message(const doip_message_t *msg, uint32_t dest_ip, uint16_t dest_port);
 bool doip_send_tcp_message(int socket, const doip_message_t *msg);
 bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_ms);
+
+/* Alive Check Functions */
+bool doip_send_alive_check_request(int socket);
+bool doip_handle_alive_check_response(const doip_message_t *msg);
+bool doip_handle_alive_check_request(int socket, const doip_message_t *msg);
+
+/* Enhanced Diagnostic Functions */
+bool doip_send_diagnostic_ack(int socket, uint8_t ack_type);
+bool doip_handle_diagnostic_ack(const doip_message_t *msg);
 
 #ifdef __cplusplus
 }

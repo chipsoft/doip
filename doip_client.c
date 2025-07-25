@@ -100,6 +100,16 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
         return false;
     }
 
+    /* Copy payload if available */
+    if (data_len >= DOIP_HEADER_SIZE + msg->payload_length) {
+        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+    } else {
+        msg->payload_length = 0;
+    }
+
+    return true;
+}
+
     if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
         return false;
     }
@@ -114,6 +124,57 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
     }
 
     return true;
+}
+
+bool doip_send_tcp_message(int socket, const doip_message_t *msg)
+{
+    uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+    
+    /* Serialize message */
+    buffer[0] = msg->protocol_version;
+    buffer[1] = msg->inverse_protocol_version;
+    buffer[2] = (msg->payload_type >> 8) & 0xFF;
+    buffer[3] = msg->payload_type & 0xFF;
+    buffer[4] = (msg->payload_length >> 24) & 0xFF;
+    buffer[5] = (msg->payload_length >> 16) & 0xFF;
+    buffer[6] = (msg->payload_length >> 8) & 0xFF;
+    buffer[7] = msg->payload_length & 0xFF;
+    memcpy(&buffer[8], msg->payload, msg->payload_length);
+    
+    /* Send message */
+    int result = send(socket, buffer, DOIP_HEADER_SIZE + msg->payload_length, 0);
+    return (result >= 0);
+}
+
+bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_ms)
+{
+    uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+    struct timeval timeout;
+    
+    /* Set socket timeout */
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    
+    /* Receive header first */
+    int result = recv(socket, buffer, DOIP_HEADER_SIZE, MSG_PEEK);
+    if (result < DOIP_HEADER_SIZE) {
+        return false;
+    }
+    
+    /* Parse header to get payload length */
+    if (!doip_parse_header(buffer, DOIP_HEADER_SIZE, msg)) {
+        return false;
+    }
+    
+    /* Receive full message */
+    result = recv(socket, buffer, DOIP_HEADER_SIZE + msg->payload_length, 0);
+    if (result < DOIP_HEADER_SIZE + msg->payload_length) {
+        return false;
+    }
+    
+    /* Parse complete message */
+    return doip_parse_header(buffer, result, msg);
 }
 
 bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
@@ -496,6 +557,151 @@ bool doip_read_ecu_hardware_version(char *version_buffer, size_t buffer_size)
     return false;
 }
 
+/* Alive Check Functions */
+
+bool doip_send_alive_check_request(int socket)
+{
+    doip_message_t request_msg;
+    uint8_t buffer[DOIP_HEADER_SIZE + 2];  /* Header + Source Address */
+    
+    /* Create alive check request */
+    doip_create_header(&request_msg, DOIP_ALIVE_CHECK_REQUEST, 2);
+    
+    /* Add source address to payload */
+    request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
+    request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
+    
+    /* Serialize message */
+    buffer[0] = request_msg.protocol_version;
+    buffer[1] = request_msg.inverse_protocol_version;
+    buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
+    buffer[3] = request_msg.payload_type & 0xFF;
+    buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
+    buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
+    buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
+    buffer[7] = request_msg.payload_length & 0xFF;
+    memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
+    
+    /* Send request */
+    int result = send(socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
+    if (result < 0) {
+        printf("DOIP Client: Failed to send alive check request\r\n");
+        return false;
+    }
+    
+    printf("DOIP Client: Alive check request sent\r\n");
+    return true;
+}
+
+bool doip_handle_alive_check_response(const doip_message_t *msg)
+{
+    if (msg->payload_length < 2) {
+        printf("DOIP Client: Invalid alive check response payload length\r\n");
+        return false;
+    }
+    
+    uint16_t source_address = (msg->payload[0] << 8) | msg->payload[1];
+    printf("DOIP Client: Alive check response received from 0x%04X\r\n", source_address);
+    return true;
+}
+
+bool doip_handle_alive_check_request(int socket, const doip_message_t *msg)
+{
+    doip_message_t response_msg;
+    uint8_t buffer[DOIP_HEADER_SIZE + 2];  /* Header + Source Address */
+    
+    if (msg->payload_length < 2) {
+        printf("DOIP Client: Invalid alive check request payload length\r\n");
+        return false;
+    }
+    
+    /* Create alive check response */
+    doip_create_header(&response_msg, DOIP_ALIVE_CHECK_RESPONSE, 2);
+    
+    /* Echo back the source address */
+    response_msg.payload[0] = msg->payload[0];
+    response_msg.payload[1] = msg->payload[1];
+    
+    /* Serialize message */
+    buffer[0] = response_msg.protocol_version;
+    buffer[1] = response_msg.inverse_protocol_version;
+    buffer[2] = (response_msg.payload_type >> 8) & 0xFF;
+    buffer[3] = response_msg.payload_type & 0xFF;
+    buffer[4] = (response_msg.payload_length >> 24) & 0xFF;
+    buffer[5] = (response_msg.payload_length >> 16) & 0xFF;
+    buffer[6] = (response_msg.payload_length >> 8) & 0xFF;
+    buffer[7] = response_msg.payload_length & 0xFF;
+    memcpy(&buffer[8], response_msg.payload, response_msg.payload_length);
+    
+    /* Send response */
+    int result = send(socket, buffer, DOIP_HEADER_SIZE + response_msg.payload_length, 0);
+    if (result < 0) {
+        printf("DOIP Client: Failed to send alive check response\r\n");
+        return false;
+    }
+    
+    printf("DOIP Client: Alive check response sent\r\n");
+    return true;
+}
+
+/* Enhanced Diagnostic Functions */
+
+bool doip_send_diagnostic_ack(int socket, uint8_t ack_type)
+{
+    doip_message_t ack_msg;
+    uint8_t buffer[DOIP_HEADER_SIZE + 5];  /* Header + SA + TA + ACK Type */
+    
+    /* Create diagnostic ACK */
+    doip_create_header(&ack_msg, 
+                      ack_type == 0x00 ? DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK : DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK, 
+                      5);
+    
+    /* Payload: Source Address + Target Address + ACK Type */
+    ack_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
+    ack_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
+    ack_msg.payload[2] = (current_vehicle.logical_address >> 8) & 0xFF;
+    ack_msg.payload[3] = current_vehicle.logical_address & 0xFF;
+    ack_msg.payload[4] = ack_type;
+    
+    /* Serialize message */
+    buffer[0] = ack_msg.protocol_version;
+    buffer[1] = ack_msg.inverse_protocol_version;
+    buffer[2] = (ack_msg.payload_type >> 8) & 0xFF;
+    buffer[3] = ack_msg.payload_type & 0xFF;
+    buffer[4] = (ack_msg.payload_length >> 24) & 0xFF;
+    buffer[5] = (ack_msg.payload_length >> 16) & 0xFF;
+    buffer[6] = (ack_msg.payload_length >> 8) & 0xFF;
+    buffer[7] = ack_msg.payload_length & 0xFF;
+    memcpy(&buffer[8], ack_msg.payload, ack_msg.payload_length);
+    
+    /* Send ACK */
+    int result = send(socket, buffer, DOIP_HEADER_SIZE + ack_msg.payload_length, 0);
+    if (result < 0) {
+        printf("DOIP Client: Failed to send diagnostic ACK\r\n");
+        return false;
+    }
+    
+    printf("DOIP Client: Diagnostic ACK sent (type 0x%02X)\r\n", ack_type);
+    return true;
+}
+
+bool doip_handle_diagnostic_ack(const doip_message_t *msg)
+{
+    if (msg->payload_length < 5) {
+        printf("DOIP Client: Invalid diagnostic ACK payload length\r\n");
+        return false;
+    }
+    
+    uint16_t source_address = (msg->payload[0] << 8) | msg->payload[1];
+    uint16_t target_address = (msg->payload[2] << 8) | msg->payload[3];
+    uint8_t ack_type = msg->payload[4];
+    
+    printf("DOIP Client: Diagnostic ACK received: SA=0x%04X, TA=0x%04X, Type=0x%02X\r\n", 
+           source_address, target_address, ack_type);
+    
+    return (ack_type == 0x00);  /* Return true for positive ACK */
+}
+
 doip_status_t doip_get_status(void)
 {
     return doip_status;
@@ -568,6 +774,47 @@ void doip_client_task(void *pvParameters)
                 }
                 
                 printf("--- Diagnostic cycle completed ---\r\n");
+                
+                /* Enhanced: Send alive check request to ECU */
+                printf("\r\n--- Testing Alive Check ---\r\n");
+                if (doip_send_alive_check_request(tcp_socket)) {
+                    printf("Alive check request sent successfully\r\n");
+                }
+                
+                /* Enhanced: Listen for incoming messages (alive checks, ACKs) */
+                printf("\r\n--- Listening for ECU Messages ---\r\n");
+                doip_message_t incoming_msg;
+                TickType_t start_time = xTaskGetTickCount();
+                TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_ALIVE_CHECK_TIMEOUT_MS);
+                
+                while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+                    if (doip_receive_tcp_message(tcp_socket, &incoming_msg, 100)) {
+                        switch (incoming_msg.payload_type) {
+                            case DOIP_ALIVE_CHECK_REQUEST:
+                                printf("Received alive check request from ECU\r\n");
+                                doip_handle_alive_check_request(tcp_socket, &incoming_msg);
+                                break;
+                                
+                            case DOIP_ALIVE_CHECK_RESPONSE:
+                                printf("Received alive check response from ECU\r\n");
+                                doip_handle_alive_check_response(&incoming_msg);
+                                break;
+                                
+                            case DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK:
+                            case DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK:
+                                printf("Received diagnostic ACK from ECU\r\n");
+                                doip_handle_diagnostic_ack(&incoming_msg);
+                                break;
+                                
+                            default:
+                                printf("Received unknown message type: 0x%04X\r\n", incoming_msg.payload_type);
+                                break;
+                        }
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(10));  /* Small delay to prevent busy waiting */
+                }
+                
+                printf("--- Enhanced communication completed ---\r\n");
                 
                 /* Disconnect */
                 doip_disconnect();
