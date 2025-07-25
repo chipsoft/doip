@@ -45,7 +45,6 @@ $(BUILD_DIR)/hpl/osc32kctrl \
 $(BUILD_DIR)/app_libs/lwip/src/api \
 $(BUILD_DIR)/app_libs/lwip/src/core \
 $(BUILD_DIR)/app_libs/lwip/src/core/ipv4 \
-$(BUILD_DIR)/app_libs/lwip/src/core/ipv6 \
 $(BUILD_DIR)/app_libs/lwip/src/netif \
 $(BUILD_DIR)/app_libs/lwip/contrib/ports/freertos \
 $(BUILD_DIR)/app_libs/lwip/port \
@@ -101,7 +100,7 @@ $(BUILD_DIR)/hal/src/hal_mac_async.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/croutine.o \
 $(BUILD_DIR)/hpl/cmcc/hpl_cmcc.o \
 $(BUILD_DIR)/atmel_start.o \
-$(BUILD_DIR)/app_libs/lwip/src/core/ipv4/etharp.o \
+$(BUILD_DIR)/app_libs/lwip/src/netif/etharp.o \
 $(BUILD_DIR)/hal/src/hal_atomic.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/ipv4/dhcp.o \
 $(BUILD_DIR)/hal/src/hal_io.o \
@@ -125,7 +124,6 @@ $(BUILD_DIR)/hal/src/hal_sleep.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/init.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/timers.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/inet_chksum.o \
-$(BUILD_DIR)/app_libs/lwip/src/core/ip.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/dns.o \
 $(BUILD_DIR)/lwip_socket_api.o \
 $(BUILD_DIR)/hpl/gmac/hpl_gmac.o \
@@ -134,8 +132,6 @@ $(BUILD_DIR)/app_libs/lwip/src/core/stats.o \
 $(BUILD_DIR)/hpl/ramecc/hpl_ramecc.o \
 $(BUILD_DIR)/hal/utils/src/utils_assert.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/ipv4/ip4_addr.o \
-$(BUILD_DIR)/app_libs/lwip/src/core/ipv4/acd.o \
-$(BUILD_DIR)/app_libs/lwip/src/netif/ethernet.o \
 $(BUILD_DIR)/hpl/mclk/hpl_mclk.o \
 $(BUILD_DIR)/rtos_start.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/tasks.o \
@@ -152,6 +148,7 @@ $(BUILD_DIR)/network_events.o \
 $(BUILD_DIR)/doip_client.o \
 $(BUILD_DIR)/app_libs/lwip/src/api/api_lib.o \
 $(BUILD_DIR)/app_libs/lwip/port/ethif_mac.o \
+$(BUILD_DIR)/app_libs/lwip/src/core/ipv4/etharp.o
 
 # List the directories containing header files
 DIR_INCLUDES += \

@@ -36,7 +36,7 @@
 #include "lwip/tcpip.h"
 #include "webserver_tasks.h"
 #include "FreeRTOS.h"
-#include "sockets.h"
+#include "lwip/sockets.h"
 #include "lwip_socket_api.h"
 #include "doip_client.h"
 #include "string.h"

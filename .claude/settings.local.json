@@ -22,7 +22,9 @@
       "Bash(pkill:*)",
       "Bash(chmod:*)",
       "Bash(sudo pfctl:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(perl:*)"
     ],
     "deny": []
   }

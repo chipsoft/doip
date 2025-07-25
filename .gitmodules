@@ -4,3 +4,6 @@
 [submodule "app_libs/FreeRTOS-Kernel"]
 	path = app_libs/FreeRTOS-Kernel
 	url = https://github.com/FreeRTOS/FreeRTOS-Kernel.git
+[submodule "app_libs/lwip"]
+	path = app_libs/lwip
+	url = https://github.com/lwip-tcpip/lwip.git

@@ -44,9 +44,7 @@
 
 #ifndef CONF_TCPIP_STACK_INTERFACE_0_FLAG
 #define CONF_TCPIP_STACK_INTERFACE_0_FLAG                                                                              \
-	((CONF_TCPIP_STACK_INTERFACE_0_DHCP ? NETIF_FLAG_DHCP : 0)                                                         \
-	 | (CONF_TCPIP_STACK_INTERFACE_0_BROADCAST ? NETIF_FLAG_BROADCAST : 0)                                             \
-	 | (CONF_TCPIP_STACK_INTERFACE_0_P2P ? NETIF_FLAG_POINTTOPOINT : 0)                                                \
+	((CONF_TCPIP_STACK_INTERFACE_0_BROADCAST ? NETIF_FLAG_BROADCAST : 0)                                             \
 	 | (CONF_TCPIP_STACK_INTERFACE_0_ETHARP ? NETIF_FLAG_ETHARP : 0)                                                   \
 	 | (CONF_TCPIP_STACK_INTERFACE_0_IGMP ? NETIF_FLAG_IGMP : 0) | NETIF_FLAG_ETHERNET)
 #endif

@@ -6,7 +6,7 @@
  */
 
 #include "doip_client.h"
-#include "sockets.h"
+#include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include "lwip/ip_addr.h"
 #include "lwip/inet.h"
@@ -730,6 +730,37 @@ void doip_client_task(void *pvParameters)
             printf("DOIP Client: Waiting for network interface to get IP address...\r\n");
             vTaskDelay(pdMS_TO_TICKS(5000));  /* Wait 5 seconds before retrying */
             continue;
+        }
+        
+        /* Check if link is stable before attempting network operations */
+        bool link_up = netif_is_link_up(&TCPIP_STACK_INTERFACE_0_desc);
+        bool netif_up = netif_is_up(&TCPIP_STACK_INTERFACE_0_desc);
+        
+        printf("DOIP Client: Link status check - Link UP: %s, Interface UP: %s\r\n", 
+               link_up ? "YES" : "NO", netif_up ? "YES" : "NO");
+        
+        /* If interface is UP but link is not detected as UP, proceed anyway */
+        /* This handles cases where PHY link detection is unreliable but connectivity works */
+        if (!link_up && !netif_up) {
+            printf("DOIP Client: Both link and interface are down, waiting...\r\n");
+            vTaskDelay(pdMS_TO_TICKS(2000));  /* Wait 2 seconds before retrying */
+            continue;
+        } else if (!link_up && netif_up) {
+            printf("DOIP Client: Interface UP but link detection unreliable, proceeding...\r\n");
+        } else {
+            printf("DOIP Client: Link and interface both UP, proceeding...\r\n");
+        }
+        
+        /* Wait additional time for link to stabilize after coming up */
+        printf("DOIP Client: Link detected, waiting for stabilization...\r\n");
+        vTaskDelay(pdMS_TO_TICKS(3000));  /* Wait 3 seconds for link stability */
+        
+        /* Double-check interface is still functional after stabilization period */
+        if (!netif_is_up(&TCPIP_STACK_INTERFACE_0_desc)) {
+            printf("DOIP Client: Interface went down during stabilization, retrying...\r\n");
+            continue;
+        } else {
+            printf("DOIP Client: Interface stable after stabilization period\r\n");
         }
         
         printf("\r\n=== DOIP Client Diagnostic Cycle ===\r\n");

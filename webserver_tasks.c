@@ -33,9 +33,11 @@
 
 #include "atmel_start.h"
 #include "webserver_tasks.h"
+#include "semphr.h"
 #include "lwip/tcpip.h"
 #include "printf.h"
 #include "network_events.h"
+#include "ethernet_phy_main.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -78,7 +80,8 @@ static void link_monitor_task(void *p)
 	
 	for (;;) {
 		/* Check current link status */
-		if (ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &current_link_state) == ERR_NONE) {
+		int32_t phy_result = ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &current_link_state);
+		if (phy_result == ERR_NONE) {
 			/* Detect link status changes */
 			if (current_link_state != previous_link_state) {
 				printf("[LINK_MONITOR] Link state change detected: %s -> %s\r\n",
@@ -89,6 +92,9 @@ static void link_monitor_task(void *p)
 				if (current_link_state) {
 					netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
 					printf("[LINK_MONITOR] Notified lwIP: Link UP\r\n");
+					
+					/* Don't restart auto-negotiation - let it stabilize naturally */
+					printf("[LINK_MONITOR] Link UP - allowing stabilization\r\n");
 				} else {
 					netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
 					printf("[LINK_MONITOR] Notified lwIP: Link DOWN\r\n");
@@ -99,7 +105,16 @@ static void link_monitor_task(void *p)
 				previous_link_state = current_link_state;
 			}
 		} else {
-			printf("[LINK_MONITOR] Failed to read PHY link status\r\n");
+			printf("[LINK_MONITOR] Failed to read PHY link status (error: %d)\r\n", phy_result);
+			
+			/* Try to reinitialize PHY if we can't read it */
+			static int phy_error_count = 0;
+			phy_error_count++;
+			if (phy_error_count >= 10) {  /* After 10 consecutive errors (5 seconds) */
+				printf("[LINK_MONITOR] Attempting PHY re-initialization\r\n");
+				ETHERNET_PHY_0_init();
+				phy_error_count = 0;
+			}
 		}
 		
 		/* Check link status every 500ms */
@@ -118,9 +133,13 @@ void mac_receive_cb(struct mac_async_descriptor *desc)
  */
 void gmac_handler_cb(void)
 {
-	portBASE_TYPE xGMACTaskWoken = pdFALSE;
-	xSemaphoreGiveFromISR(gs_gmac_dev.rx_sem, &xGMACTaskWoken);
-	portEND_SWITCHING_ISR(xGMACTaskWoken);
+	BaseType_t xGMACTaskWoken = pdFALSE;
+	
+	/* Use ISR-safe semaphore give function */
+	xSemaphoreGiveFromISR(gs_gmac_dev.rx_sem.sem, &xGMACTaskWoken);
+	
+	/* Perform context switch if higher priority task was woken */
+	portYIELD_FROM_ISR(xGMACTaskWoken);
 }
 
 /**
@@ -140,8 +159,32 @@ void tcpip_init_done(void *arg)
 	hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
 
 	printf("[INIT] Waiting for Ethernet link...\r\n");
-	while ((ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &link_up)) != ERR_NONE && !(link_up)) {
-		vTaskDelay(20);
+	
+	/* Give PHY more time to initialize and establish link */
+	int link_attempts = 0;
+	const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
+	
+	while (link_attempts < max_link_attempts) {
+		int32_t phy_status = ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &link_up);
+		
+		if (phy_status == ERR_NONE && link_up) {
+			printf("[INIT] PHY link established after %d attempts\r\n", link_attempts);
+			break;
+		}
+		
+		if (phy_status != ERR_NONE) {
+			printf("[INIT] PHY read error: %d (attempt %d)\r\n", phy_status, link_attempts);
+		} else {
+			printf("[INIT] PHY link still down (attempt %d)\r\n", link_attempts);
+		}
+		
+		link_attempts++;
+		vTaskDelay(100);  /* Wait 100ms between attempts */
+	}
+	
+	if (!link_up) {
+		printf("[INIT] WARNING: PHY link not established after %d attempts\r\n", max_link_attempts);
+		printf("[INIT] Continuing with network stack initialization...\r\n");
 	}
 
 	printf("[INIT] Ethernet link detected\r\n");
@@ -150,7 +193,8 @@ void tcpip_init_done(void *arg)
 	/* Interrupt priorities. (lowest value = highest priority) */
 	/* ISRs using FreeRTOS *FromISR APIs must have priorities below or equal to */
 	/* configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY. */
-	NVIC_SetPriority(GMAC_IRQn, 4);
+	/* Setting to 5 (numerically higher than 4, so lower priority) */
+	NVIC_SetPriority(GMAC_IRQn, 5);
 	NVIC_EnableIRQ(GMAC_IRQn);
 	mac_async_enable(&COMMUNICATION_IO);
 
@@ -164,7 +208,9 @@ void tcpip_init_done(void *arg)
 	sys_thread_t id;
 
 	/* Incoming packet notification semaphore. */
-	gs_gmac_dev.rx_sem = xSemaphoreCreateCounting(CONF_GMAC_RXDESCR_NUM, 0);
+	if (sys_sem_new(&gs_gmac_dev.rx_sem, 0) != ERR_OK) {
+		LWIP_ASSERT("Failed to create semaphore", 0);
+	}
 
 	id = sys_thread_new("GMAC", gmac_task, &gs_gmac_dev, netifINTERFACE_TASK_STACK_SIZE, netifINTERFACE_TASK_PRIORITY);
 	LWIP_ASSERT("ethernetif_init: GMAC Task allocation ERROR!\n", (id != 0));
@@ -181,6 +227,15 @@ void tcpip_init_done(void *arg)
 	
 	/* Log initial link status */
 	log_link_status_change(&TCPIP_STACK_INTERFACE_0_desc, link_up);
+	
+	/* Manually update lwIP link status since link monitoring task hasn't started yet */
+	if (link_up) {
+		printf("[INIT] Setting initial link status to UP in lwIP\r\n");
+		netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
+	} else {
+		printf("[INIT] Setting initial link status to DOWN in lwIP\r\n");
+		netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
+	}
 
 #if CONF_TCPIP_STACK_INTERFACE_0_DHCP
 	/* DHCP mode. */
@@ -211,7 +266,7 @@ void gmac_task(void *pvParameters)
 
 	while (1) {
 		/* Wait for the counting RX notification semaphore. */
-		xSemaphoreTake(ps_gmac_dev->rx_sem, portMAX_DELAY);
+		sys_sem_wait(&ps_gmac_dev->rx_sem);
 
 		/* Process the incoming packet. */
 		ethernetif_mac_input(ps_gmac_dev->netif);

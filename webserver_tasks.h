@@ -36,6 +36,8 @@
 #include "hpl_gmac_config.h"
 #include "lwip_macif_config.h"
 #include "arch/sys_arch.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define TASK_LED_STACK_SIZE (512 / sizeof(portSTACK_TYPE))
 #define TASK_LED_TASK_PRIORITY (tskIDLE_PRIORITY + 1)

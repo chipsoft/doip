@@ -62,17 +62,17 @@ err_t TCPIP_STACK_INTERFACE_0_stack_init(struct netif *netif)
 }
 void TCPIP_STACK_INTERFACE_0_init(u8_t hwaddr[6])
 {
-	struct ip_addr ip;
-	struct ip_addr nm;
-	struct ip_addr gw;
+	ip4_addr_t ip;
+	ip4_addr_t nm;
+	ip4_addr_t gw;
 #if CONF_TCPIP_STACK_INTERFACE_0_DHCP
-	ip_addr_set_zero(&ip);
-	ip_addr_set_zero(&nm);
-	ip_addr_set_zero(&gw);
+	ip4_addr_set_zero(&ip);
+	ip4_addr_set_zero(&nm);
+	ip4_addr_set_zero(&gw);
 #else
-	ipaddr_aton(CONF_TCPIP_STACK_INTERFACE_0_IP, &ip);
-	ipaddr_aton(CONF_TCPIP_STACK_INTERFACE_0_NETMASK, &nm);
-	ipaddr_aton(CONF_TCPIP_STACK_INTERFACE_0_GATEWAY, &gw);
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_IP, &ip);
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_NETMASK, &nm);
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_GATEWAY, &gw);
 #endif
 	memcpy(TCPIP_STACK_INTERFACE_0_hwaddr, hwaddr, 6);
 
