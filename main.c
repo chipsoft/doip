@@ -41,6 +41,10 @@
 #include "bsp_led.h"
 #include "bsp_ethernet.h"
 #include "eth_ipstack_main.h"
+#include "webserver_tasks.h"
+#include "doip_client.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 /* RTT printf integration */
 extern void rtt_printf_init(void);
@@ -48,18 +52,8 @@ extern void rtt_printf_init(void);
 /* Peripheral descriptors */
 struct mac_async_descriptor COMMUNICATION_IO;
 
-
-
-static void system_init(void)
-{
-	init_mcu();
-	
-	// Initialize LED using universal driver
-	hw_led_init(&led_yellow);
-	
-	// Initialize Ethernet using universal driver (now handles pins/clocks internally)
-	hw_eth_init(&eth_communication);
-}
+/* Task handles */
+static TaskHandle_t xCreatedEthernetBasicTask;
 
 /* define to avoid compilation warning */
 // #define LWIP_TIMEVAL_PRIVATE 0
@@ -91,20 +85,44 @@ void print_ipaddress(void)
 int main(void)
 {
 	/* Initialize system and peripherals */
-	system_init();
+	init_mcu();
 	
-	/* Initialize ethernet PHY - now handled by universal driver in system_init */
-	/* ethernet_phys_init(); - REMOVED: handled by hw_eth_init() */
-
+	// Initialize LED using universal driver
+	hw_led_init(&led_yellow);
+	
+	// Initialize Ethernet using universal driver (now handles pins/clocks internally)
+	hw_eth_init(&eth_communication);
+		
 	/* Initialize SEGGER RTT for debug output */
 	rtt_printf_init();
 
-	/*Handles Socket API */
-	printf("\r\nSocket API implementation\r\n");
-	basic_socket();
+	/* Initialize DOIP client */
+	doip_client_init();
 
-	while (1)
-		;
+	/* Create application tasks */
+	task_led_create();
+	task_link_monitor_create();
 
+	/* Create task for Ethernet */
+	if (xTaskCreate(socket_basic_ethernet,
+	                "Ethernet_basic",
+	                TASK_ETHERNETBASIC_STACK_SIZE,
+	                NULL,
+	                (TASK_ETHERNETBASIC_STACK_PRIORITY - 1),
+	                &xCreatedEthernetBasicTask)
+	    != pdPASS) {
+		printf("Failed to create Ethernet task\r\n");
+		while (1)
+			;
+	}
+
+	/* Start DOIP client task */
+	doip_client_start_task();
+
+	/* Start FreeRTOS scheduler */
+	printf("\r\nStarting FreeRTOS scheduler\r\n");
+	vTaskStartScheduler();
+
+	/* Should never reach here */
 	return 0;
 }

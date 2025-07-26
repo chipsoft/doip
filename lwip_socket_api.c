@@ -53,34 +53,6 @@ Welcome to your basic webpage using Socket API. \
 </html>";
 const static char http_html_hdr[]  = "HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n";
 
-void basic_socket()
-{
-	/* Create application tasks */
-	task_led_create();
-	task_link_monitor_create();
-
-	/* Initialize DOIP client */
-	doip_client_init();
-
-	/* Create task for Ethernet */
-	if (xTaskCreate(socket_basic_ethernet,
-	                "Ethernet_basic",
-	                TASK_ETHERNETBASIC_STACK_SIZE,
-	                NULL,
-	                (TASK_ETHERNETBASIC_STACK_PRIORITY - 1),
-	                &xCreatedEthernetBasicTask)
-	    != pdPASS) {
-		while (1)
-			;
-	}
-
-	/* Start DOIP client task */
-	doip_client_start_task();
-
-	/* Start FreeRTOS scheduler */
-	vTaskStartScheduler();
-}
-
 void socket_basic_ethernet(void *p)
 {
 

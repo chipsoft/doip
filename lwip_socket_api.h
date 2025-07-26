@@ -34,7 +34,6 @@
 
 #define HTTP_PORT 80
 
-void basic_socket();
 void socket_basic_ethernet(void *p);
 void print_ipaddress(void);
 
