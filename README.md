@@ -175,13 +175,56 @@ The system uses UART for debug output via `stdio_redirect/` functionality.
 4. **Flash:** Program `build/AtmelStart.bin` to your SAME54 device
 5. **Connect:** Access web server at device IP address (check DHCP or use static IP)
 
+## 🚗 DOIP Automotive Diagnostics
+
+This project includes a complete DOIP (Diagnostics over Internet Protocol) implementation supporting ISO 13400 automotive diagnostics.
+
+### DOIP Features
+- **Raw lwIP API Integration** - Event-driven, zero-polling network architecture
+- **FreeRTOS Stream Buffers** - Efficient inter-task communication  
+- **TCP Retransmission Optimization** - Conditional ACK strategy for reliable flow control
+- **Complete DOIP Protocol Support** - Vehicle discovery, routing activation, diagnostic messaging
+- **Python ECU Emulator** - Full-featured test environment in `pc/python/`
+
+### DOIP Client Architecture
+**File:** `doip_client.c`
+- **Hybrid Implementation:** Supports both raw lwIP and socket APIs
+- **Event-Driven Reception:** Uses TCP callbacks with stream buffers
+- **Optimized Flow Control:** ACKs only successfully buffered data
+- **Non-Blocking Operations:** Prevents network processing delays
+
+### TCP Optimization Features
+- **Conditional ACK Strategy** - Only acknowledge data successfully buffered to stream
+- **Enhanced TCP Parameters** - Optimized retransmission timers and window sizes  
+- **Non-Blocking Send Operations** - Immediate `tcp_output()` without waiting for ACK
+- **Larger Stream Buffers** - Configurable buffer sizes to prevent data loss
+
+### DOIP ECU Emulator
+**File:** `pc/python/doip_ecu_emulator.py`
+- **ISO 13400 Compliant** - Proper DOIP header and payload structures
+- **Multi-Protocol Support** - UDP discovery and TCP diagnostics
+- **VIN & Diagnostic Services** - Emulates real ECU responses
+- **Alive Check Implementation** - Bidirectional keep-alive messaging
+
+### Performance Optimizations
+- **Stream Buffer Size:** `DOIP_STREAM_BUFFER_SIZE` configurable for memory vs latency
+- **TCP Window Management:** Enhanced flow control reduces retransmissions
+- **Priority-Based Scheduling:** Network tasks appropriately prioritized
+- **Memory-Efficient Design:** Zero-copy operations where possible
+
 ## 📈 Performance Tuning
 
 **Memory Optimization:**
 - Adjust `MEM_SIZE` in `lwipopts.h` for available RAM
 - Tune `configTOTAL_HEAP_SIZE` in FreeRTOSConfig.h
+- Configure `DOIP_STREAM_BUFFER_SIZE` for optimal buffering
 
 **Network Performance:**
 - Increase `PBUF_POOL_SIZE` in lwipopts.h for more buffers
 - Adjust `TCP_WND` for TCP window size
 - Modify `GMAC_RX_BUFFERS`/`GMAC_TX_BUFFERS` in webserver_tasks.h
+
+**TCP Retransmission Reduction:**
+- **Conditional ACK Strategy:** Data acknowledged only after successful buffering
+- **Optimized TCP Parameters:** `TCP_MAXRTX`, `TCP_SYNMAXRTX`, `TCP_RTO_TIME`
+- **Non-Blocking Operations:** Prevents network stack delays
