@@ -380,7 +380,7 @@ void assert_triggered(const char *file, uint32_t line);
 #endif
 
 #ifndef INCLUDE_xTaskGetCurrentTaskHandle
-#define INCLUDE_xTaskGetCurrentTaskHandle      0
+#define INCLUDE_xTaskGetCurrentTaskHandle      1
 #endif
 
 #ifndef INCLUDE_uxTaskGetStackHighWaterMark

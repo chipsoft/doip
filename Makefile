@@ -124,6 +124,7 @@ $(BUILD_DIR)/webserver_tasks.o \
 $(BUILD_DIR)/hal/src/hal_sleep.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/init.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/timers.o \
+$(BUILD_DIR)/app_libs/FreeRTOS-Kernel/stream_buffer.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/inet_chksum.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/ip.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/dns.o \

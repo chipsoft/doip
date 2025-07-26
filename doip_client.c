@@ -10,8 +10,12 @@
 #include "lwip/sys.h"
 #include "lwip/ip_addr.h"
 #include "lwip/inet.h"
+#include "lwip/tcp.h"
+#include "lwip/pbuf.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "stream_buffer.h"
+#include "semphr.h"
 #include "printf.h"
 #include "eth_ipstack_main.h"
 #include <string.h>
@@ -21,12 +25,288 @@
 #define DOIP_CLIENT_TASK_PRIORITY    (tskIDLE_PRIORITY + 3)
 #define DOIP_CLIENT_TASK_STACK_SIZE  (2048)
 
-/* Global variables */
+/* Raw lwIP configuration */
+#define DOIP_STREAM_BUFFER_SIZE      (4096)
+#define DOIP_STREAM_TRIGGER_LEVEL    (1)
+
+/* Global variables for socket-based implementation */
 static TaskHandle_t doip_client_task_handle = NULL;
 static doip_status_t doip_status = DOIP_STATUS_IDLE;
 static doip_vehicle_info_t current_vehicle;
 static int tcp_socket = -1;
 static bool doip_client_initialized = false;
+
+/* Global variables for raw lwIP implementation */
+static struct tcp_pcb *doip_pcb = NULL;
+static StreamBufferHandle_t doip_stream_buffer = NULL;
+static SemaphoreHandle_t doip_connected_sem = NULL;
+static SemaphoreHandle_t doip_send_sem = NULL;
+static bool use_raw_lwip = false;
+
+/* Raw lwIP callback functions */
+
+static err_t doip_tcp_connected(void *arg, struct tcp_pcb *tpcb, err_t err)
+{
+    printf("DOIP Client: Raw TCP connection callback - err=%d\r\n", err);
+    
+    if (err == ERR_OK) {
+        printf("DOIP Client: Raw TCP connection established successfully\r\n");
+        doip_status = DOIP_STATUS_CONNECTED;
+        
+        /* Signal connection completion */
+        if (doip_connected_sem != NULL) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xSemaphoreGiveFromISR(doip_connected_sem, &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    } else {
+        printf("DOIP Client: Raw TCP connection failed - err=%d\r\n", err);
+        doip_status = DOIP_STATUS_ERROR;
+    }
+    
+    return ERR_OK;
+}
+
+static err_t doip_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
+{
+    if (p == NULL) {
+        /* Connection closed by peer */
+        printf("DOIP Client: Raw TCP connection closed by peer\r\n");
+        doip_status = DOIP_STATUS_IDLE;
+        return ERR_OK;
+    }
+    
+    if (err != ERR_OK) {
+        printf("DOIP Client: Raw TCP receive error - err=%d\r\n", err);
+        pbuf_free(p);
+        return err;
+    }
+    
+    if (p->len > 0 && doip_stream_buffer != NULL) {
+        /* Send data to stream buffer from ISR context */
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        size_t sent = xStreamBufferSendFromISR(
+            doip_stream_buffer,
+            p->payload,
+            p->len,
+            &xHigherPriorityTaskWoken
+        );
+        
+        if (sent == p->len) {
+            /* Tell lwIP we consumed the data */
+            tcp_recved(tpcb, p->len);
+            printf("DOIP Client: Raw TCP received %d bytes, forwarded to stream buffer\r\n", p->len);
+        } else {
+            printf("DOIP Client: Stream buffer full, dropped %d bytes (sent only %d)\r\n", p->len, sent);
+        }
+        
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+    
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+static err_t doip_tcp_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
+{
+    printf("DOIP Client: Raw TCP sent %d bytes acknowledged\r\n", len);
+    
+    /* Signal send completion */
+    if (doip_send_sem != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(doip_send_sem, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+    
+    return ERR_OK;
+}
+
+static void doip_tcp_err(void *arg, err_t err)
+{
+    printf("DOIP Client: Raw TCP error callback - err=%d\r\n", err);
+    
+    /* PCB is already freed by lwIP */
+    doip_pcb = NULL;
+    doip_status = DOIP_STATUS_ERROR;
+    
+    /* Signal error to waiting tasks */
+    if (doip_connected_sem != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(doip_connected_sem, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/* Raw lwIP connection management functions */
+
+static bool doip_raw_init(void)
+{
+    printf("DOIP Client: Initializing raw lwIP resources\r\n");
+    
+    /* Create stream buffer for received data */
+    doip_stream_buffer = xStreamBufferCreate(DOIP_STREAM_BUFFER_SIZE, DOIP_STREAM_TRIGGER_LEVEL);
+    if (doip_stream_buffer == NULL) {
+        printf("DOIP Client: Failed to create stream buffer\r\n");
+        return false;
+    }
+    
+    /* Create semaphores for synchronization */
+    doip_connected_sem = xSemaphoreCreateBinary();
+    if (doip_connected_sem == NULL) {
+        printf("DOIP Client: Failed to create connection semaphore\r\n");
+        vStreamBufferDelete(doip_stream_buffer);
+        doip_stream_buffer = NULL;
+        return false;
+    }
+    
+    doip_send_sem = xSemaphoreCreateBinary();
+    if (doip_send_sem == NULL) {
+        printf("DOIP Client: Failed to create send semaphore\r\n");
+        vSemaphoreDelete(doip_connected_sem);
+        doip_connected_sem = NULL;
+        vStreamBufferDelete(doip_stream_buffer);
+        doip_stream_buffer = NULL;
+        return false;
+    }
+    
+    printf("DOIP Client: Raw lwIP resources initialized successfully\r\n");
+    return true;
+}
+
+static void doip_raw_cleanup(void)
+{
+    printf("DOIP Client: Cleaning up raw lwIP resources\r\n");
+    
+    if (doip_pcb != NULL) {
+        tcp_close(doip_pcb);
+        doip_pcb = NULL;
+    }
+    
+    if (doip_stream_buffer != NULL) {
+        vStreamBufferDelete(doip_stream_buffer);
+        doip_stream_buffer = NULL;
+    }
+    
+    if (doip_connected_sem != NULL) {
+        vSemaphoreDelete(doip_connected_sem);
+        doip_connected_sem = NULL;
+    }
+    
+    if (doip_send_sem != NULL) {
+        vSemaphoreDelete(doip_send_sem);
+        doip_send_sem = NULL;
+    }
+}
+
+static bool doip_raw_connect(uint32_t server_ip, uint16_t server_port)
+{
+    err_t err;
+    ip_addr_t server_addr;
+    
+    printf("DOIP Client: Raw TCP connecting to %lu.%lu.%lu.%lu:%d\r\n", 
+           server_ip & 0xFF, (server_ip >> 8) & 0xFF, 
+           (server_ip >> 16) & 0xFF, (server_ip >> 24) & 0xFF, server_port);
+    
+    /* Convert IP address */
+    IP4_ADDR(&server_addr, 
+             server_ip & 0xFF,
+             (server_ip >> 8) & 0xFF, 
+             (server_ip >> 16) & 0xFF,
+             (server_ip >> 24) & 0xFF);
+    
+    /* Create new TCP PCB */
+    doip_pcb = tcp_new();
+    if (doip_pcb == NULL) {
+        printf("DOIP Client: Failed to create TCP PCB\r\n");
+        return false;
+    }
+    
+    /* Set up callbacks */
+    tcp_recv(doip_pcb, doip_tcp_recv);
+    tcp_sent(doip_pcb, doip_tcp_sent);
+    tcp_err(doip_pcb, doip_tcp_err);
+    
+    /* Connect to server */
+    doip_status = DOIP_STATUS_CONNECTING;
+    err = tcp_connect(doip_pcb, &server_addr, server_port, doip_tcp_connected);
+    if (err != ERR_OK) {
+        printf("DOIP Client: tcp_connect failed - err=%d\r\n", err);
+        tcp_close(doip_pcb);
+        doip_pcb = NULL;
+        doip_status = DOIP_STATUS_ERROR;
+        return false;
+    }
+    
+    /* Wait for connection with timeout */
+    printf("DOIP Client: Waiting for raw TCP connection...\r\n");
+    if (xSemaphoreTake(doip_connected_sem, pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS)) != pdTRUE) {
+        printf("DOIP Client: Raw TCP connection timeout\r\n");
+        tcp_close(doip_pcb);
+        doip_pcb = NULL;
+        doip_status = DOIP_STATUS_ERROR;
+        return false;
+    }
+    
+    if (doip_status != DOIP_STATUS_CONNECTED) {
+        printf("DOIP Client: Raw TCP connection failed\r\n");
+        if (doip_pcb != NULL) {
+            tcp_close(doip_pcb);
+            doip_pcb = NULL;
+        }
+        return false;
+    }
+    
+    printf("DOIP Client: Raw TCP connection established\r\n");
+    return true;
+}
+
+static bool doip_raw_send(const uint8_t *data, size_t len)
+{
+    if (doip_pcb == NULL) {
+        printf("DOIP Client: Raw send - no connection\r\n");
+        return false;
+    }
+    
+    printf("DOIP Client: Raw TCP sending %d bytes\r\n", len);
+    
+    err_t err = tcp_write(doip_pcb, data, len, TCP_WRITE_FLAG_COPY);
+    if (err != ERR_OK) {
+        printf("DOIP Client: tcp_write failed - err=%d\r\n", err);
+        return false;
+    }
+    
+    err = tcp_output(doip_pcb);
+    if (err != ERR_OK) {
+        printf("DOIP Client: tcp_output failed - err=%d\r\n", err);
+        return false;
+    }
+    
+    /* Wait for send acknowledgment with timeout */
+    if (xSemaphoreTake(doip_send_sem, pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS)) != pdTRUE) {
+        printf("DOIP Client: Raw TCP send timeout\r\n");
+        return false;
+    }
+    
+    printf("DOIP Client: Raw TCP send completed successfully\r\n");
+    return true;
+}
+
+static void doip_raw_disconnect(void)
+{
+    printf("DOIP Client: Raw TCP disconnecting\r\n");
+    
+    if (doip_pcb != NULL) {
+        tcp_close(doip_pcb);
+        doip_pcb = NULL;
+    }
+    
+    doip_status = DOIP_STATUS_IDLE;
+    
+    /* Clear stream buffer */
+    if (doip_stream_buffer != NULL) {
+        xStreamBufferReset(doip_stream_buffer);
+    }
+}
 
 /* Function implementations */
 
@@ -41,8 +321,16 @@ bool doip_client_init(void)
     tcp_socket = -1;
     memset(&current_vehicle, 0, sizeof(current_vehicle));
 
+    /* Try to initialize raw lwIP resources */
+    if (doip_raw_init()) {
+        use_raw_lwip = true;
+        printf("DOIP Client: Initialized with raw lwIP API\r\n");
+    } else {
+        use_raw_lwip = false;
+        printf("DOIP Client: Initialized with socket API (raw lwIP init failed)\r\n");
+    }
+
     doip_client_initialized = true;
-    printf("DOIP Client: Initialized\r\n");
     return true;
 }
 
@@ -126,6 +414,7 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
 bool doip_send_tcp_message(int socket, const doip_message_t *msg)
 {
     uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+    size_t total_length = DOIP_HEADER_SIZE + msg->payload_length;
     
     /* Serialize message */
     buffer[0] = msg->protocol_version;
@@ -138,98 +427,171 @@ bool doip_send_tcp_message(int socket, const doip_message_t *msg)
     buffer[7] = msg->payload_length & 0xFF;
     memcpy(&buffer[8], msg->payload, msg->payload_length);
     
-    /* Send message */
-    int result = send(socket, buffer, DOIP_HEADER_SIZE + msg->payload_length, 0);
-    return (result >= 0);
+    if (use_raw_lwip) {
+        /* Raw lwIP implementation */
+        printf("DOIP Client: Raw lwIP - sending message (type=0x%04X, len=%lu)\r\n",
+               msg->payload_type, msg->payload_length);
+        return doip_raw_send(buffer, total_length);
+    } else {
+        /* Socket-based implementation */
+        int result = send(socket, buffer, total_length, 0);
+        printf("DOIP Client: Socket - sent %d bytes (expected %d)\r\n", result, total_length);
+        return (result >= 0);
+    }
 }
 
 bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_ms)
 {
-    uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
-    int bytes_received;
-    int total_received = 0;
-    TickType_t start_time = xTaskGetTickCount();
-    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-    
-    /* First, try to receive at least the DOIP header */
-    while (total_received < DOIP_HEADER_SIZE) {
-        bytes_received = recv(socket, buffer + total_received, 
-                             DOIP_HEADER_SIZE - total_received, MSG_DONTWAIT);
+    if (use_raw_lwip) {
+        /* Raw lwIP implementation using stream buffer */
+        uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+        size_t received;
         
-        if (bytes_received > 0) {
-            total_received += bytes_received;
-        } else if (bytes_received == 0) {
-            /* Connection closed */
-            printf("DOIP Client: Connection closed during header reception\r\n");
-            return false;
-        } else {
-            /* No data available or error */
-            if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
-                /* Timeout occurred */
-                if (total_received == 0) {
-                    /* No data received at all - this is normal timeout */
-                    return false;
-                } else {
-                    /* Partial header received - this is an error */
-                    printf("DOIP Client: Timeout during header reception (%d bytes)\r\n", total_received);
-                    return false;
-                }
+        /* First, receive the DOIP header (8 bytes) */
+        received = xStreamBufferReceive(
+            doip_stream_buffer,
+            buffer,
+            DOIP_HEADER_SIZE,
+            pdMS_TO_TICKS(timeout_ms)
+        );
+        
+        if (received != DOIP_HEADER_SIZE) {
+            if (received == 0) {
+                /* Normal timeout - no data available */
+                return false;
+            } else {
+                printf("DOIP Client: Raw lwIP - partial header received (%d bytes)\r\n", received);
+                return false;
             }
-            /* Brief delay before retry */
-            vTaskDelay(pdMS_TO_TICKS(10));
         }
-    }
-    
-    /* Parse header to determine payload length */
-    msg->protocol_version = buffer[0];
-    msg->inverse_protocol_version = buffer[1];
-    msg->payload_type = (buffer[2] << 8) | buffer[3];
-    msg->payload_length = (buffer[4] << 24) | (buffer[5] << 16) | 
-                         (buffer[6] << 8) | buffer[7];
-    
-    /* Validate header */
-    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
-        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
-        printf("DOIP Client: Invalid protocol version in header\r\n");
-        return false;
-    }
-    
-    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
-        printf("DOIP Client: Payload too large (%lu bytes)\r\n", msg->payload_length);
-        return false;
-    }
-    
-    /* Receive payload if present */
-    if (msg->payload_length > 0) {
-        size_t target_total = DOIP_HEADER_SIZE + msg->payload_length;
         
-        while (total_received < target_total) {
-            bytes_received = recv(socket, buffer + total_received,
-                                 target_total - total_received, MSG_DONTWAIT);
+        /* Parse header to determine payload length */
+        msg->protocol_version = buffer[0];
+        msg->inverse_protocol_version = buffer[1];
+        msg->payload_type = (buffer[2] << 8) | buffer[3];
+        msg->payload_length = (buffer[4] << 24) | (buffer[5] << 16) | 
+                             (buffer[6] << 8) | buffer[7];
+        
+        /* Validate header */
+        if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
+            msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+            printf("DOIP Client: Raw lwIP - invalid protocol version in header\r\n");
+            return false;
+        }
+        
+        if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+            printf("DOIP Client: Raw lwIP - payload too large (%lu bytes)\r\n", msg->payload_length);
+            return false;
+        }
+        
+        /* Receive payload if present */
+        if (msg->payload_length > 0) {
+            received = xStreamBufferReceive(
+                doip_stream_buffer,
+                msg->payload,
+                msg->payload_length,
+                pdMS_TO_TICKS(timeout_ms)
+            );
+            
+            if (received != msg->payload_length) {
+                printf("DOIP Client: Raw lwIP - failed to receive payload (%d/%lu bytes)\r\n", 
+                       received, msg->payload_length);
+                return false;
+            }
+        }
+        
+        printf("DOIP Client: Raw lwIP - received complete message (type=0x%04X, len=%lu)\r\n",
+               msg->payload_type, msg->payload_length);
+        return true;
+        
+    } else {
+        /* Socket-based implementation (existing polling approach) */
+        uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+        int bytes_received;
+        int total_received = 0;
+        TickType_t start_time = xTaskGetTickCount();
+        TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+        
+        /* First, try to receive at least the DOIP header */
+        while (total_received < DOIP_HEADER_SIZE) {
+            bytes_received = recv(socket, buffer + total_received, 
+                                 DOIP_HEADER_SIZE - total_received, MSG_DONTWAIT);
             
             if (bytes_received > 0) {
                 total_received += bytes_received;
             } else if (bytes_received == 0) {
                 /* Connection closed */
-                printf("DOIP Client: Connection closed during payload reception\r\n");
+                printf("DOIP Client: Socket - connection closed during header reception\r\n");
                 return false;
             } else {
                 /* No data available or error */
                 if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
-                    printf("DOIP Client: Timeout during payload reception (%d/%lu bytes)\r\n", 
-                           total_received - DOIP_HEADER_SIZE, msg->payload_length);
-                    return false;
+                    /* Timeout occurred */
+                    if (total_received == 0) {
+                        /* No data received at all - this is normal timeout */
+                        return false;
+                    } else {
+                        /* Partial header received - this is an error */
+                        printf("DOIP Client: Socket - timeout during header reception (%d bytes)\r\n", total_received);
+                        return false;
+                    }
                 }
                 /* Brief delay before retry */
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
         
-        /* Copy payload to message structure */
-        memcpy(msg->payload, &buffer[DOIP_HEADER_SIZE], msg->payload_length);
+        /* Parse header to determine payload length */
+        msg->protocol_version = buffer[0];
+        msg->inverse_protocol_version = buffer[1];
+        msg->payload_type = (buffer[2] << 8) | buffer[3];
+        msg->payload_length = (buffer[4] << 24) | (buffer[5] << 16) | 
+                             (buffer[6] << 8) | buffer[7];
+        
+        /* Validate header */
+        if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
+            msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+            printf("DOIP Client: Socket - invalid protocol version in header\r\n");
+            return false;
+        }
+        
+        if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+            printf("DOIP Client: Socket - payload too large (%lu bytes)\r\n", msg->payload_length);
+            return false;
+        }
+        
+        /* Receive payload if present */
+        if (msg->payload_length > 0) {
+            size_t target_total = DOIP_HEADER_SIZE + msg->payload_length;
+            
+            while (total_received < target_total) {
+                bytes_received = recv(socket, buffer + total_received,
+                                     target_total - total_received, MSG_DONTWAIT);
+                
+                if (bytes_received > 0) {
+                    total_received += bytes_received;
+                } else if (bytes_received == 0) {
+                    /* Connection closed */
+                    printf("DOIP Client: Socket - connection closed during payload reception\r\n");
+                    return false;
+                } else {
+                    /* No data available or error */
+                    if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+                        printf("DOIP Client: Socket - timeout during payload reception (%d/%lu bytes)\r\n", 
+                               total_received - DOIP_HEADER_SIZE, msg->payload_length);
+                        return false;
+                    }
+                    /* Brief delay before retry */
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+            }
+            
+            /* Copy payload to message structure */
+            memcpy(msg->payload, &buffer[DOIP_HEADER_SIZE], msg->payload_length);
+        }
+        
+        return true;
     }
-    
-    return true;
 }
 
 bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
@@ -355,7 +717,6 @@ bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
 
 bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
 {
-    struct sockaddr_in server_addr;
     doip_message_t request_msg, response_msg;
     uint8_t buffer[1024];
     int result;
@@ -363,34 +724,47 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
     printf("DOIP Client: Connecting to vehicle\r\n");
     doip_status = DOIP_STATUS_CONNECTING;
 
-    /* Create TCP socket */
-    tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (tcp_socket < 0) {
-        printf("DOIP Client: Failed to create TCP socket\r\n");
-        doip_status = DOIP_STATUS_ERROR;
-        return false;
+    if (use_raw_lwip) {
+        /* Raw lwIP implementation */
+        if (!doip_raw_connect(vehicle_info->ip_address, vehicle_info->tcp_port)) {
+            printf("DOIP Client: Raw lwIP connection failed\r\n");
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+        printf("DOIP Client: Raw lwIP connection established\r\n");
+    } else {
+        /* Socket-based implementation */
+        struct sockaddr_in server_addr;
+        
+        /* Create TCP socket */
+        tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+        if (tcp_socket < 0) {
+            printf("DOIP Client: Failed to create TCP socket\r\n");
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+
+        /* Socket configuration for lwIP 2.2.2 - minimal setup to avoid compatibility issues */
+        printf("DOIP Client: Socket created, using manual timeout control\r\n");
+
+        /* Connect to vehicle */
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(vehicle_info->tcp_port);
+        server_addr.sin_addr.s_addr = vehicle_info->ip_address;
+
+        result = connect(tcp_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
+        if (result < 0) {
+            printf("DOIP Client: TCP connection failed\r\n");
+            close(tcp_socket);
+            tcp_socket = -1;
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+
+        doip_status = DOIP_STATUS_CONNECTED;
+        printf("DOIP Client: TCP connection established\r\n");
     }
-
-    /* Socket configuration for lwIP 2.2.2 - minimal setup to avoid compatibility issues */
-    printf("DOIP Client: Socket created, using manual timeout control\r\n");
-
-    /* Connect to vehicle */
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(vehicle_info->tcp_port);
-    server_addr.sin_addr.s_addr = vehicle_info->ip_address;
-
-    result = connect(tcp_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (result < 0) {
-        printf("DOIP Client: TCP connection failed\r\n");
-        close(tcp_socket);
-        tcp_socket = -1;
-        doip_status = DOIP_STATUS_ERROR;
-        return false;
-    }
-
-    doip_status = DOIP_STATUS_CONNECTED;
-    printf("DOIP Client: TCP connection established\r\n");
 
     /* Send routing activation request */
     doip_create_header(&request_msg, DOIP_ROUTING_ACTIVATION_REQUEST, 7);
@@ -401,48 +775,74 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
     request_msg.payload[2] = 0x00;  /* Default activation type */
     memset(&request_msg.payload[3], 0x00, 4);  /* Reserved */
 
-    /* Serialize and send message */
-    buffer[0] = request_msg.protocol_version;
-    buffer[1] = request_msg.inverse_protocol_version;
-    buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
-    buffer[3] = request_msg.payload_type & 0xFF;
-    buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
-    buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
-    buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
-    buffer[7] = request_msg.payload_length & 0xFF;
-    memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
+    /* Send routing activation request using hybrid approach */
+    if (use_raw_lwip) {
+        /* Raw lwIP mode */
+        if (!doip_send_tcp_message(-1, &request_msg)) {
+            printf("DOIP Client: Failed to send routing activation request (raw lwIP)\r\n");
+            doip_raw_disconnect();
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+    } else {
+        /* Socket mode - serialize and send message */
+        buffer[0] = request_msg.protocol_version;
+        buffer[1] = request_msg.inverse_protocol_version;
+        buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
+        buffer[3] = request_msg.payload_type & 0xFF;
+        buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
+        buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
+        buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
+        buffer[7] = request_msg.payload_length & 0xFF;
+        memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
 
-    result = send(tcp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to send routing activation request\r\n");
-        close(tcp_socket);
-        tcp_socket = -1;
-        doip_status = DOIP_STATUS_ERROR;
-        return false;
+        result = send(tcp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to send routing activation request (socket)\r\n");
+            close(tcp_socket);
+            tcp_socket = -1;
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
     }
 
-    /* Receive routing activation response */
-    result = recv(tcp_socket, buffer, sizeof(buffer), 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to receive routing activation response\r\n");
-        close(tcp_socket);
-        tcp_socket = -1;
-        doip_status = DOIP_STATUS_ERROR;
-        return false;
-    }
-
-    if (!doip_parse_header(buffer, result, &response_msg)) {
-        printf("DOIP Client: Invalid routing activation response\r\n");
-        close(tcp_socket);
-        tcp_socket = -1;
-        doip_status = DOIP_STATUS_ERROR;
-        return false;
+    /* Receive routing activation response using hybrid approach */
+    if (use_raw_lwip) {
+        /* Raw lwIP mode */
+        if (!doip_receive_tcp_message(-1, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
+            printf("DOIP Client: Failed to receive routing activation response (raw lwIP)\r\n");
+            doip_raw_disconnect();
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+    } else {
+        /* Socket mode */
+        result = recv(tcp_socket, buffer, sizeof(buffer), 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to receive routing activation response (socket)\r\n");
+            close(tcp_socket);
+            tcp_socket = -1;
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
+        
+        if (!doip_parse_header(buffer, result, &response_msg)) {
+            printf("DOIP Client: Invalid routing activation response\r\n");
+            close(tcp_socket);
+            tcp_socket = -1;
+            doip_status = DOIP_STATUS_ERROR;
+            return false;
+        }
     }
 
     if (response_msg.payload_type != DOIP_ROUTING_ACTIVATION_RESPONSE) {
         printf("DOIP Client: Unexpected routing response type: 0x%04X\r\n", response_msg.payload_type);
-        close(tcp_socket);
-        tcp_socket = -1;
+        if (use_raw_lwip) {
+            doip_raw_disconnect();
+        } else {
+            close(tcp_socket);
+            tcp_socket = -1;
+        }
         doip_status = DOIP_STATUS_ERROR;
         return false;
     }
@@ -459,8 +859,12 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
         }
     }
 
-    close(tcp_socket);
-    tcp_socket = -1;
+    if (use_raw_lwip) {
+        doip_raw_disconnect();
+    } else {
+        close(tcp_socket);
+        tcp_socket = -1;
+    }
     doip_status = DOIP_STATUS_ERROR;
     return false;
 }
@@ -472,8 +876,18 @@ int doip_send_diagnostic_request(uint8_t service_id, uint16_t data_id,
     uint8_t buffer[1024];
     int result;
 
-    if (tcp_socket < 0 || doip_status != DOIP_STATUS_ACTIVATED) {
+    if (doip_status != DOIP_STATUS_ACTIVATED) {
         printf("DOIP Client: Not connected or activated\r\n");
+        return -1;
+    }
+    
+    if (!use_raw_lwip && tcp_socket < 0) {
+        printf("DOIP Client: Socket not connected\r\n");
+        return -1;
+    }
+    
+    if (use_raw_lwip && doip_pcb == NULL) {
+        printf("DOIP Client: Raw lwIP not connected\r\n");
         return -1;
     }
 
@@ -489,34 +903,45 @@ int doip_send_diagnostic_request(uint8_t service_id, uint16_t data_id,
     request_msg.payload[5] = (data_id >> 8) & 0xFF;
     request_msg.payload[6] = data_id & 0xFF;
 
-    /* Serialize and send message */
-    buffer[0] = request_msg.protocol_version;
-    buffer[1] = request_msg.inverse_protocol_version;
-    buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
-    buffer[3] = request_msg.payload_type & 0xFF;
-    buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
-    buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
-    buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
-    buffer[7] = request_msg.payload_length & 0xFF;
-    memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
+    /* Send diagnostic request using hybrid approach */
+    if (use_raw_lwip) {
+        /* Raw lwIP mode */
+        if (!doip_send_tcp_message(-1, &request_msg)) {
+            printf("DOIP Client: Failed to send diagnostic request (raw lwIP)\r\n");
+            return -1;
+        }
+        printf("DOIP Client: Sent diagnostic request - Service: 0x%02X, DID: 0x%04X (raw lwIP)\r\n", 
+               service_id, data_id);
+    } else {
+        /* Socket mode - serialize and send message */
+        buffer[0] = request_msg.protocol_version;
+        buffer[1] = request_msg.inverse_protocol_version;
+        buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
+        buffer[3] = request_msg.payload_type & 0xFF;
+        buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
+        buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
+        buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
+        buffer[7] = request_msg.payload_length & 0xFF;
+        memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
 
-    result = send(tcp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to send diagnostic request (error: %d)\r\n", result);
-        return -1;
+        result = send(tcp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to send diagnostic request (socket, error: %d)\r\n", result);
+            return -1;
+        }
+        if (result != (DOIP_HEADER_SIZE + request_msg.payload_length)) {
+            printf("DOIP Client: Partial send - sent %d of %d bytes\r\n", 
+                   result, DOIP_HEADER_SIZE + request_msg.payload_length);
+            return -1;
+        }
+        printf("DOIP Client: Sent diagnostic request - Service: 0x%02X, DID: 0x%04X (%d bytes sent)\r\n", 
+               service_id, data_id, result);
     }
-    if (result != (DOIP_HEADER_SIZE + request_msg.payload_length)) {
-        printf("DOIP Client: Partial send - sent %d of %d bytes\r\n", 
-               result, DOIP_HEADER_SIZE + request_msg.payload_length);
-        return -1;
-    }
 
-    printf("DOIP Client: Sent diagnostic request - Service: 0x%02X, DID: 0x%04X (%d bytes sent)\r\n", 
-           service_id, data_id, result);
-
-    /* Receive response using improved message reception */
+    /* Receive response using hybrid approach */
     doip_message_t response_msg;
-    if (!doip_receive_tcp_message(tcp_socket, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
+    int socket_handle = use_raw_lwip ? -1 : tcp_socket;
+    if (!doip_receive_tcp_message(socket_handle, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
         printf("DOIP Client: Failed to receive diagnostic response (timeout or error)\r\n");
         return -1;
     }
@@ -638,13 +1063,22 @@ bool doip_send_alive_check_request(int socket)
     memcpy(&buffer[8], request_msg.payload, request_msg.payload_length);
     
     /* Send request */
-    int result = send(socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to send alive check request\r\n");
-        return false;
+    if (socket == -1) {
+        /* Raw lwIP mode */
+        if (!doip_raw_send(buffer, DOIP_HEADER_SIZE + request_msg.payload_length)) {
+            printf("DOIP Client: Failed to send alive check request (raw lwIP)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Alive check request sent (raw lwIP)\r\n");
+    } else {
+        /* Socket mode */
+        int result = send(socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to send alive check request (socket)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Alive check request sent (socket)\r\n");
     }
-    
-    printf("DOIP Client: Alive check request sent\r\n");
     return true;
 }
 
@@ -702,13 +1136,22 @@ bool doip_handle_alive_check_request(int socket, const doip_message_t *msg)
     memcpy(&buffer[8], response_msg.payload, response_msg.payload_length);
     
     /* Send response */
-    int result = send(socket, buffer, DOIP_HEADER_SIZE + response_msg.payload_length, 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to send alive check response\r\n");
-        return false;
+    if (socket == -1) {
+        /* Raw lwIP mode */
+        if (!doip_raw_send(buffer, DOIP_HEADER_SIZE + response_msg.payload_length)) {
+            printf("DOIP Client: Failed to send alive check response (raw lwIP)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Alive check response sent (raw lwIP)\r\n");
+    } else {
+        /* Socket mode */
+        int result = send(socket, buffer, DOIP_HEADER_SIZE + response_msg.payload_length, 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to send alive check response (socket)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Alive check response sent (socket)\r\n");
     }
-    
-    printf("DOIP Client: Alive check response sent\r\n");
     return true;
 }
 
@@ -743,13 +1186,22 @@ bool doip_send_diagnostic_ack(int socket, uint8_t ack_type)
     memcpy(&buffer[8], ack_msg.payload, ack_msg.payload_length);
     
     /* Send ACK */
-    int result = send(socket, buffer, DOIP_HEADER_SIZE + ack_msg.payload_length, 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to send diagnostic ACK\r\n");
-        return false;
+    if (socket == -1) {
+        /* Raw lwIP mode */
+        if (!doip_raw_send(buffer, DOIP_HEADER_SIZE + ack_msg.payload_length)) {
+            printf("DOIP Client: Failed to send diagnostic ACK (raw lwIP)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Diagnostic ACK sent (raw lwIP, type 0x%02X)\r\n", ack_type);
+    } else {
+        /* Socket mode */
+        int result = send(socket, buffer, DOIP_HEADER_SIZE + ack_msg.payload_length, 0);
+        if (result < 0) {
+            printf("DOIP Client: Failed to send diagnostic ACK (socket)\r\n");
+            return false;
+        }
+        printf("DOIP Client: Diagnostic ACK sent (socket, type 0x%02X)\r\n", ack_type);
     }
-    
-    printf("DOIP Client: Diagnostic ACK sent (type 0x%02X)\r\n", ack_type);
     return true;
 }
 
@@ -777,12 +1229,19 @@ doip_status_t doip_get_status(void)
 
 void doip_disconnect(void)
 {
-    if (tcp_socket >= 0) {
-        close(tcp_socket);
-        tcp_socket = -1;
+    if (use_raw_lwip) {
+        /* Raw lwIP implementation */
+        doip_raw_disconnect();
+        printf("DOIP Client: Raw lwIP disconnected\r\n");
+    } else {
+        /* Socket-based implementation */
+        if (tcp_socket >= 0) {
+            close(tcp_socket);
+            tcp_socket = -1;
+        }
+        doip_status = DOIP_STATUS_IDLE;
+        printf("DOIP Client: Socket disconnected\r\n");
     }
-    doip_status = DOIP_STATUS_IDLE;
-    printf("DOIP Client: Disconnected\r\n");
 }
 
 void doip_client_task(void *pvParameters)
@@ -794,6 +1253,17 @@ void doip_client_task(void *pvParameters)
     char version_buffer[64];
     
     printf("DOIP Client: Task started\r\n");
+    
+    /* Initialize raw lwIP mode */
+    printf("DOIP Client: Initializing raw lwIP mode...\r\n");
+    if (!doip_raw_init()) {
+        printf("DOIP Client: Failed to initialize raw lwIP mode\r\n");
+        /* Continue with socket-based mode as fallback */
+        use_raw_lwip = false;
+    } else {
+        printf("DOIP Client: Raw lwIP mode initialized successfully\r\n");
+        use_raw_lwip = true;
+    }
     
     /* Wait for network to be ready and do initial network check */
     printf("DOIP Client: Starting network initialization check...\r\n");
@@ -850,6 +1320,7 @@ void doip_client_task(void *pvParameters)
         /* Discover vehicles */
         if (doip_discover_vehicles(&vehicle_info)) {
             /* Connect to discovered vehicle */
+            printf("DOIP Client: Connection mode: %s\r\n", use_raw_lwip ? "Raw lwIP" : "Socket-based");
             if (doip_connect_to_vehicle(&vehicle_info)) {
                 /* Perform diagnostic operations */
                 printf("\r\n--- Reading Vehicle Information ---\r\n");
@@ -877,8 +1348,18 @@ void doip_client_task(void *pvParameters)
                 
                 /* Enhanced: Send alive check request to ECU */
                 printf("\r\n--- Testing Alive Check ---\r\n");
-                if (doip_send_alive_check_request(tcp_socket)) {
-                    printf("Alive check request sent successfully\r\n");
+                if (use_raw_lwip) {
+                    /* For raw lwIP mode, use the PCB connection */
+                    if (doip_pcb != NULL) {
+                        if (doip_send_alive_check_request(-1)) {  /* -1 indicates raw lwIP mode */
+                            printf("Alive check request sent successfully (raw lwIP)\r\n");
+                        }
+                    }
+                } else {
+                    /* For socket mode */
+                    if (doip_send_alive_check_request(tcp_socket)) {
+                        printf("Alive check request sent successfully (socket mode)\r\n");
+                    }
                 }
                 
                 /* Enhanced: Listen for incoming messages (alive checks, ACKs) */
@@ -888,14 +1369,24 @@ void doip_client_task(void *pvParameters)
                 TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_ALIVE_CHECK_TIMEOUT_MS);
                 
                 while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
-                    if (doip_receive_tcp_message(tcp_socket, &incoming_msg, 100)) {
+                    bool message_received = false;
+                    if (use_raw_lwip) {
+                        /* For raw lwIP mode, use the hybrid receive function */
+                        message_received = doip_receive_tcp_message(-1, &incoming_msg, 100);
+                    } else {
+                        /* For socket mode */
+                        message_received = doip_receive_tcp_message(tcp_socket, &incoming_msg, 100);
+                    }
+                    
+                    if (message_received) {
                         printf("DOIP Client: Received message - Type: 0x%04X, Length: %lu bytes\r\n", 
                                incoming_msg.payload_type, incoming_msg.payload_length);
                         
                         switch (incoming_msg.payload_type) {
                             case DOIP_ALIVE_CHECK_REQUEST:
                                 printf("Received alive check request from ECU\r\n");
-                                if (!doip_handle_alive_check_request(tcp_socket, &incoming_msg)) {
+                                int socket_handle = use_raw_lwip ? -1 : tcp_socket;
+                                if (!doip_handle_alive_check_request(socket_handle, &incoming_msg)) {
                                     printf("DOIP Client: Failed to handle alive check request\r\n");
                                 }
                                 break;
