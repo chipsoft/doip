@@ -95,3 +95,7 @@ The codebase follows Microchip's ASF (Advanced Software Framework) conventions a
 ## Build Optimization
 
 - When build project use as many cores as possible
+
+## Security Notes
+
+- Don't mention Cloudecode in comments or commits

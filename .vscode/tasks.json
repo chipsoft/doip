@@ -10,8 +10,7 @@
                 "cwd": "${workspaceFolder}"
             },
             "group": {
-                "kind": "build",
-                "isDefault": true
+                "kind": "build"
             },
             "presentation": {
                 "echo": true,
@@ -44,8 +43,8 @@
         {
             "type": "shell",
             "label": "Rebuild Project",
-            "command": "make",
-            "args": ["rebuild", "-j8"],
+            "command": "make clean && make all -j8",
+            "args": [],
             "options": {
                 "cwd": "${workspaceFolder}"
             },
