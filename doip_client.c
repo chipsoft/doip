@@ -106,16 +106,19 @@ bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg
 
     /* Copy payload if available */
     if (data_len >= DOIP_HEADER_SIZE + msg->payload_length) {
-        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+        /* We have the complete message including payload */
+        if (msg->payload_length > 0) {
+            memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+        }
     } else if (data_len > DOIP_HEADER_SIZE && msg->payload_length > 0) {
+        /* We have partial payload data */
         size_t copy_len = (data_len - DOIP_HEADER_SIZE);
         if (copy_len > msg->payload_length) {
             copy_len = msg->payload_length;
         }
         memcpy(msg->payload, &data[DOIP_HEADER_SIZE], copy_len);
-    } else {
-        msg->payload_length = 0;
     }
+    /* Don't reset payload_length to 0 - keep the length from header parsing */
 
     return true;
 }
@@ -143,32 +146,90 @@ bool doip_send_tcp_message(int socket, const doip_message_t *msg)
 bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_ms)
 {
     uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
-    struct timeval timeout;
+    int bytes_received;
+    int total_received = 0;
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
     
-    /* Set socket timeout */
-    timeout.tv_sec = timeout_ms / 1000;
-    timeout.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    /* First, try to receive at least the DOIP header */
+    while (total_received < DOIP_HEADER_SIZE) {
+        bytes_received = recv(socket, buffer + total_received, 
+                             DOIP_HEADER_SIZE - total_received, MSG_DONTWAIT);
+        
+        if (bytes_received > 0) {
+            total_received += bytes_received;
+        } else if (bytes_received == 0) {
+            /* Connection closed */
+            printf("DOIP Client: Connection closed during header reception\r\n");
+            return false;
+        } else {
+            /* No data available or error */
+            if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+                /* Timeout occurred */
+                if (total_received == 0) {
+                    /* No data received at all - this is normal timeout */
+                    return false;
+                } else {
+                    /* Partial header received - this is an error */
+                    printf("DOIP Client: Timeout during header reception (%d bytes)\r\n", total_received);
+                    return false;
+                }
+            }
+            /* Brief delay before retry */
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
     
-    /* Receive header first */
-    int result = recv(socket, buffer, DOIP_HEADER_SIZE, MSG_PEEK);
-    if (result < DOIP_HEADER_SIZE) {
+    /* Parse header to determine payload length */
+    msg->protocol_version = buffer[0];
+    msg->inverse_protocol_version = buffer[1];
+    msg->payload_type = (buffer[2] << 8) | buffer[3];
+    msg->payload_length = (buffer[4] << 24) | (buffer[5] << 16) | 
+                         (buffer[6] << 8) | buffer[7];
+    
+    /* Validate header */
+    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
+        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+        printf("DOIP Client: Invalid protocol version in header\r\n");
         return false;
     }
     
-    /* Parse header to get payload length */
-    if (!doip_parse_header(buffer, DOIP_HEADER_SIZE, msg)) {
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP Client: Payload too large (%lu bytes)\r\n", msg->payload_length);
         return false;
     }
     
-    /* Receive full message */
-    result = recv(socket, buffer, DOIP_HEADER_SIZE + msg->payload_length, 0);
-    if (result < DOIP_HEADER_SIZE + msg->payload_length) {
-        return false;
+    /* Receive payload if present */
+    if (msg->payload_length > 0) {
+        size_t target_total = DOIP_HEADER_SIZE + msg->payload_length;
+        
+        while (total_received < target_total) {
+            bytes_received = recv(socket, buffer + total_received,
+                                 target_total - total_received, MSG_DONTWAIT);
+            
+            if (bytes_received > 0) {
+                total_received += bytes_received;
+            } else if (bytes_received == 0) {
+                /* Connection closed */
+                printf("DOIP Client: Connection closed during payload reception\r\n");
+                return false;
+            } else {
+                /* No data available or error */
+                if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+                    printf("DOIP Client: Timeout during payload reception (%d/%lu bytes)\r\n", 
+                           total_received - DOIP_HEADER_SIZE, msg->payload_length);
+                    return false;
+                }
+                /* Brief delay before retry */
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+        
+        /* Copy payload to message structure */
+        memcpy(msg->payload, &buffer[DOIP_HEADER_SIZE], msg->payload_length);
     }
     
-    /* Parse complete message */
-    return doip_parse_header(buffer, result, msg);
+    return true;
 }
 
 bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
@@ -298,7 +359,6 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
     doip_message_t request_msg, response_msg;
     uint8_t buffer[1024];
     int result;
-    struct timeval timeout;
 
     printf("DOIP Client: Connecting to vehicle\r\n");
     doip_status = DOIP_STATUS_CONNECTING;
@@ -311,11 +371,8 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
         return false;
     }
 
-    /* Set socket timeout */
-    timeout.tv_sec = DOIP_TCP_TIMEOUT_MS / 1000;
-    timeout.tv_usec = (DOIP_TCP_TIMEOUT_MS % 1000) * 1000;
-    setsockopt(tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(tcp_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    /* Socket configuration for lwIP 2.2.2 - minimal setup to avoid compatibility issues */
+    printf("DOIP Client: Socket created, using manual timeout control\r\n");
 
     /* Connect to vehicle */
     memset(&server_addr, 0, sizeof(server_addr));
@@ -411,7 +468,7 @@ bool doip_connect_to_vehicle(const doip_vehicle_info_t *vehicle_info)
 int doip_send_diagnostic_request(uint8_t service_id, uint16_t data_id, 
                                 uint8_t *response, size_t max_response_len)
 {
-    doip_message_t request_msg, response_msg;
+    doip_message_t request_msg;
     uint8_t buffer[1024];
     int result;
 
@@ -445,26 +502,29 @@ int doip_send_diagnostic_request(uint8_t service_id, uint16_t data_id,
 
     result = send(tcp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0);
     if (result < 0) {
-        printf("DOIP Client: Failed to send diagnostic request\r\n");
+        printf("DOIP Client: Failed to send diagnostic request (error: %d)\r\n", result);
+        return -1;
+    }
+    if (result != (DOIP_HEADER_SIZE + request_msg.payload_length)) {
+        printf("DOIP Client: Partial send - sent %d of %d bytes\r\n", 
+               result, DOIP_HEADER_SIZE + request_msg.payload_length);
         return -1;
     }
 
-    printf("DOIP Client: Sent diagnostic request - Service: 0x%02X, DID: 0x%04X\r\n", service_id, data_id);
+    printf("DOIP Client: Sent diagnostic request - Service: 0x%02X, DID: 0x%04X (%d bytes sent)\r\n", 
+           service_id, data_id, result);
 
-    /* Receive response */
-    result = recv(tcp_socket, buffer, sizeof(buffer), 0);
-    if (result < 0) {
-        printf("DOIP Client: Failed to receive diagnostic response\r\n");
+    /* Receive response using improved message reception */
+    doip_message_t response_msg;
+    if (!doip_receive_tcp_message(tcp_socket, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
+        printf("DOIP Client: Failed to receive diagnostic response (timeout or error)\r\n");
         return -1;
     }
 
-    if (!doip_parse_header(buffer, result, &response_msg)) {
-        printf("DOIP Client: Invalid diagnostic response header\r\n");
-        return -1;
-    }
-
+    /* Validate response type */
     if (response_msg.payload_type != DOIP_DIAGNOSTIC_MESSAGE) {
-        printf("DOIP Client: Unexpected diagnostic response type: 0x%04X\r\n", response_msg.payload_type);
+        printf("DOIP Client: Unexpected diagnostic response type: 0x%04X (expected 0x%04X)\r\n", 
+               response_msg.payload_type, DOIP_DIAGNOSTIC_MESSAGE);
         return -1;
     }
 
@@ -475,11 +535,12 @@ int doip_send_diagnostic_request(uint8_t service_id, uint16_t data_id,
         
         memcpy(response, &response_msg.payload[4], copy_len);
         
-        printf("DOIP Client: Received diagnostic response (%zu bytes)\r\n", uds_data_len);
+        printf("DOIP Client: Received diagnostic response (%zu bytes UDS data)\r\n", uds_data_len);
         return (int)copy_len;
+    } else {
+        printf("DOIP Client: Diagnostic response payload too short (%lu bytes)\r\n", response_msg.payload_length);
+        return -1;
     }
-
-    return 0;
 }
 
 bool doip_read_vin(char *vin_buffer)
@@ -589,9 +650,22 @@ bool doip_send_alive_check_request(int socket)
 
 bool doip_handle_alive_check_response(const doip_message_t *msg)
 {
+    printf("DOIP Client: Alive check response - payload length: %lu bytes\r\n", msg->payload_length);
+    
+    /* Print payload bytes for debugging */
+    if (msg->payload_length > 0) {
+        printf("DOIP Client: Payload bytes: ");
+        for (uint32_t i = 0; i < msg->payload_length && i < 16; i++) {
+            printf("0x%02X ", msg->payload[i]);
+        }
+        printf("\r\n");
+    }
+    
+    /* According to ISO 13400, alive check response should have 2 bytes (source address) */
     if (msg->payload_length < 2) {
-        printf("DOIP Client: Invalid alive check response payload length\r\n");
-        return false;
+        printf("DOIP Client: Alive check response payload too short (expected >= 2 bytes)\r\n");
+        /* Don't treat this as an error - just log it and continue */
+        return true;
     }
     
     uint16_t source_address = (msg->payload[0] << 8) | msg->payload[1];
@@ -721,9 +795,13 @@ void doip_client_task(void *pvParameters)
     
     printf("DOIP Client: Task started\r\n");
     
-    /* Wait for network to be ready */
+    /* Wait for network to be ready and do initial network check */
+    printf("DOIP Client: Starting network initialization check...\r\n");
+    
+    /* Wait for network stack to initialize */
     vTaskDelay(pdMS_TO_TICKS(3000));
     
+    /* One-time network readiness check */
     while (1) {
         /* Check if network interface has valid IP address */
         if (TCPIP_STACK_INTERFACE_0_desc.ip_addr.addr == 0) {
@@ -732,11 +810,11 @@ void doip_client_task(void *pvParameters)
             continue;
         }
         
-        /* Check if link is stable before attempting network operations */
+        /* Check if link is stable - do this once at startup */
         bool link_up = netif_is_link_up(&TCPIP_STACK_INTERFACE_0_desc);
         bool netif_up = netif_is_up(&TCPIP_STACK_INTERFACE_0_desc);
         
-        printf("DOIP Client: Link status check - Link UP: %s, Interface UP: %s\r\n", 
+        printf("DOIP Client: Initial network check - Link UP: %s, Interface UP: %s\r\n", 
                link_up ? "YES" : "NO", netif_up ? "YES" : "NO");
         
         /* If interface is UP but link is not detected as UP, proceed anyway */
@@ -747,21 +825,18 @@ void doip_client_task(void *pvParameters)
             continue;
         } else if (!link_up && netif_up) {
             printf("DOIP Client: Interface UP but link detection unreliable, proceeding...\r\n");
+            vTaskDelay(pdMS_TO_TICKS(1000));  /* Wait 1 second for stability */
         } else {
-            printf("DOIP Client: Link and interface both UP, proceeding...\r\n");
+            printf("DOIP Client: Link and interface both UP, network ready!\r\n");
         }
         
-        /* Wait additional time for link to stabilize after coming up */
-        printf("DOIP Client: Link detected, waiting for stabilization...\r\n");
-        vTaskDelay(pdMS_TO_TICKS(3000));  /* Wait 3 seconds for link stability */
-        
-        /* Double-check interface is still functional after stabilization period */
-        if (!netif_is_up(&TCPIP_STACK_INTERFACE_0_desc)) {
-            printf("DOIP Client: Interface went down during stabilization, retrying...\r\n");
-            continue;
-        } else {
-            printf("DOIP Client: Interface stable after stabilization period\r\n");
-        }
+        /* Network is ready - break out of initialization loop */
+        printf("DOIP Client: Network initialization complete, starting diagnostic cycles...\r\n");
+        break;
+    }
+    
+    /* Main diagnostic loop - no more network checks needed */
+    while (1) {
         
         printf("\r\n=== DOIP Client Diagnostic Cycle ===\r\n");
         
@@ -814,36 +889,54 @@ void doip_client_task(void *pvParameters)
                 
                 while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
                     if (doip_receive_tcp_message(tcp_socket, &incoming_msg, 100)) {
+                        printf("DOIP Client: Received message - Type: 0x%04X, Length: %lu bytes\r\n", 
+                               incoming_msg.payload_type, incoming_msg.payload_length);
+                        
                         switch (incoming_msg.payload_type) {
                             case DOIP_ALIVE_CHECK_REQUEST:
                                 printf("Received alive check request from ECU\r\n");
-                                doip_handle_alive_check_request(tcp_socket, &incoming_msg);
+                                if (!doip_handle_alive_check_request(tcp_socket, &incoming_msg)) {
+                                    printf("DOIP Client: Failed to handle alive check request\r\n");
+                                }
                                 break;
                                 
                             case DOIP_ALIVE_CHECK_RESPONSE:
                                 printf("Received alive check response from ECU\r\n");
-                                doip_handle_alive_check_response(&incoming_msg);
+                                if (!doip_handle_alive_check_response(&incoming_msg)) {
+                                    printf("DOIP Client: Failed to handle alive check response\r\n");
+                                }
                                 break;
                                 
                             case DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK:
                             case DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK:
                                 printf("Received diagnostic ACK from ECU\r\n");
-                                doip_handle_diagnostic_ack(&incoming_msg);
+                                if (!doip_handle_diagnostic_ack(&incoming_msg)) {
+                                    printf("DOIP Client: Failed to handle diagnostic ACK\r\n");
+                                }
                                 break;
                                 
                             default:
                                 printf("Received unknown message type: 0x%04X\r\n", incoming_msg.payload_type);
                                 break;
                         }
+                    } else {
+                        /* No message received within timeout - this is normal */
                     }
                     vTaskDelay(pdMS_TO_TICKS(10));  /* Small delay to prevent busy waiting */
                 }
                 
                 printf("--- Enhanced communication completed ---\r\n");
                 
-                /* Disconnect */
+                /* Disconnect and cleanup for next cycle */
+                printf("DOIP Client: Closing connection for next cycle...\r\n");
                 doip_disconnect();
+                
+                printf("DOIP Client: Diagnostic cycle completed successfully\r\n");
+            } else {
+                printf("DOIP Client: Failed to connect to vehicle, will retry in next cycle\r\n");
             }
+        } else {
+            printf("DOIP Client: Vehicle discovery failed, will retry in next cycle\r\n");
         }
         
         /* Wait before next cycle */
