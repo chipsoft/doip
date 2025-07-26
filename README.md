@@ -22,6 +22,7 @@ Implements **ISO 13400 DOIP client** on SAME54 Xplained Pro board that communica
 
 | Component | Version | Purpose |
 |-----------|---------|---------|
+| **ASF4** | Latest | Microchip Advanced Software Framework for SAME54 |
 | **FreeRTOS** | v11.1.0 | Real-time operating system with stream buffers |
 | **lwIP** | v2.2.1 | TCP/IP stack with raw API integration |
 | **Python ECU Emulator** | Custom | ISO 13400 compliant DOIP server |
@@ -176,3 +177,11 @@ make rebuild   # Clean + build
 ✅ **Professional development setup** with VS Code integration and J-Link debugging  
 
 **Perfect for**: Automotive diagnostics development, embedded networking optimization, lwIP performance tuning, FreeRTOS stream buffer usage examples.
+
+---
+
+## 📄 **License**
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+
+**Open Source**: Free to use, modify, and distribute for commercial and non-commercial projects.
