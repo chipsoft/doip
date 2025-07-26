@@ -1,7 +1,6 @@
 #include "bsp_led.h"
 #include "hal_gpio.h"
 #include "utils_assert.h"
-#include "atmel_start_pins.h"
 
 typedef struct
 {
@@ -10,7 +9,7 @@ typedef struct
 } drv_led_hw_context_t;
 
 static drv_led_hw_context_t drv_led_hw_context_yellow = {
-    .pin_led = LED_0, // Yellow LED on PC18
+    .pin_led = GPIO(GPIO_PORTC, 18),  // Yellow LED on PC18
     .state = false,
 };
 

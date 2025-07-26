@@ -1,11 +1,60 @@
 #include "bsp_ethernet.h"
 #include "utils_assert.h"
 #include "hal_mac_async.h"
+#include "hal_gpio.h"
 #include "ethernet_phy.h"
 #include "printf.h"
 #include "ieee8023_mii_standard_config.h"
 #include "same54p20a.h"
 #include <string.h>
+#include <hri_mclk_e54.h>
+#include <hri_gclk_e54.h>
+
+/* Local pin definitions (copied from atmel_start_pins.h to avoid dependency) */
+#define PA12 GPIO(GPIO_PORTA, 12)
+#define PA13 GPIO(GPIO_PORTA, 13)
+#define PA14 GPIO(GPIO_PORTA, 14)
+#define PA15 GPIO(GPIO_PORTA, 15)
+#define PA17 GPIO(GPIO_PORTA, 17)
+#define PA18 GPIO(GPIO_PORTA, 18)
+#define PA19 GPIO(GPIO_PORTA, 19)
+#define PC11 GPIO(GPIO_PORTC, 11)
+#define PC12 GPIO(GPIO_PORTC, 12)
+#define PC20 GPIO(GPIO_PORTC, 20)
+
+/* Local PIN and MUX definitions for GMAC (extracted from same54p20a.h) */
+#define PIN_PC11L_GMAC_GMDC            _L_(75)
+#define MUX_PC11L_GMAC_GMDC            _L_(11)
+#define PIN_PC12L_GMAC_GMDIO           _L_(76)
+#define MUX_PC12L_GMAC_GMDIO           _L_(11)
+#define PIN_PA13L_GMAC_GRX0            _L_(13)
+#define MUX_PA13L_GMAC_GRX0            _L_(11)
+#define PIN_PA12L_GMAC_GRX1            _L_(12)
+#define MUX_PA12L_GMAC_GRX1            _L_(11)
+#define PIN_PC20L_GMAC_GRXDV           _L_(84)
+#define MUX_PC20L_GMAC_GRXDV           _L_(11)
+#define PIN_PA15L_GMAC_GRXER           _L_(15)
+#define MUX_PA15L_GMAC_GRXER           _L_(11)
+#define PIN_PA18L_GMAC_GTX0            _L_(18)
+#define MUX_PA18L_GMAC_GTX0            _L_(11)
+#define PIN_PA19L_GMAC_GTX1            _L_(19)
+#define MUX_PA19L_GMAC_GTX1            _L_(11)
+#define PIN_PA14L_GMAC_GTXCK           _L_(14)
+#define MUX_PA14L_GMAC_GTXCK           _L_(11)
+#define PIN_PA17L_GMAC_GTXEN           _L_(17)
+#define MUX_PA17L_GMAC_GTXEN           _L_(11)
+
+/* Local PINMUX definitions */
+#define PINMUX_PC11L_GMAC_GMDC     ((PIN_PC11L_GMAC_GMDC << 16) | MUX_PC11L_GMAC_GMDC)
+#define PINMUX_PC12L_GMAC_GMDIO    ((PIN_PC12L_GMAC_GMDIO << 16) | MUX_PC12L_GMAC_GMDIO)
+#define PINMUX_PA13L_GMAC_GRX0     ((PIN_PA13L_GMAC_GRX0 << 16) | MUX_PA13L_GMAC_GRX0)
+#define PINMUX_PA12L_GMAC_GRX1     ((PIN_PA12L_GMAC_GRX1 << 16) | MUX_PA12L_GMAC_GRX1)
+#define PINMUX_PC20L_GMAC_GRXDV    ((PIN_PC20L_GMAC_GRXDV << 16) | MUX_PC20L_GMAC_GRXDV)
+#define PINMUX_PA15L_GMAC_GRXER    ((PIN_PA15L_GMAC_GRXER << 16) | MUX_PA15L_GMAC_GRXER)
+#define PINMUX_PA18L_GMAC_GTX0     ((PIN_PA18L_GMAC_GTX0 << 16) | MUX_PA18L_GMAC_GTX0)
+#define PINMUX_PA19L_GMAC_GTX1     ((PIN_PA19L_GMAC_GTX1 << 16) | MUX_PA19L_GMAC_GTX1)
+#define PINMUX_PA14L_GMAC_GTXCK    ((PIN_PA14L_GMAC_GTXCK << 16) | MUX_PA14L_GMAC_GTXCK)
+#define PINMUX_PA17L_GMAC_GTXEN    ((PIN_PA17L_GMAC_GTXEN << 16) | MUX_PA17L_GMAC_GTXEN)
 
 /* External peripheral descriptors */
 extern struct mac_async_descriptor COMMUNICATION_IO;
@@ -46,6 +95,8 @@ static drv_eth_hw_context_t drv_eth_hw_context_communication = {
 };
 
 // Forward declarations of static functions
+static void gmac_clock_init(void);
+static void gmac_pin_init(void);
 static drv_eth_status_t drv_eth_init(const void *hw_context);
 static drv_eth_status_t drv_eth_deinit(const void *hw_context);
 static drv_eth_status_t drv_eth_enable(const void *hw_context);
@@ -82,6 +133,14 @@ static drv_eth_status_t drv_eth_init(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    
+    printf("[ETH] Initializing GMAC clocks and pins\r\n");
+    
+    // Initialize GMAC clocks first
+    gmac_clock_init();
+    
+    // Configure GMAC pins
+    gmac_pin_init();
     
     // Initialize MAC
     int32_t result = mac_async_init(context->mac_desc, GMAC);
@@ -245,4 +304,28 @@ static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *dat
     
     int32_t result = mac_async_write(context->mac_desc, (uint8_t *)data, length);
     return convert_error_code(result);
+}
+
+/* GMAC hardware initialization functions */
+
+static void gmac_clock_init(void)
+{
+    hri_mclk_set_AHBMASK_GMAC_bit(MCLK);
+    hri_mclk_set_APBCMASK_GMAC_bit(MCLK);
+    printf("[ETH] GMAC clocks enabled\r\n");
+}
+
+static void gmac_pin_init(void)
+{
+    gpio_set_pin_function(PC11, PINMUX_PC11L_GMAC_GMDC);
+    gpio_set_pin_function(PC12, PINMUX_PC12L_GMAC_GMDIO);
+    gpio_set_pin_function(PA13, PINMUX_PA13L_GMAC_GRX0);
+    gpio_set_pin_function(PA12, PINMUX_PA12L_GMAC_GRX1);
+    gpio_set_pin_function(PC20, PINMUX_PC20L_GMAC_GRXDV);
+    gpio_set_pin_function(PA15, PINMUX_PA15L_GMAC_GRXER);
+    gpio_set_pin_function(PA18, PINMUX_PA18L_GMAC_GTX0);
+    gpio_set_pin_function(PA19, PINMUX_PA19L_GMAC_GTX1);
+    gpio_set_pin_function(PA14, PINMUX_PA14L_GMAC_GTXCK);
+    gpio_set_pin_function(PA17, PINMUX_PA17L_GMAC_GTXEN);
+    printf("[ETH] GMAC pins configured\r\n");
 }
