@@ -114,8 +114,8 @@ class DOIPECUEmulator:
         print(f"Routing activation request from {addr}, Source Address: 0x{source_address:04x}, Type: 0x{activation_type:02x}")
         
         # Routing activation response payload:
-        # Logical Address (2 bytes) + Source Address (2 bytes) + Response Code (1 byte)
-        payload = struct.pack('>HHB', self.logical_address, source_address, 0x10)  # Success
+        # Tester Logical Address (2 bytes) + Entity Logical Address (2 bytes) + Response Code (1 byte)
+        payload = struct.pack('>HHB', source_address, self.logical_address, 0x10)  # Success
         
         header = self.create_doip_header(DOIP_ROUTING_ACTIVATION_RESPONSE, len(payload))
         response = header + payload

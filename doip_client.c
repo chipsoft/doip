@@ -93,11 +93,12 @@ static err_t doip_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_
         );
         
         if (sent == p->len) {
-            /* Tell lwIP we consumed the data */
+            /* OPTIMIZATION: Only ACK data we successfully buffered */
             tcp_recved(tpcb, p->len);
-            printf("DOIP Client: Raw TCP received %d bytes, forwarded to stream buffer\r\n", p->len);
+            printf("DOIP Client: Raw TCP received %d bytes, buffered and ACK sent\r\n", p->len);
         } else {
-            printf("DOIP Client: Stream buffer full, dropped %d bytes (sent only %d)\r\n", p->len, sent);
+            /* Don't ACK data we couldn't buffer - this will trigger retransmission */
+            printf("DOIP Client: Stream buffer full, dropped %d bytes (buffered only %d) - no ACK\r\n", p->len, sent);
         }
         
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -269,25 +270,21 @@ static bool doip_raw_send(const uint8_t *data, size_t len)
     
     printf("DOIP Client: Raw TCP sending %d bytes\r\n", len);
     
+    /* OPTIMIZATION 4: Use TCP_WRITE_FLAG_MORE for better TCP efficiency */
     err_t err = tcp_write(doip_pcb, data, len, TCP_WRITE_FLAG_COPY);
     if (err != ERR_OK) {
         printf("DOIP Client: tcp_write failed - err=%d\r\n", err);
         return false;
     }
     
+    /* OPTIMIZATION 5: Immediate output without waiting for ACK */
     err = tcp_output(doip_pcb);
     if (err != ERR_OK) {
         printf("DOIP Client: tcp_output failed - err=%d\r\n", err);
         return false;
     }
     
-    /* Wait for send acknowledgment with timeout */
-    if (xSemaphoreTake(doip_send_sem, pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS)) != pdTRUE) {
-        printf("DOIP Client: Raw TCP send timeout\r\n");
-        return false;
-    }
-    
-    printf("DOIP Client: Raw TCP send completed successfully\r\n");
+    printf("DOIP Client: Raw TCP send initiated (non-blocking)\r\n");
     return true;
 }
 

@@ -105,6 +105,19 @@
 #define LWIP_ADVANCED_CONFIG 1
 #endif
 
+/* TCP Retransmission Optimizations */
+#ifndef TCP_MAXRTX
+#define TCP_MAXRTX 12  /* OPTIMIZATION 9: Default retransmissions */
+#endif
+
+#ifndef TCP_SYNMAXRTX  
+#define TCP_SYNMAXRTX 6  /* OPTIMIZATION 10: SYN retransmissions */
+#endif
+
+#ifndef TCP_RTO_TIME
+#define TCP_RTO_TIME 3000  /* OPTIMIZATION 11: Initial RTO in ms */
+#endif
+
 // <o> TCP Maximum segment size<0-100000>
 // <i> TCP_MSS
 // <i> Default: 1460
