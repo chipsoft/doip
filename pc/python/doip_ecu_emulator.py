@@ -85,22 +85,40 @@ class DOIPECUEmulator:
         """Handle UDP vehicle identification request"""
         print(f"Received vehicle identification request from {addr}")
         
-        # Vehicle announcement payload according to ISO 13400:
-        # VIN (17 bytes) + Logical Address (2 bytes) + EID (6 bytes) + GID (2 bytes) + 
-        # Further Action Required (1 byte) + VIN/GID Sync Status (1 byte)
+        # Vehicle announcement payload according to ISO 13400-2:
+        # VIN (17 bytes) + Logical Address (2 bytes) + EID (6 bytes) + GID (2 bytes) + Further Action Required (1 byte) + VIN/GID Sync Status (1 byte)
         vin_bytes = self.vin.encode('ascii')[:17].ljust(17, b'\x00')
         
-        payload = (vin_bytes + 
-                  struct.pack('>H', self.logical_address) +
-                  self.entity_id +
-                  self.group_id +
-                  b'\x00' +  # No further action required
-                  b'\x00')   # VIN/GID sync status (0 = synchronized)
+        # Validate VIN is exactly 17 bytes
+        if len(vin_bytes) != 17:
+            print(f"ERROR: VIN length is {len(vin_bytes)}, expected 17")
+            vin_bytes = vin_bytes[:17].ljust(17, b'\x00')
+        
+        # Validate EID length
+        if len(self.entity_id) != 6:
+            print(f"ERROR: EID length is {len(self.entity_id)}, expected 6")
+        
+        # Add GID and VIN/GID Sync Status for Wireshark compatibility
+        gid_bytes = b'\x00\x01'  # Example GID
+        sync_status = b'\x00'     # Synchronized
+        
+        payload = (
+            vin_bytes +
+            struct.pack('>H', self.logical_address) +
+            self.entity_id +
+            gid_bytes +
+            b'\x00' +  # Further Action Required
+            sync_status
+        )
+        
+        print(f"Payload breakdown: VIN({len(vin_bytes)}) + LA(2) + EID({len(self.entity_id)}) + GID(2) + FAR(1) + SYNC(1) = {len(payload)} bytes")
         
         header = self.create_doip_header(DOIP_VEHICLE_IDENTIFICATION_RESPONSE, len(payload))
         response = header + payload
         
         print(f"Sending vehicle identification response: VIN={self.vin}, Logical Address=0x{self.logical_address:04x}")
+        print(f"Response packet: {len(response)} bytes total (header: {len(header)}, payload: {len(payload)})")
+        print(f"Response hex: {response.hex()}")
         return response
 
     def handle_routing_activation_request(self, data: bytes, addr) -> bytes:

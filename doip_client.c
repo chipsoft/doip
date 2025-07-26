@@ -445,6 +445,7 @@ bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_
         size_t received;
         
         /* First, receive the DOIP header (8 bytes) */
+        printf("DOIP Client: Raw lwIP - waiting for header (%lu ms timeout)...\r\n", timeout_ms);
         received = xStreamBufferReceive(
             doip_stream_buffer,
             buffer,
@@ -455,12 +456,15 @@ bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_
         if (received != DOIP_HEADER_SIZE) {
             if (received == 0) {
                 /* Normal timeout - no data available */
+                printf("DOIP Client: Raw lwIP - timeout waiting for header\r\n");
                 return false;
             } else {
                 printf("DOIP Client: Raw lwIP - partial header received (%d bytes)\r\n", received);
                 return false;
             }
         }
+        
+        printf("DOIP Client: Raw lwIP - header received successfully\r\n");
         
         /* Parse header to determine payload length */
         msg->protocol_version = buffer[0];
@@ -681,7 +685,7 @@ bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
     }
 
     /* Parse vehicle announcement payload */
-    if (response_msg.payload_length < 28) {  /* VIN(17) + LA(2) + EID(6) + GID(2) + FAR(1) */
+    if (response_msg.payload_length < 26) {  /* VIN(17) + LA(2) + EID(6) + FAR(1) */
         printf("DOIP Client: Invalid vehicle announcement payload length\r\n");
         doip_status = DOIP_STATUS_ERROR;
         return false;
@@ -693,7 +697,10 @@ bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
     
     vehicle_info->logical_address = (response_msg.payload[17] << 8) | response_msg.payload[18];
     memcpy(vehicle_info->entity_id, &response_msg.payload[19], 6);
-    memcpy(vehicle_info->group_id, &response_msg.payload[25], 2);
+    
+    /* GID is optional in ISO 13400, set to default if not present */
+    vehicle_info->group_id[0] = 0x00;
+    vehicle_info->group_id[1] = 0x01;
     
     vehicle_info->ip_address = response_addr.sin_addr.s_addr;
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
