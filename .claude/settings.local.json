@@ -24,7 +24,9 @@
       "Bash(sudo pfctl:*)",
       "Bash(grep:*)",
       "Bash(sed:*)",
-      "Bash(perl:*)"
+      "Bash(perl:*)",
+      "Bash(git push:*)",
+      "Bash(wait)"
     ],
     "deny": []
   }
