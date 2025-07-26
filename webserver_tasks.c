@@ -31,17 +31,22 @@
  *
  */
 
-#include "atmel_start.h"
 #include "webserver_tasks.h"
 #include "semphr.h"
 #include "lwip/tcpip.h"
 #include "printf.h"
 #include "network_events.h"
-#include "ethernet_phy_main.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "bsp_led.h"
 #include "bsp_ethernet.h"
+#include "eth_ipstack_main.h"
+#include <hal_mac_async.h>
+#include "app_libs/asf4/hri/hri_gmac_e54.h"
+#include "ethif_mac.h"
+
+/* External peripheral descriptors */
+extern struct mac_async_descriptor COMMUNICATION_IO;
 
 uint16_t led_blink_rate = BLINK_NORMAL;
 
@@ -161,6 +166,12 @@ void tcpip_init_done(void *arg)
 	hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
 
 	printf("[INIT] Waiting for Ethernet link...\r\n");
+	
+	/* Initialize PHY before reading its status */
+	drv_eth_status_t phy_init_status = hw_eth_phy_init(&eth_communication);
+	if (phy_init_status != DRV_ETH_STATUS_OK) {
+		printf("[INIT] PHY initialization failed: %d\r\n", phy_init_status);
+	}
 	
 	/* Give PHY more time to initialize and establish link */
 	int link_attempts = 0;

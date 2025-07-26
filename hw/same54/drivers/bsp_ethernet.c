@@ -2,11 +2,16 @@
 #include "utils_assert.h"
 #include "hal_mac_async.h"
 #include "ethernet_phy.h"
-#include "driver_init.h"
-#include "ethernet_phy_main.h"
 #include "printf.h"
 #include "ieee8023_mii_standard_config.h"
+#include "same54p20a.h"
 #include <string.h>
+
+/* External peripheral descriptors */
+extern struct mac_async_descriptor COMMUNICATION_IO;
+
+/* PHY descriptor - previously in ethernet_phy_main.c */
+struct ethernet_phy_descriptor ETHERNET_PHY_0_desc;
 
 // Convert ASF4 error codes to driver status
 static drv_eth_status_t convert_error_code(int32_t asf4_error)

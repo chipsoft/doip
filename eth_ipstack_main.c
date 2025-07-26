@@ -5,10 +5,11 @@
  * Please copy examples or other code you want to keep to a separate file or main.c
  * to avoid loosing it when reconfiguring.
  */
-#include <atmel_start.h>
 #include <eth_ipstack_main.h>
-
 #include <hal_mac_async.h>
+
+/* External peripheral descriptors */
+extern struct mac_async_descriptor COMMUNICATION_IO;
 #include <lwip_macif_config.h>
 #include <ethif_mac.h>
 #include <netif/etharp.h>

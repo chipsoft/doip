@@ -73,7 +73,6 @@ $(BUILD_DIR)/app_libs/lwip/src/core/ipv4/icmp.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/def.o \
 $(BUILD_DIR)/app_libs/asf4/hpl/pm/hpl_pm.o \
 $(BUILD_DIR)/app_libs/lwip/src/api/netbuf.o \
-$(BUILD_DIR)/ethernet_phy_main.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/sys.o \
 $(BUILD_DIR)/app_libs/asf4/hal/src/hal_usart_sync.o \
 $(BUILD_DIR)/app_libs/asf4/hpl/gclk/hpl_gclk.o \
@@ -95,14 +94,12 @@ $(BUILD_DIR)/app_libs/asf4/hal/utils/src/utils_list.o \
 $(BUILD_DIR)/app_libs/asf4/hpl/dmac/hpl_dmac.o \
 $(BUILD_DIR)/app_libs/asf4/hpl/osc32kctrl/hpl_osc32kctrl.o \
 $(BUILD_DIR)/app_libs/lwip/src/api/netdb.o \
-$(BUILD_DIR)/driver_init.o \
 $(BUILD_DIR)/main.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/memp.o \
 $(BUILD_DIR)/app_libs/asf4/hal/utils/src/utils_event.o \
 $(BUILD_DIR)/app_libs/asf4/hal/src/hal_mac_async.o \
 $(BUILD_DIR)/app_libs/FreeRTOS-Kernel/croutine.o \
 $(BUILD_DIR)/app_libs/asf4/hpl/cmcc/hpl_cmcc.o \
-$(BUILD_DIR)/atmel_start.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/ipv4/etharp.o \
 $(BUILD_DIR)/app_libs/asf4/hal/src/hal_atomic.o \
 $(BUILD_DIR)/app_libs/lwip/src/core/ipv4/dhcp.o \
