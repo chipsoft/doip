@@ -685,7 +685,7 @@ bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
     }
 
     /* Parse vehicle announcement payload */
-    if (response_msg.payload_length < 26) {  /* VIN(17) + LA(2) + EID(6) + FAR(1) */
+    if (response_msg.payload_length < 26) {  /* VIN(17) + LA(2) + EID(6) + FAR(1) - minimum */
         printf("DOIP Client: Invalid vehicle announcement payload length\r\n");
         doip_status = DOIP_STATUS_ERROR;
         return false;
@@ -698,9 +698,21 @@ bool doip_discover_vehicles(doip_vehicle_info_t *vehicle_info)
     vehicle_info->logical_address = (response_msg.payload[17] << 8) | response_msg.payload[18];
     memcpy(vehicle_info->entity_id, &response_msg.payload[19], 6);
     
-    /* GID is optional in ISO 13400, set to default if not present */
-    vehicle_info->group_id[0] = 0x00;
-    vehicle_info->group_id[1] = 0x01;
+    /* Handle GID fields - can be 2 bytes (old) or 6 bytes (new standard) */
+    if (response_msg.payload_length >= 33) {
+        /* 6-byte GID format: VIN(17) + LA(2) + EID(6) + GID(6) + FAR(1) + SYNC(1) = 33 bytes */
+        memcpy(vehicle_info->group_id, &response_msg.payload[25], 6);
+    } else if (response_msg.payload_length >= 28) {
+        /* 2-byte GID format: VIN(17) + LA(2) + EID(6) + GID(2) + FAR(1) + SYNC(1) = 29 bytes */
+        memcpy(vehicle_info->group_id, &response_msg.payload[25], 2);
+        vehicle_info->group_id[2] = 0x00;
+        vehicle_info->group_id[3] = 0x00;
+        vehicle_info->group_id[4] = 0x00;
+        vehicle_info->group_id[5] = 0x00;
+    } else {
+        /* No GID fields - set to zeros */
+        memset(vehicle_info->group_id, 0x00, 6);
+    }
     
     vehicle_info->ip_address = response_addr.sin_addr.s_addr;
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;

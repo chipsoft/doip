@@ -30,19 +30,23 @@ def test_vehicle_identification_response():
     logical_address = 0x0001
     entity_id = b'\x00\x01\x02\x03\x04\x05'
     
-    # Create payload according to ISO 13400-2 standard
+    # Create payload according to ISO 13400-2 standard with optional fields
     vin_bytes = vin.encode('ascii')[:17].ljust(17, b'\x00')
+    group_id = b'\x00\x01\x00\x00\x00\x00'  # 6-byte GID
     payload = (vin_bytes + 
               struct.pack('>H', logical_address) +
               entity_id +
-              b'\x00')   # No further action required
+              group_id +
+              b'\x00' +  # Further Action Required
+              b'\x00')   # VIN/GID Sync Status
     
     print("=== DoIP Vehicle Identification Response Test ===")
     print(f"VIN: {vin}")
     print(f"Logical Address: 0x{logical_address:04x}")
     print(f"Entity ID: {entity_id.hex()}")
+    print(f"Group ID: {group_id.hex()}")
     print(f"Payload length: {len(payload)} bytes")
-    print(f"Expected length: 26 bytes (17 + 2 + 6 + 1)")
+    print(f"Expected length: 33 bytes (17 + 2 + 6 + 6 + 1 + 1)")
     print(f"Payload hex: {payload.hex()}")
     
     # Create full DoIP message
@@ -54,13 +58,13 @@ def test_vehicle_identification_response():
     print(f"Message hex: {message.hex()}")
     
     # Verify structure
-    if len(payload) == 26:
-        print("✅ Payload length is correct (26 bytes)")
+    if len(payload) == 33:
+        print("✅ Payload length is correct (33 bytes)")
     else:
         print(f"❌ Payload length is incorrect: {len(payload)} bytes")
     
-    if len(message) == 34:  # 8 (header) + 26 (payload)
-        print("✅ Total message length is correct (34 bytes)")
+    if len(message) == 41:  # 8 (header) + 33 (payload)
+        print("✅ Total message length is correct (41 bytes)")
     else:
         print(f"❌ Total message length is incorrect: {len(message)} bytes")
     
@@ -100,8 +104,8 @@ def test_udp_discovery():
             
             if payload_type == DOIP_VEHICLE_IDENTIFICATION_RESPONSE:
                 print("✅ Correct response type received")
-                if payload_length == 26:
-                    print("✅ Correct payload length (26 bytes)")
+                if payload_length == 33:
+                    print("✅ Correct payload length (33 bytes)")
                 else:
                     print(f"❌ Incorrect payload length: {payload_length} bytes")
             else:

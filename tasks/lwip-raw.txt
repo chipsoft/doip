@@ -1,0 +1,26 @@
+Solution 3: FreeRTOS Streams + Raw lwIP API
+
+    // Use lwIP's raw API instead of sockets
+    static err_t tcp_recv_raw(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+        if (p != NULL) {
+            // Copy data to FreeRTOS stream buffer
+            xStreamBufferSend(doip_stream_buffer, p->payload, p->len, 0);
+            tcp_recved(tpcb, p->len); // Tell lwIP we consumed the data
+            pbuf_free(p);
+        }
+        return ERR_OK;
+    }
+
+    bool doip_receive_tcp_message(int socket, doip_message_t *msg, uint32_t timeout_ms) {
+        // Block waiting for data in stream buffer
+        size_t received = xStreamBufferReceive(
+            doip_stream_buffer,
+            buffer,
+            expected_size,
+            pdMS_TO_TICKS(timeout_ms)
+        );
+
+        return (received > 0);
+    }
+
+    Pros: ✅ True event-driven, perfect FreeRTOS integrationCons: ❌ Major architectural change, abandons socket API

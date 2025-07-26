@@ -86,7 +86,7 @@ class DOIPECUEmulator:
         print(f"Received vehicle identification request from {addr}")
         
         # Vehicle announcement payload according to ISO 13400-2:
-        # VIN (17 bytes) + Logical Address (2 bytes) + EID (6 bytes) + GID (2 bytes) + Further Action Required (1 byte) + VIN/GID Sync Status (1 byte)
+        # VIN (17 bytes) + Logical Address (2 bytes) + EID (6 bytes) + GID (6 bytes) + Further Action Required (1 byte) + VIN/GID Sync Status (1 byte)
         vin_bytes = self.vin.encode('ascii')[:17].ljust(17, b'\x00')
         
         # Validate VIN is exactly 17 bytes
@@ -98,8 +98,8 @@ class DOIPECUEmulator:
         if len(self.entity_id) != 6:
             print(f"ERROR: EID length is {len(self.entity_id)}, expected 6")
         
-        # Add GID and VIN/GID Sync Status for Wireshark compatibility
-        gid_bytes = b'\x00\x01'  # Example GID
+        # Add GID (6 bytes) and VIN/GID Sync Status for Wireshark compatibility
+        gid_bytes = b'\x00\x01\x00\x00\x00\x00'  # 6-byte GID (first 2 bytes set, rest zeros)
         sync_status = b'\x00'     # Synchronized
         
         payload = (
@@ -111,7 +111,7 @@ class DOIPECUEmulator:
             sync_status
         )
         
-        print(f"Payload breakdown: VIN({len(vin_bytes)}) + LA(2) + EID({len(self.entity_id)}) + GID(2) + FAR(1) + SYNC(1) = {len(payload)} bytes")
+        print(f"Payload breakdown: VIN({len(vin_bytes)}) + LA(2) + EID({len(self.entity_id)}) + GID(6) + FAR(1) + SYNC(1) = {len(payload)} bytes")
         
         header = self.create_doip_header(DOIP_VEHICLE_IDENTIFICATION_RESPONSE, len(payload))
         response = header + payload
