@@ -61,7 +61,9 @@ $(BUILD_DIR)/app_libs/asf4/hpl/mclk \
 $(BUILD_DIR)/app_libs/asf4/hpl/sercom \
 $(BUILD_DIR)/app_libs/asf4/hpl/core \
 $(BUILD_DIR)/app_libs/SEGGER_RTT_V794b/RTT \
-$(BUILD_DIR)/app_libs/printf
+$(BUILD_DIR)/app_libs/printf \
+$(BUILD_DIR)/drivers \
+$(BUILD_DIR)/hw/same54/drivers
 
 # List the object files
 OBJS += \
@@ -151,6 +153,8 @@ $(BUILD_DIR)/network_events.o \
 $(BUILD_DIR)/doip_client.o \
 $(BUILD_DIR)/app_libs/lwip/src/api/api_lib.o \
 $(BUILD_DIR)/app_libs/lwip/port/ethif_mac.o \
+$(BUILD_DIR)/drivers/driver_led.o \
+$(BUILD_DIR)/hw/same54/drivers/bsp_led.o \
 
 # List the directories containing header files
 DIR_INCLUDES += \
@@ -186,7 +190,9 @@ DIR_INCLUDES += \
 -I"include" \
 -I"app_libs/SEGGER_RTT_V794b/RTT" \
 -I"app_libs/SEGGER_RTT_V794b/Config" \
--I"app_libs/printf"
+-I"app_libs/printf" \
+-I"drivers" \
+-I"hw/same54/drivers"
 
 # List the dependency files
 DEPS := $(OBJS:%.o=%.d)

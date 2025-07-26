@@ -10,6 +10,7 @@
 #include <peripheral_clk_config.h>
 #include <utils.h>
 #include <hal_init.h>
+#include "bsp_led.h"
 
 struct usart_sync_descriptor TARGET_IO;
 
@@ -85,19 +86,8 @@ void system_init(void)
 {
 	init_mcu();
 
-	// GPIO on PC18
-
-	gpio_set_pin_level(LED_0,
-	                   // <y> Initial level
-	                   // <id> pad_initial_level
-	                   // <false"> Low
-	                   // <true"> High
-	                   true);
-
-	// Set pin direction to output
-	gpio_set_pin_direction(LED_0, GPIO_DIRECTION_OUT);
-
-	gpio_set_pin_function(LED_0, GPIO_PIN_FUNCTION_OFF);
+	// Initialize LED using universal driver
+	hw_led_init(&led_yellow);
 
 	TARGET_IO_init();
 

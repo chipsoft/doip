@@ -40,6 +40,7 @@
 #include "ethernet_phy_main.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "bsp_led.h"
 
 uint16_t led_blink_rate = BLINK_NORMAL;
 
@@ -57,7 +58,7 @@ static void led_task(void *p)
 {
 	(void)p;
 	for (;;) {
-		gpio_toggle_pin_level(LED_0);
+		hw_led_toggle(&led_yellow);
 		vTaskDelay(led_blink_rate);
 	}
 }
@@ -278,7 +279,6 @@ void gmac_task(void *pvParameters)
  */
 void task_led_create(void)
 {
-
 	/* Create task to make led blink */
 	if (xTaskCreate(led_task, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_TASK_PRIORITY, &xLed_Task) != pdPASS) {
 		while (1) {
