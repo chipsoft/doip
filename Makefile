@@ -155,6 +155,8 @@ $(BUILD_DIR)/app_libs/lwip/src/api/api_lib.o \
 $(BUILD_DIR)/app_libs/lwip/port/ethif_mac.o \
 $(BUILD_DIR)/drivers/driver_led.o \
 $(BUILD_DIR)/hw/same54/drivers/bsp_led.o \
+$(BUILD_DIR)/drivers/driver_ethernet.o \
+$(BUILD_DIR)/hw/same54/drivers/bsp_ethernet.o \
 
 # List the directories containing header files
 DIR_INCLUDES += \

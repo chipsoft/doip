@@ -11,6 +11,7 @@
 #include <utils.h>
 #include <hal_init.h>
 #include "bsp_led.h"
+#include "bsp_ethernet.h"
 
 struct usart_sync_descriptor TARGET_IO;
 
@@ -92,4 +93,7 @@ void system_init(void)
 	TARGET_IO_init();
 
 	COMMUNICATION_IO_init();
+	
+	// Initialize Ethernet using universal driver
+	hw_eth_init(&eth_communication);
 }

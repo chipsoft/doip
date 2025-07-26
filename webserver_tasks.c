@@ -41,6 +41,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "bsp_led.h"
+#include "bsp_ethernet.h"
 
 uint16_t led_blink_rate = BLINK_NORMAL;
 
@@ -77,12 +78,12 @@ static void link_monitor_task(void *p)
 	vTaskDelay(2000);
 	
 	/* Get initial link state */
-	ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &previous_link_state);
+	hw_eth_get_link_status(&eth_communication, &previous_link_state);
 	
 	for (;;) {
 		/* Check current link status */
-		int32_t phy_result = ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &current_link_state);
-		if (phy_result == ERR_NONE) {
+		drv_eth_status_t phy_result = hw_eth_get_link_status(&eth_communication, &current_link_state);
+		if (phy_result == DRV_ETH_STATUS_OK) {
 			/* Detect link status changes */
 			if (current_link_state != previous_link_state) {
 				printf("[LINK_MONITOR] Link state change detected: %s -> %s\r\n",
@@ -113,7 +114,7 @@ static void link_monitor_task(void *p)
 			phy_error_count++;
 			if (phy_error_count >= 10) {  /* After 10 consecutive errors (5 seconds) */
 				printf("[LINK_MONITOR] Attempting PHY re-initialization\r\n");
-				ETHERNET_PHY_0_init();
+				hw_eth_phy_init(&eth_communication);
 				phy_error_count = 0;
 			}
 		}
@@ -156,7 +157,7 @@ void tcpip_init_done(void *arg)
 	network_events_init();
 	log_lwip_init(ERR_OK);
 	
-	mac_async_register_callback(&COMMUNICATION_IO, MAC_ASYNC_RECEIVE_CB, gmac_handler_cb);
+	hw_eth_register_callback(&eth_communication, DRV_ETH_CB_RECEIVE, gmac_handler_cb);
 	hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
 
 	printf("[INIT] Waiting for Ethernet link...\r\n");
@@ -166,14 +167,14 @@ void tcpip_init_done(void *arg)
 	const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
 	
 	while (link_attempts < max_link_attempts) {
-		int32_t phy_status = ethernet_phy_get_link_status(&ETHERNET_PHY_0_desc, &link_up);
+		drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &link_up);
 		
-		if (phy_status == ERR_NONE && link_up) {
+		if (phy_status == DRV_ETH_STATUS_OK && link_up) {
 			printf("[INIT] PHY link established after %d attempts\r\n", link_attempts);
 			break;
 		}
 		
-		if (phy_status != ERR_NONE) {
+		if (phy_status != DRV_ETH_STATUS_OK) {
 			printf("[INIT] PHY read error: %d (attempt %d)\r\n", phy_status, link_attempts);
 		} else {
 			printf("[INIT] PHY link still down (attempt %d)\r\n", link_attempts);
