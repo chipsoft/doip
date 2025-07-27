@@ -10,7 +10,7 @@
 #include "bsp_ethernet.h"
 #include "hal_mac_async.h"
 #include "hal_gpio.h"
-#include "ethernet_phy.h"
+#include "bsp_phy.h"
 #include "printf.h"
 #include "ieee8023_mii_standard_config.h"
 #include "same54p20a.h"
@@ -91,8 +91,8 @@ typedef struct tag_gmac_device {
 /* External peripheral descriptors */
 extern struct mac_async_descriptor COMMUNICATION_IO;
 
-/* PHY descriptor - previously in ethernet_phy_main.c */
-struct ethernet_phy_descriptor ETHERNET_PHY_0_desc;
+/* External PHY driver instance - defined in bsp_phy.c */
+extern drv_phy_t phy_0;
 
 /* Network interface variables - now part of driver context */
 
@@ -114,8 +114,7 @@ static drv_eth_status_t convert_error_code(int32_t asf4_error)
 typedef struct
 {
     struct mac_async_descriptor *mac_desc;
-    struct ethernet_phy_descriptor *phy_desc;
-    uint8_t phy_address;
+    drv_phy_t *phy_driver;
     drv_eth_callback_t receive_callback;
     drv_eth_callback_t transmit_callback;
     
@@ -132,8 +131,7 @@ typedef struct
 
 static drv_eth_hw_context_t drv_eth_hw_context_communication = {
     .mac_desc = &COMMUNICATION_IO,
-    .phy_desc = &ETHERNET_PHY_0_desc,
-    .phy_address = CONF_ETHERNET_PHY_0_IEEE8023_MII_PHY_ADDRESS,
+    .phy_driver = &phy_0,
     .receive_callback = NULL,
     .transmit_callback = NULL,
     .gmac_dev = {0},
@@ -247,36 +245,21 @@ static drv_eth_status_t drv_eth_phy_init(const void *hw_context)
     ASSERT(hw_context != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    // Initialize PHY
-    int32_t result = ethernet_phy_init(context->phy_desc, context->mac_desc, context->phy_address);
-    if (result != ERR_NONE) {
-        return convert_error_code(result);
+    printf("[ETH] Initializing PHY\r\n");
+    
+    drv_phy_status_t result = hw_phy_init(context->phy_driver);
+    if (result != DRV_PHY_STATUS_OK) {
+        printf("[ETH] PHY initialization failed\r\n");
+        return (drv_eth_status_t)result;
     }
     
-    printf("[ETH] PHY initialized at address %d\r\n", context->phy_address);
-    
-#if CONF_ETHERNET_PHY_0_IEEE8023_MII_CONTROL_REG0_SETTING == 1
-    printf("[ETH] Writing PHY control register: 0x%04X\r\n", CONF_ETHERNET_PHY_0_IEEE8023_MII_CONTROL_REG0);
-    result = ethernet_phy_write_reg(context->phy_desc, MDIO_REG0_BMCR, CONF_ETHERNET_PHY_0_IEEE8023_MII_CONTROL_REG0);
-    if (result != ERR_NONE) {
-        return convert_error_code(result);
-    }
-#endif
-    
-    printf("[ETH] PHY initialized, auto-negotiation will start naturally\r\n");
-    
-    // Read and display PHY registers for debugging
-    uint16_t reg_value;
-    if (ethernet_phy_read_reg(context->phy_desc, 0, &reg_value) == ERR_NONE) {
-        printf("[ETH] PHY Control Register (0): 0x%04X\r\n", reg_value);
-    }
-    if (ethernet_phy_read_reg(context->phy_desc, 1, &reg_value) == ERR_NONE) {
-        printf("[ETH] PHY Status Register (1): 0x%04X\r\n", reg_value);
-    }
-    if (ethernet_phy_read_reg(context->phy_desc, 4, &reg_value) == ERR_NONE) {
-        printf("[ETH] PHY Auto-Negotiation Advertisement (4): 0x%04X\r\n", reg_value);
+    result = hw_phy_enable(context->phy_driver);
+    if (result != DRV_PHY_STATUS_OK) {
+        printf("[ETH] PHY enable failed\r\n");
+        return (drv_eth_status_t)result;
     }
     
+    printf("[ETH] PHY initialized successfully\r\n");
     return DRV_ETH_STATUS_OK;
 }
 
@@ -285,11 +268,11 @@ static drv_eth_status_t drv_eth_phy_reset(const void *hw_context)
     ASSERT(hw_context != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    int32_t result = ethernet_phy_reset(context->phy_desc);
-    if (result == ERR_NONE) {
+    drv_phy_status_t result = hw_phy_reset(context->phy_driver);
+    if (result == DRV_PHY_STATUS_OK) {
         printf("[ETH] PHY reset completed\r\n");
     }
-    return convert_error_code(result);
+    return (drv_eth_status_t)result;
 }
 
 static drv_eth_status_t drv_eth_get_link_status(const void *hw_context, bool *link_up)
@@ -298,8 +281,8 @@ static drv_eth_status_t drv_eth_get_link_status(const void *hw_context, bool *li
     ASSERT(link_up != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    int32_t result = ethernet_phy_get_link_status(context->phy_desc, link_up);
-    return convert_error_code(result);
+    drv_phy_status_t result = hw_phy_get_link_status(context->phy_driver, link_up);
+    return (drv_eth_status_t)result;
 }
 
 static drv_eth_status_t drv_eth_restart_autoneg(const void *hw_context)
@@ -307,11 +290,11 @@ static drv_eth_status_t drv_eth_restart_autoneg(const void *hw_context)
     ASSERT(hw_context != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    int32_t result = ethernet_phy_restart_autoneg(context->phy_desc);
-    if (result == ERR_NONE) {
+    drv_phy_status_t result = hw_phy_restart_autoneg(context->phy_driver);
+    if (result == DRV_PHY_STATUS_OK) {
         printf("[ETH] Auto-negotiation restarted\r\n");
     }
-    return convert_error_code(result);
+    return (drv_eth_status_t)result;
 }
 
 static drv_eth_status_t drv_eth_read_phy_reg(const void *hw_context, uint16_t reg, uint16_t *value)
@@ -320,8 +303,8 @@ static drv_eth_status_t drv_eth_read_phy_reg(const void *hw_context, uint16_t re
     ASSERT(value != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    int32_t result = ethernet_phy_read_reg(context->phy_desc, reg, value);
-    return convert_error_code(result);
+    drv_phy_status_t result = hw_phy_read_reg(context->phy_driver, reg, value);
+    return (drv_eth_status_t)result;
 }
 
 static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t reg, uint16_t value)
@@ -329,8 +312,8 @@ static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t r
     ASSERT(hw_context != NULL);
     const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    int32_t result = ethernet_phy_write_reg(context->phy_desc, reg, value);
-    return convert_error_code(result);
+    drv_phy_status_t result = hw_phy_write_reg(context->phy_driver, reg, value);
+    return (drv_eth_status_t)result;
 }
 
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback)

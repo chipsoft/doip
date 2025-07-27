@@ -199,8 +199,10 @@ $(ASF4_DIR)/hal/src/hal_cache.c
 DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
 $(DRIVERS_DIR)/driver_ethernet.c \
+$(DRIVERS_DIR)/driver_phy.c \
 $(BSP_DRIVERS_DIR)/bsp_led.c \
-$(BSP_DRIVERS_DIR)/bsp_ethernet.c
+$(BSP_DRIVERS_DIR)/bsp_ethernet.c \
+$(BSP_DRIVERS_DIR)/bsp_phy.c
 
 # Application Files
 APP_CFILES = \
@@ -212,9 +214,8 @@ rtt_printf.c \
 network_events.c \
 doip_client.c
 
-# Ethernet PHY Files
-ETHERNET_PHY_CFILES = \
-$(ETHERNET_PHY_DIR)/ethernet_phy.c
+# Ethernet PHY Files (now integrated into PHY driver)
+ETHERNET_PHY_CFILES =
 
 # Third-party Library Files
 SEGGER_RTT_CFILES = \
