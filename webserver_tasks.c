@@ -45,17 +45,9 @@
 #include "app_libs/asf4/hri/hri_gmac_e54.h"
 #include "ethif_mac.h"
 
-/* External peripheral descriptors */
-extern struct mac_async_descriptor COMMUNICATION_IO;
-
 uint16_t led_blink_rate = BLINK_NORMAL;
 
-gmac_device          gs_gmac_dev;
-bool                 link_up   = false;
-volatile static bool recv_flag = false;
-
 static TaskHandle_t xLed_Task;
-static TaskHandle_t xLink_Monitor_Task;
 
 /**
  * OS task that blinks LED
@@ -69,103 +61,6 @@ static void led_task(void *p)
 	}
 }
 
-/**
- * \brief Link monitoring task
- * Periodically checks PHY link status and notifies lwIP of changes
- */
-static void link_monitor_task(void *p)
-{
-	(void)p;
-	bool current_link_state = false;
-	bool previous_link_state = false;
-	
-	/* Wait for network initialization to complete */
-	vTaskDelay(2000);
-	
-	/* Get initial link state */
-	hw_eth_get_link_status(&eth_communication, &previous_link_state);
-	
-	for (;;) {
-		/* Check current link status */
-		drv_eth_status_t phy_result = hw_eth_get_link_status(&eth_communication, &current_link_state);
-		if (phy_result == DRV_ETH_STATUS_OK) {
-			/* Detect link status changes */
-			if (current_link_state != previous_link_state) {
-				printf("[LINK_MONITOR] Link state change detected: %s -> %s\r\n",
-				       previous_link_state ? "UP" : "DOWN",
-				       current_link_state ? "UP" : "DOWN");
-				
-				/* Update lwIP network interface link status */
-				if (current_link_state) {
-					netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
-					printf("[LINK_MONITOR] Notified lwIP: Link UP\r\n");
-					
-					/* Don't restart auto-negotiation - let it stabilize naturally */
-					printf("[LINK_MONITOR] Link UP - allowing stabilization\r\n");
-				} else {
-					netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
-					printf("[LINK_MONITOR] Notified lwIP: Link DOWN\r\n");
-				}
-				
-				/* Update global link state */
-				link_up = current_link_state;
-				previous_link_state = current_link_state;
-			}
-		} else {
-			printf("[LINK_MONITOR] Failed to read PHY link status (error: %d)\r\n", phy_result);
-			
-			/* Try to reinitialize PHY if we can't read it */
-			static int phy_error_count = 0;
-			phy_error_count++;
-			if (phy_error_count >= 10) {  /* After 10 consecutive errors (5 seconds) */
-				printf("[LINK_MONITOR] Attempting PHY re-initialization\r\n");
-				hw_eth_phy_init(&eth_communication);
-				phy_error_count = 0;
-			}
-		}
-		
-		/* Check link status every 500ms */
-		vTaskDelay(500);
-	}
-}
-
-void mac_receive_cb(struct mac_async_descriptor *desc)
-{
-	recv_flag = true;
-}
-
-/**
- * \brief Callback for GMAC interrupt.
- * Give semaphore for which gmac_task waits
- */
-void gmac_handler_cb(void)
-{
-	BaseType_t xGMACTaskWoken = pdFALSE;
-	
-	/* Use ISR-safe semaphore give function */
-	xSemaphoreGiveFromISR(gs_gmac_dev.rx_sem.sem, &xGMACTaskWoken);
-	
-	/* Perform context switch if higher priority task was woken */
-	portYIELD_FROM_ISR(xGMACTaskWoken);
-}
-
-
-/**
- * \brief Task for GMAC.
- * Waits for GMAC interrupt and begins processing of received packets
- */
-void gmac_task(void *pvParameters)
-{
-	gmac_device *ps_gmac_dev = pvParameters;
-
-	while (1) {
-		/* Wait for the counting RX notification semaphore. */
-		sys_sem_wait(&ps_gmac_dev->rx_sem);
-
-		/* Process the incoming packet. */
-		ethernetif_mac_input(ps_gmac_dev->netif);
-	}
-}
 
 /**
  * \brief Create OS task for LED blinking
@@ -180,15 +75,3 @@ void task_led_create(void)
 	}
 }
 
-/**
- * \brief Create OS task for link monitoring
- */
-void task_link_monitor_create(void)
-{
-	/* Create task to monitor link status */
-	if (xTaskCreate(link_monitor_task, "LinkMon", TASK_LED_STACK_SIZE, NULL, TASK_LED_TASK_PRIORITY, &xLink_Monitor_Task) != pdPASS) {
-		while (1) {
-			;
-		}
-	}
-}

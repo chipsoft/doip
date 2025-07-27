@@ -101,7 +101,9 @@ int main(void)
 
 	/* Create application tasks */
 	task_led_create();
-	task_link_monitor_create();
+	
+	/* Start Ethernet link monitoring through driver API */
+	hw_eth_start_link_monitor(&eth_communication);
 
 	/* Create task for Ethernet */
 	if (xTaskCreate(socket_basic_ethernet,

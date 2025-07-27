@@ -3,8 +3,9 @@
 #include "network_events.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
 #include "eth_ipstack_main.h"
-#include "webserver_tasks.h"
+#include "ethif_mac.h"
 
 #include "bsp_ethernet.h"
 #include "hal_mac_async.h"
@@ -23,6 +24,23 @@
 #define ASF4_ERR_TIMEOUT -8
 
 #include "utils_assert.h"
+
+/* Forward declaration of gmac_device - moved from webserver_tasks.h for encapsulation */
+typedef struct tag_gmac_device {
+    /** Reference to lwIP netif structure. */
+    struct netif *netif;
+
+#if NO_SYS == 0
+    /** RX task notification semaphore. */
+    sys_sem_t rx_sem;
+#endif
+} gmac_device;
+
+/* Task constants - replicated from webserver_tasks.h to avoid dependency */
+#define TASK_LED_STACK_SIZE (512 / sizeof(portSTACK_TYPE))
+#define TASK_LED_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+#define netifINTERFACE_TASK_STACK_SIZE 512
+#define netifINTERFACE_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
 
 /* Local pin definitions (copied from atmel_start_pins.h to avoid dependency) */
 #define PA12 GPIO(GPIO_PORTA, 12)
@@ -76,9 +94,7 @@ extern struct mac_async_descriptor COMMUNICATION_IO;
 /* PHY descriptor - previously in ethernet_phy_main.c */
 struct ethernet_phy_descriptor ETHERNET_PHY_0_desc;
 
-/* Network interface variables */
-extern gmac_device gs_gmac_dev;
-extern bool link_up;
+/* Network interface variables - now part of driver context */
 
 // Convert ASF4 error codes to driver status
 static drv_eth_status_t convert_error_code(int32_t asf4_error)
@@ -102,6 +118,16 @@ typedef struct
     uint8_t phy_address;
     drv_eth_callback_t receive_callback;
     drv_eth_callback_t transmit_callback;
+    
+    // GMAC device context (moved from webserver_tasks.c)
+    gmac_device gmac_dev;
+    
+    // Link status tracking
+    bool link_up;
+    volatile bool recv_flag;
+    
+    // Link monitoring task
+    TaskHandle_t link_monitor_task;
 } drv_eth_hw_context_t;
 
 static drv_eth_hw_context_t drv_eth_hw_context_communication = {
@@ -110,11 +136,19 @@ static drv_eth_hw_context_t drv_eth_hw_context_communication = {
     .phy_address = CONF_ETHERNET_PHY_0_IEEE8023_MII_PHY_ADDRESS,
     .receive_callback = NULL,
     .transmit_callback = NULL,
+    .gmac_dev = {0},
+    .link_up = false,
+    .recv_flag = false,
+    .link_monitor_task = NULL,
 };
 
 // Forward declarations of static functions
 static void gmac_clock_init(void);
 static void gmac_pin_init(void);
+static void mac_receive_cb(struct mac_async_descriptor *desc);
+static void gmac_handler_cb(void);
+static void gmac_task(void *pvParameters);
+static void link_monitor_task(void *p);
 static drv_eth_status_t drv_eth_init(const void *hw_context);
 static drv_eth_status_t drv_eth_deinit(const void *hw_context);
 static drv_eth_status_t drv_eth_enable(const void *hw_context);
@@ -128,6 +162,8 @@ static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t r
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback);
 static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *data, uint32_t length);
 static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context);
+static drv_eth_status_t drv_eth_start_link_monitor_impl(const void *hw_context);
+static drv_eth_status_t drv_eth_stop_link_monitor_impl(const void *hw_context);
 
 // Global Ethernet driver instance
 drv_eth_t eth_communication = {
@@ -147,6 +183,8 @@ drv_eth_t eth_communication = {
     .register_callback = drv_eth_register_callback,
     .write = drv_eth_write,
     .get_tcpip_init_done_fn = drv_eth_get_tcpip_init_done_fn_impl,
+    .start_link_monitor = drv_eth_start_link_monitor_impl,
+    .stop_link_monitor = drv_eth_stop_link_monitor_impl,
 };
 
 static drv_eth_status_t drv_eth_init(const void *hw_context)
@@ -350,6 +388,108 @@ static void gmac_pin_init(void)
     printf("[ETH] GMAC pins configured\r\n");
 }
 
+/* GMAC and link monitoring functions moved from webserver_tasks.c */
+
+static void mac_receive_cb(struct mac_async_descriptor *desc)
+{
+    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
+    context->recv_flag = true;
+}
+
+/**
+ * \brief Callback for GMAC interrupt.
+ * Give semaphore for which gmac_task waits
+ */
+static void gmac_handler_cb(void)
+{
+    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
+    BaseType_t xGMACTaskWoken = pdFALSE;
+    
+    /* Use ISR-safe semaphore give function */
+    xSemaphoreGiveFromISR(context->gmac_dev.rx_sem.sem, &xGMACTaskWoken);
+    
+    /* Perform context switch if higher priority task was woken */
+    portYIELD_FROM_ISR(xGMACTaskWoken);
+}
+
+/**
+ * \brief Task for GMAC.
+ * Waits for GMAC interrupt and begins processing of received packets
+ */
+static void gmac_task(void *pvParameters)
+{
+    gmac_device *ps_gmac_dev = pvParameters;
+
+    while (1) {
+        /* Wait for the counting RX notification semaphore. */
+        sys_sem_wait(&ps_gmac_dev->rx_sem);
+
+        /* Process the incoming packet. */
+        ethernetif_mac_input(ps_gmac_dev->netif);
+    }
+}
+
+/**
+ * \brief Link monitoring task
+ * Periodically checks PHY link status and notifies lwIP of changes
+ */
+static void link_monitor_task(void *p)
+{
+    (void)p;
+    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
+    bool current_link_state = false;
+    bool previous_link_state = false;
+    
+    /* Wait for network initialization to complete */
+    vTaskDelay(2000);
+    
+    /* Get initial link state */
+    hw_eth_get_link_status(&eth_communication, &previous_link_state);
+    
+    for (;;) {
+        /* Check current link status */
+        drv_eth_status_t phy_result = hw_eth_get_link_status(&eth_communication, &current_link_state);
+        if (phy_result == DRV_ETH_STATUS_OK) {
+            /* Detect link status changes */
+            if (current_link_state != previous_link_state) {
+                printf("[LINK_MONITOR] Link state change detected: %s -> %s\r\n",
+                       previous_link_state ? "UP" : "DOWN",
+                       current_link_state ? "UP" : "DOWN");
+                
+                /* Update lwIP network interface link status */
+                if (current_link_state) {
+                    netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
+                    printf("[LINK_MONITOR] Notified lwIP: Link UP\r\n");
+                    
+                    /* Don't restart auto-negotiation - let it stabilize naturally */
+                    printf("[LINK_MONITOR] Link UP - allowing stabilization\r\n");
+                } else {
+                    netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
+                    printf("[LINK_MONITOR] Notified lwIP: Link DOWN\r\n");
+                }
+                
+                /* Update context link state */
+                context->link_up = current_link_state;
+                previous_link_state = current_link_state;
+            }
+        } else {
+            printf("[LINK_MONITOR] Failed to read PHY link status (error: %d)\r\n", phy_result);
+            
+            /* Try to reinitialize PHY if we can't read it */
+            static int phy_error_count = 0;
+            phy_error_count++;
+            if (phy_error_count >= 10) {  /* After 10 consecutive errors (5 seconds) */
+                printf("[LINK_MONITOR] Attempting PHY re-initialization\r\n");
+                hw_eth_phy_init(&eth_communication);
+                phy_error_count = 0;
+            }
+        }
+        
+        /* Check link status every 500ms */
+        vTaskDelay(500);
+    }
+}
+
 /* TCP/IP stack initialization done callback - moved from webserver_tasks.c */
 static void eth_tcpip_init_done(void *arg)
 {
@@ -376,10 +516,12 @@ static void eth_tcpip_init_done(void *arg)
     int link_attempts = 0;
     const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
     
+    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
+    
     while (link_attempts < max_link_attempts) {
-        drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &link_up);
+        drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &context->link_up);
         
-        if (phy_status == DRV_ETH_STATUS_OK && link_up) {
+        if (phy_status == DRV_ETH_STATUS_OK && context->link_up) {
             printf("[INIT] PHY link established after %d attempts\r\n", link_attempts);
             break;
         }
@@ -394,7 +536,7 @@ static void eth_tcpip_init_done(void *arg)
         vTaskDelay(100);  /* Wait 100ms between attempts */
     }
     
-    if (!link_up) {
+    if (!context->link_up) {
         printf("[INIT] WARNING: PHY link not established after %d attempts\r\n", max_link_attempts);
         printf("[INIT] Continuing with network stack initialization...\r\n");
     }
@@ -415,14 +557,14 @@ static void eth_tcpip_init_done(void *arg)
 
     TCPIP_STACK_INTERFACE_0_desc.input = tcpip_input;
 
-    gs_gmac_dev.netif = &TCPIP_STACK_INTERFACE_0_desc;
+    context->gmac_dev.netif = &TCPIP_STACK_INTERFACE_0_desc;
 
     /* Incoming packet notification semaphore. */
-    if (sys_sem_new(&gs_gmac_dev.rx_sem, 0) != ERR_OK) {
+    if (sys_sem_new(&context->gmac_dev.rx_sem, 0) != ERR_OK) {
         LWIP_ASSERT("Failed to create semaphore", 0);
     }
 
-    sys_thread_t id = sys_thread_new("GMAC", gmac_task, &gs_gmac_dev, netifINTERFACE_TASK_STACK_SIZE, netifINTERFACE_TASK_PRIORITY);
+    sys_thread_t id = sys_thread_new("GMAC", gmac_task, &context->gmac_dev, netifINTERFACE_TASK_STACK_SIZE, netifINTERFACE_TASK_PRIORITY);
     LWIP_ASSERT("ethernetif_init: GMAC Task allocation ERROR!\n", (id != 0));
     (void)id;  /* Suppress unused variable warning after assertion */
 
@@ -437,10 +579,10 @@ static void eth_tcpip_init_done(void *arg)
     log_mac_address(&TCPIP_STACK_INTERFACE_0_desc);
     
     /* Log initial link status */
-    log_link_status_change(&TCPIP_STACK_INTERFACE_0_desc, link_up);
+    log_link_status_change(&TCPIP_STACK_INTERFACE_0_desc, context->link_up);
     
     /* Manually update lwIP link status since link monitoring task hasn't started yet */
-    if (link_up) {
+    if (context->link_up) {
         printf("[INIT] Setting initial link status to UP in lwIP\r\n");
         netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
     } else {
@@ -470,4 +612,44 @@ static void eth_tcpip_init_done(void *arg)
 static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context)
 {
     return eth_tcpip_init_done;
+}
+
+/**
+ * \brief Start link monitoring task
+ */
+static drv_eth_status_t drv_eth_start_link_monitor_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    if (context->link_monitor_task != NULL) {
+        printf("[ETH] Link monitor task already running\r\n");
+        return DRV_ETH_STATUS_OK;
+    }
+    
+    /* Create task to monitor link status */
+    if (xTaskCreate(link_monitor_task, "LinkMon", TASK_LED_STACK_SIZE, NULL, TASK_LED_TASK_PRIORITY, &context->link_monitor_task) != pdPASS) {
+        printf("[ETH] Failed to create link monitor task\r\n");
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    printf("[ETH] Link monitor task started\r\n");
+    return DRV_ETH_STATUS_OK;
+}
+
+/**
+ * \brief Stop link monitoring task
+ */
+static drv_eth_status_t drv_eth_stop_link_monitor_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    if (context->link_monitor_task != NULL) {
+        vTaskDelete(context->link_monitor_task);
+        context->link_monitor_task = NULL;
+        printf("[ETH] Link monitor task stopped\r\n");
+    }
+    
+    return DRV_ETH_STATUS_OK;
 }

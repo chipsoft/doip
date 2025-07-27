@@ -60,20 +60,6 @@
 
 #include <hal_mac_async.h>
 
-void mac_receive_cb(struct mac_async_descriptor *desc);
-void gmac_handler_cb(void);
-void gmac_task(void *pvParameters);
 void task_led_create();
-void task_link_monitor_create();
-
-typedef struct tag_gmac_device {
-	/** Reference to lwIP netif structure. */
-	struct netif *netif;
-
-#if NO_SYS == 0
-	/** RX task notification semaphore. */
-	sys_sem_t rx_sem;
-#endif
-} gmac_device;
 
 #endif /* WEBSERVER_TASKS_H_ */

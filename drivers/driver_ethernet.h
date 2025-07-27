@@ -51,6 +51,10 @@ typedef struct
     
     // TCP/IP stack initialization
     drv_eth_tcpip_init_done_fn (*get_tcpip_init_done_fn)(const void *hw_context);
+    
+    // Link monitoring
+    drv_eth_status_t (*start_link_monitor)(const void *hw_context);
+    drv_eth_status_t (*stop_link_monitor)(const void *hw_context);
 } drv_eth_t;
 
 #ifdef __cplusplus
@@ -82,6 +86,10 @@ drv_eth_status_t hw_eth_write(drv_eth_t *handle, const uint8_t *data, uint32_t l
 
 // TCP/IP stack initialization
 drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle);
+
+// Link monitoring
+drv_eth_status_t hw_eth_start_link_monitor(drv_eth_t *handle);
+drv_eth_status_t hw_eth_stop_link_monitor(drv_eth_t *handle);
 
 #ifdef __cplusplus
 }

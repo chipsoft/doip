@@ -180,3 +180,27 @@ drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle)
     
     return handle->get_tcpip_init_done_fn(handle->hw_context);
 }
+
+drv_eth_status_t hw_eth_start_link_monitor(drv_eth_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->start_link_monitor != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->start_link_monitor(handle->hw_context);
+}
+
+drv_eth_status_t hw_eth_stop_link_monitor(drv_eth_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->stop_link_monitor != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->stop_link_monitor(handle->hw_context);
+}
