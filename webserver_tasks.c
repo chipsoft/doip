@@ -51,7 +51,7 @@ extern struct mac_async_descriptor COMMUNICATION_IO;
 uint16_t led_blink_rate = BLINK_NORMAL;
 
 gmac_device          gs_gmac_dev;
-static bool          link_up   = false;
+bool                 link_up   = false;
 volatile static bool recv_flag = false;
 
 static TaskHandle_t xLed_Task;
@@ -149,125 +149,6 @@ void gmac_handler_cb(void)
 	portYIELD_FROM_ISR(xGMACTaskWoken);
 }
 
-/**
- * \brief Invoked after completion of TCP/IP init
- */
-void tcpip_init_done(void *arg)
-{
-	sys_sem_t *sem;
-	sem         = (sys_sem_t *)arg;
-	u8_t mac[6] = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76};
-	
-	/* Initialize network event logging */
-	network_events_init();
-	log_lwip_init(ERR_OK);
-	
-	hw_eth_register_callback(&eth_communication, DRV_ETH_CB_RECEIVE, gmac_handler_cb);
-	hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
-
-	printf("[INIT] Waiting for Ethernet link...\r\n");
-	
-	/* Initialize PHY before reading its status */
-	drv_eth_status_t phy_init_status = hw_eth_phy_init(&eth_communication);
-	if (phy_init_status != DRV_ETH_STATUS_OK) {
-		printf("[INIT] PHY initialization failed: %d\r\n", phy_init_status);
-	}
-	
-	/* Give PHY more time to initialize and establish link */
-	int link_attempts = 0;
-	const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
-	
-	while (link_attempts < max_link_attempts) {
-		drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &link_up);
-		
-		if (phy_status == DRV_ETH_STATUS_OK && link_up) {
-			printf("[INIT] PHY link established after %d attempts\r\n", link_attempts);
-			break;
-		}
-		
-		if (phy_status != DRV_ETH_STATUS_OK) {
-			printf("[INIT] PHY read error: %d (attempt %d)\r\n", phy_status, link_attempts);
-		} else {
-			printf("[INIT] PHY link still down (attempt %d)\r\n", link_attempts);
-		}
-		
-		link_attempts++;
-		vTaskDelay(100);  /* Wait 100ms between attempts */
-	}
-	
-	if (!link_up) {
-		printf("[INIT] WARNING: PHY link not established after %d attempts\r\n", max_link_attempts);
-		printf("[INIT] Continuing with network stack initialization...\r\n");
-	}
-
-	printf("[INIT] Ethernet link detected\r\n");
-
-	/* Enable NVIC GMAC interrupt. */
-	/* Interrupt priorities. (lowest value = highest priority) */
-	/* ISRs using FreeRTOS *FromISR APIs must have priorities below or equal to */
-	/* configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY. */
-	/* Setting to 5 (numerically higher than 4, so lower priority) */
-	NVIC_SetPriority(GMAC_IRQn, 5);
-	NVIC_EnableIRQ(GMAC_IRQn);
-	mac_async_enable(&COMMUNICATION_IO);
-
-	printf("[INIT] Initializing network interface...\r\n");
-	TCPIP_STACK_INTERFACE_0_init(mac);
-
-	TCPIP_STACK_INTERFACE_0_desc.input = tcpip_input;
-
-	gs_gmac_dev.netif = &TCPIP_STACK_INTERFACE_0_desc;
-
-	sys_thread_t id;
-
-	/* Incoming packet notification semaphore. */
-	if (sys_sem_new(&gs_gmac_dev.rx_sem, 0) != ERR_OK) {
-		LWIP_ASSERT("Failed to create semaphore", 0);
-	}
-
-	id = sys_thread_new("GMAC", gmac_task, &gs_gmac_dev, netifINTERFACE_TASK_STACK_SIZE, netifINTERFACE_TASK_PRIORITY);
-	LWIP_ASSERT("ethernetif_init: GMAC Task allocation ERROR!\n", (id != 0));
-
-	printf("[INIT] Setting up network interface callbacks...\r\n");
-	netif_set_default(&TCPIP_STACK_INTERFACE_0_desc);
-	
-	/* Register network event callbacks */
-	netif_set_status_callback(&TCPIP_STACK_INTERFACE_0_desc, netif_status_callback);
-	netif_set_link_callback(&TCPIP_STACK_INTERFACE_0_desc, netif_link_callback);
-	
-	/* Log initial MAC address */
-	log_mac_address(&TCPIP_STACK_INTERFACE_0_desc);
-	
-	/* Log initial link status */
-	log_link_status_change(&TCPIP_STACK_INTERFACE_0_desc, link_up);
-	
-	/* Manually update lwIP link status since link monitoring task hasn't started yet */
-	if (link_up) {
-		printf("[INIT] Setting initial link status to UP in lwIP\r\n");
-		netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
-	} else {
-		printf("[INIT] Setting initial link status to DOWN in lwIP\r\n");
-		netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
-	}
-
-#if CONF_TCPIP_STACK_INTERFACE_0_DHCP
-	/* DHCP mode. */
-	printf("[INIT] Starting DHCP client...\r\n");
-	if (ERR_OK != dhcp_start(&TCPIP_STACK_INTERFACE_0_desc)) {
-		log_dhcp_error(&TCPIP_STACK_INTERFACE_0_desc, "Failed to start DHCP client");
-		LWIP_ASSERT("ERR_OK != dhcp_start", 0);
-	} else {
-		printf("[DHCP] Client started successfully\r\n");
-	}
-#else
-	printf("[INIT] Using static IP configuration...\r\n");
-	netif_set_up(&TCPIP_STACK_INTERFACE_0_desc);
-	log_network_config(&TCPIP_STACK_INTERFACE_0_desc);
-#endif
-
-	printf("[INIT] Network initialization complete\r\n");
-	sys_sem_signal(sem); /* Signal the waiting thread that the TCP/IP init is done. */
-}
 
 /**
  * \brief Task for GMAC.

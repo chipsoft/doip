@@ -1,5 +1,12 @@
+#include "lwip/sys.h"
+#include "lwip/tcpip.h"
+#include "network_events.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "eth_ipstack_main.h"
+#include "webserver_tasks.h"
+
 #include "bsp_ethernet.h"
-#include "utils_assert.h"
 #include "hal_mac_async.h"
 #include "hal_gpio.h"
 #include "ethernet_phy.h"
@@ -9,6 +16,13 @@
 #include <string.h>
 #include <hri_mclk_e54.h>
 #include <hri_gclk_e54.h>
+#include "app_libs/asf4/hri/hri_gmac_e54.h"
+
+/* Redefine ASF4 ERR_TIMEOUT after lwIP to avoid conflicts */
+#undef ERR_TIMEOUT
+#define ASF4_ERR_TIMEOUT -8
+
+#include "utils_assert.h"
 
 /* Local pin definitions (copied from atmel_start_pins.h to avoid dependency) */
 #define PA12 GPIO(GPIO_PORTA, 12)
@@ -62,6 +76,10 @@ extern struct mac_async_descriptor COMMUNICATION_IO;
 /* PHY descriptor - previously in ethernet_phy_main.c */
 struct ethernet_phy_descriptor ETHERNET_PHY_0_desc;
 
+/* Network interface variables */
+extern gmac_device gs_gmac_dev;
+extern bool link_up;
+
 // Convert ASF4 error codes to driver status
 static drv_eth_status_t convert_error_code(int32_t asf4_error)
 {
@@ -70,7 +88,7 @@ static drv_eth_status_t convert_error_code(int32_t asf4_error)
             return DRV_ETH_STATUS_OK;
         case ERR_BUSY:
             return DRV_ETH_STATUS_BUSY;
-        case ERR_TIMEOUT:
+        case ASF4_ERR_TIMEOUT:
             return DRV_ETH_STATUS_TIMEOUT;
         default:
             return DRV_ETH_STATUS_ERROR;
@@ -109,6 +127,7 @@ static drv_eth_status_t drv_eth_read_phy_reg(const void *hw_context, uint16_t re
 static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t reg, uint16_t value);
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback);
 static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *data, uint32_t length);
+static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context);
 
 // Global Ethernet driver instance
 drv_eth_t eth_communication = {
@@ -127,6 +146,7 @@ drv_eth_t eth_communication = {
     .write_phy_reg = drv_eth_write_phy_reg,
     .register_callback = drv_eth_register_callback,
     .write = drv_eth_write,
+    .get_tcpip_init_done_fn = drv_eth_get_tcpip_init_done_fn_impl,
 };
 
 static drv_eth_status_t drv_eth_init(const void *hw_context)
@@ -328,4 +348,126 @@ static void gmac_pin_init(void)
     gpio_set_pin_function(PA14, PINMUX_PA14L_GMAC_GTXCK);
     gpio_set_pin_function(PA17, PINMUX_PA17L_GMAC_GTXEN);
     printf("[ETH] GMAC pins configured\r\n");
+}
+
+/* TCP/IP stack initialization done callback - moved from webserver_tasks.c */
+static void eth_tcpip_init_done(void *arg)
+{
+    sys_sem_t *sem;
+    sem = (sys_sem_t *)arg;
+    u8_t mac[6] = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76};
+    
+    /* Initialize network event logging */
+    network_events_init();
+    log_lwip_init(ERR_OK);
+    
+    hw_eth_register_callback(&eth_communication, DRV_ETH_CB_RECEIVE, gmac_handler_cb);
+    hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
+
+    printf("[INIT] Waiting for Ethernet link...\r\n");
+    
+    /* Initialize PHY before reading its status */
+    drv_eth_status_t phy_init_status = hw_eth_phy_init(&eth_communication);
+    if (phy_init_status != DRV_ETH_STATUS_OK) {
+        printf("[INIT] PHY initialization failed: %d\r\n", phy_init_status);
+    }
+    
+    /* Give PHY more time to initialize and establish link */
+    int link_attempts = 0;
+    const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
+    
+    while (link_attempts < max_link_attempts) {
+        drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &link_up);
+        
+        if (phy_status == DRV_ETH_STATUS_OK && link_up) {
+            printf("[INIT] PHY link established after %d attempts\r\n", link_attempts);
+            break;
+        }
+        
+        if (phy_status != DRV_ETH_STATUS_OK) {
+            printf("[INIT] PHY read error: %d (attempt %d)\r\n", phy_status, link_attempts);
+        } else {
+            printf("[INIT] PHY link still down (attempt %d)\r\n", link_attempts);
+        }
+        
+        link_attempts++;
+        vTaskDelay(100);  /* Wait 100ms between attempts */
+    }
+    
+    if (!link_up) {
+        printf("[INIT] WARNING: PHY link not established after %d attempts\r\n", max_link_attempts);
+        printf("[INIT] Continuing with network stack initialization...\r\n");
+    }
+
+    printf("[INIT] Ethernet link detected\r\n");
+
+    /* Enable NVIC GMAC interrupt. */
+    /* Interrupt priorities. (lowest value = highest priority) */
+    /* ISRs using FreeRTOS *FromISR APIs must have priorities below or equal to */
+    /* configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY. */
+    /* Setting to 5 (numerically higher than 4, so lower priority) */
+    NVIC_SetPriority(GMAC_IRQn, 5);
+    NVIC_EnableIRQ(GMAC_IRQn);
+    mac_async_enable(&COMMUNICATION_IO);
+
+    printf("[INIT] Initializing network interface...\r\n");
+    TCPIP_STACK_INTERFACE_0_init(mac);
+
+    TCPIP_STACK_INTERFACE_0_desc.input = tcpip_input;
+
+    gs_gmac_dev.netif = &TCPIP_STACK_INTERFACE_0_desc;
+
+    /* Incoming packet notification semaphore. */
+    if (sys_sem_new(&gs_gmac_dev.rx_sem, 0) != ERR_OK) {
+        LWIP_ASSERT("Failed to create semaphore", 0);
+    }
+
+    sys_thread_t id = sys_thread_new("GMAC", gmac_task, &gs_gmac_dev, netifINTERFACE_TASK_STACK_SIZE, netifINTERFACE_TASK_PRIORITY);
+    LWIP_ASSERT("ethernetif_init: GMAC Task allocation ERROR!\n", (id != 0));
+    (void)id;  /* Suppress unused variable warning after assertion */
+
+    printf("[INIT] Setting up network interface callbacks...\r\n");
+    netif_set_default(&TCPIP_STACK_INTERFACE_0_desc);
+    
+    /* Register network event callbacks */
+    netif_set_status_callback(&TCPIP_STACK_INTERFACE_0_desc, netif_status_callback);
+    netif_set_link_callback(&TCPIP_STACK_INTERFACE_0_desc, netif_link_callback);
+    
+    /* Log initial MAC address */
+    log_mac_address(&TCPIP_STACK_INTERFACE_0_desc);
+    
+    /* Log initial link status */
+    log_link_status_change(&TCPIP_STACK_INTERFACE_0_desc, link_up);
+    
+    /* Manually update lwIP link status since link monitoring task hasn't started yet */
+    if (link_up) {
+        printf("[INIT] Setting initial link status to UP in lwIP\r\n");
+        netif_set_link_up(&TCPIP_STACK_INTERFACE_0_desc);
+    } else {
+        printf("[INIT] Setting initial link status to DOWN in lwIP\r\n");
+        netif_set_link_down(&TCPIP_STACK_INTERFACE_0_desc);
+    }
+
+#if CONF_TCPIP_STACK_INTERFACE_0_DHCP
+    /* DHCP mode. */
+    printf("[INIT] Starting DHCP client...\r\n");
+    if (ERR_OK != dhcp_start(&TCPIP_STACK_INTERFACE_0_desc)) {
+        log_dhcp_error(&TCPIP_STACK_INTERFACE_0_desc, "Failed to start DHCP client");
+        LWIP_ASSERT("ERR_OK != dhcp_start", 0);
+    } else {
+        printf("[DHCP] Client started successfully\r\n");
+    }
+#else
+    printf("[INIT] Using static IP configuration...\r\n");
+    netif_set_up(&TCPIP_STACK_INTERFACE_0_desc);
+    log_network_config(&TCPIP_STACK_INTERFACE_0_desc);
+#endif
+
+    printf("[INIT] Network initialization complete\r\n");
+    sys_sem_signal(sem); /* Signal the waiting thread that the TCP/IP init is done. */
+}
+
+static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context)
+{
+    return eth_tcpip_init_done;
 }

@@ -62,7 +62,6 @@
 
 void mac_receive_cb(struct mac_async_descriptor *desc);
 void gmac_handler_cb(void);
-void tcpip_init_done(void *arg);
 void gmac_task(void *pvParameters);
 void task_led_create();
 void task_link_monitor_create();

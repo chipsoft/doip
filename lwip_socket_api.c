@@ -40,6 +40,7 @@
 #include "lwip_socket_api.h"
 #include "doip_client.h"
 #include "string.h"
+#include "bsp_ethernet.h"
 
 typedef u32_t socklen_t;
 char          buffer[1024];
@@ -65,7 +66,7 @@ void socket_basic_ethernet(void *p)
 	sys_sem_t sem;
 	err_t     err_sem;
 	err_sem = sys_sem_new(&sem, 0); /* Create a new semaphore. */
-	tcpip_init(tcpip_init_done, &sem);
+	tcpip_init(hw_eth_get_tcpip_init_done_fn(&eth_communication), &sem);
 	sys_sem_wait(&sem); /* Block until the lwIP stack is initialized. */
 	sys_sem_free(&sem); /* Free the semaphore. */
 

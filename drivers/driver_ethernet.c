@@ -168,3 +168,15 @@ drv_eth_status_t hw_eth_write(drv_eth_t *handle, const uint8_t *data, uint32_t l
     
     return handle->write(handle->hw_context, data, length);
 }
+
+drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_tcpip_init_done_fn != NULL);
+    
+    if (!handle->is_init) {
+        return NULL;
+    }
+    
+    return handle->get_tcpip_init_done_fn(handle->hw_context);
+}

@@ -19,6 +19,7 @@ typedef enum
 } drv_eth_cb_type_t;
 
 typedef void (*drv_eth_callback_t)(void);
+typedef void (*drv_eth_tcpip_init_done_fn)(void *arg);
 
 typedef struct
 {
@@ -47,6 +48,9 @@ typedef struct
     
     // Data operations
     drv_eth_status_t (*write)(const void *hw_context, const uint8_t *data, uint32_t length);
+    
+    // TCP/IP stack initialization
+    drv_eth_tcpip_init_done_fn (*get_tcpip_init_done_fn)(const void *hw_context);
 } drv_eth_t;
 
 #ifdef __cplusplus
@@ -75,6 +79,9 @@ drv_eth_status_t hw_eth_register_callback(drv_eth_t *handle, drv_eth_cb_type_t t
 
 // Data operations
 drv_eth_status_t hw_eth_write(drv_eth_t *handle, const uint8_t *data, uint32_t length);
+
+// TCP/IP stack initialization
+drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle);
 
 #ifdef __cplusplus
 }
