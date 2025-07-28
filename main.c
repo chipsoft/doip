@@ -31,7 +31,6 @@
  *
  */
 
-#include "lwip_socket_api.h"
 #include "printf.h"
 #include <peripheral_clk_config.h>
 #include <utils.h>
@@ -42,7 +41,8 @@
 #include "bsp_ethernet.h"
 #include "eth_ipstack_main.h"
 #include "webserver_tasks.h"
-#include "doip_client.h"
+#include "doip_client.h" 
+#include "bsp_net.h"  // New universal network driver
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -53,7 +53,7 @@ extern void rtt_printf_init(void);
 struct mac_async_descriptor COMMUNICATION_IO;
 
 /* Task handles */
-static TaskHandle_t xCreatedEthernetBasicTask;
+// static TaskHandle_t xCreatedEthernetBasicTask; // Removed - not used anymore
 
 /* define to avoid compilation warning */
 // #define LWIP_TIMEVAL_PRIVATE 0
@@ -66,6 +66,50 @@ void print_ipaddress(void)
 	printf("NET_MASK   : %s\r\n",
 	       ipaddr_ntoa_r((const ip_addr_t *)&(TCPIP_STACK_INTERFACE_0_desc.netmask), tmp_buff, 16));
 	printf("GATEWAY_IP : %s\r\n", ipaddr_ntoa_r((const ip_addr_t *)&(TCPIP_STACK_INTERFACE_0_desc.gw), tmp_buff, 16));
+}
+
+// Network initialization task - runs after scheduler starts
+static void network_init_task(void *pvParameters)
+{
+	(void)pvParameters;
+	
+	printf("Network initialization task started\r\n");
+	
+	// Configure network parameters
+	drv_net_config_t net_config = {
+		.mac_addr = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},
+		.use_dhcp = false,
+		.static_ip = "192.168.100.2",
+		.static_netmask = "255.255.255.0", 
+		.static_gateway = "192.168.100.1",
+		.hostname = "same54-doip",
+		.dhcp_timeout_ms = 30000,
+	};
+	
+	// Initialize network stack
+	printf("Initializing network stack...\r\n");
+	drv_net_status_t net_result = hw_net_init(&lwip_network_0);
+	if (net_result != DRV_NET_STATUS_OK) {
+		printf("Network initialization failed: %d\r\n", net_result);
+		vTaskDelete(NULL);
+		return;
+	}
+	
+	net_result = hw_net_start(&lwip_network_0, &net_config);
+	if (net_result != DRV_NET_STATUS_OK) {
+		printf("Network start failed: %d\r\n", net_result);
+		vTaskDelete(NULL);
+		return;
+	}
+	
+	printf("Network stack initialized successfully\r\n");
+	
+	// Start DOIP client now that network is ready
+	doip_client_start_task();
+	
+	// This task is done, delete itself
+	printf("Network initialization complete, deleting init task\r\n");
+	vTaskDelete(NULL);
 }
 
 /*
@@ -105,21 +149,17 @@ int main(void)
 	/* Start Ethernet link monitoring through driver API */
 	hw_eth_start_link_monitor(&eth_communication);
 
-	/* Create task for Ethernet */
-	if (xTaskCreate(socket_basic_ethernet,
-	                "Ethernet_basic",
-	                TASK_ETHERNETBASIC_STACK_SIZE,
+	/* Create network initialization task that will start DOIP client */
+	if (xTaskCreate(network_init_task,
+	                "NetInit",
+	                512,  // Stack size
 	                NULL,
-	                (TASK_ETHERNETBASIC_STACK_PRIORITY - 1),
-	                &xCreatedEthernetBasicTask)
+	                (tskIDLE_PRIORITY + 3),  // Higher priority to run first
+	                NULL)
 	    != pdPASS) {
-		printf("Failed to create Ethernet task\r\n");
-		while (1)
-			;
+		printf("Failed to create network initialization task\r\n");
+		while (1);
 	}
-
-	/* Start DOIP client task */
-	doip_client_start_task();
 
 	/* Start FreeRTOS scheduler */
 	printf("\r\nStarting FreeRTOS scheduler\r\n");

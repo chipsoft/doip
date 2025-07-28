@@ -200,16 +200,18 @@ DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
 $(DRIVERS_DIR)/driver_ethernet.c \
 $(DRIVERS_DIR)/driver_phy.c \
+$(DRIVERS_DIR)/driver_net.c \
+$(DRIVERS_DIR)/driver_net_lwip.c \
 $(BSP_DRIVERS_DIR)/bsp_led.c \
 $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
-$(BSP_DRIVERS_DIR)/bsp_phy.c
+$(BSP_DRIVERS_DIR)/bsp_phy.c \
+$(BSP_DRIVERS_DIR)/bsp_net.c
 
 # Application Files
 APP_CFILES = \
 main.c \
 eth_ipstack_main.c \
 webserver_tasks.c \
-lwip_socket_api.c \
 rtt_printf.c \
 network_events.c \
 doip_client.c

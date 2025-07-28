@@ -41,6 +41,7 @@
 #include "doip_client.h"
 #include "string.h"
 #include "bsp_ethernet.h"
+#include "bsp_net.h"
 
 typedef u32_t socklen_t;
 char          buffer[1024];
@@ -63,13 +64,48 @@ void socket_basic_ethernet(void *p)
 	int                opt     = 1;
 	int                socket_check;
 
-	sys_sem_t sem;
-	err_t     err_sem;
-	err_sem = sys_sem_new(&sem, 0); /* Create a new semaphore. */
-	tcpip_init(hw_eth_get_tcpip_init_done_fn(&eth_communication), &sem);
-	sys_sem_wait(&sem); /* Block until the lwIP stack is initialized. */
-	sys_sem_free(&sem); /* Free the semaphore. */
+	// Initialize network using universal driver
+	drv_net_status_t net_result = hw_net_init(&lwip_network_0);
+	if (net_result != DRV_NET_STATUS_OK) {
+		printf("Network initialization failed: %d\r\n", net_result);
+		return;
+	}
 
+	// Configure network with default settings
+	drv_net_config_t net_config = {
+		.mac_addr = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},
+		.use_dhcp = true,
+		.static_ip = NULL,
+		.static_netmask = NULL,
+		.static_gateway = NULL,
+		.hostname = "SAME54-Board",
+		.dhcp_timeout_ms = 30000,
+	};
+
+	// Start network stack
+	net_result = hw_net_start(&lwip_network_0, &net_config);
+	if (net_result != DRV_NET_STATUS_OK) {
+		printf("Network start failed: %d\r\n", net_result);
+		return;
+	}
+
+	// Wait for link and IP
+	printf("Waiting for network link...\r\n");
+	net_result = hw_net_wait_for_link(&lwip_network_0, 10000);
+	if (net_result == DRV_NET_STATUS_OK) {
+		printf("Link established, waiting for IP address...\r\n");
+		net_result = hw_net_wait_for_ip(&lwip_network_0, 15000);
+		if (net_result == DRV_NET_STATUS_OK) {
+			printf("IP address acquired\r\n");
+		} else {
+			printf("Failed to acquire IP address\r\n");
+		}
+	} else {
+		printf("Failed to establish link\r\n");
+	}
+
+	// Print network information
+	hw_net_print_network_info(&lwip_network_0);
 	print_ipaddress();
 
 	/*Create a socket*/
