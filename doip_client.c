@@ -6,12 +6,6 @@
  */
 
 #include "doip_client.h"
-#include "lwip/sockets.h"
-#include "lwip/sys.h"
-#include "lwip/ip_addr.h"
-#include "lwip/inet.h"
-#include "lwip/tcp.h"
-#include "lwip/pbuf.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "stream_buffer.h"
