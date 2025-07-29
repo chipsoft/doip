@@ -36,6 +36,9 @@ static doip_vehicle_info_t current_vehicle;
 static int tcp_socket = -1;
 static bool doip_client_initialized = false;
 
+/* Global system monitoring data */
+static doip_system_monitoring_t system_monitoring_data;
+
 /* Global variables for raw lwIP implementation */
 static struct tcp_pcb *doip_pcb = NULL;
 static StreamBufferHandle_t doip_stream_buffer = NULL;
@@ -305,6 +308,59 @@ static void doip_raw_disconnect(void)
     }
 }
 
+/* System monitoring functions */
+
+static void doip_init_system_monitoring_data(void)
+{
+    /* Initialize system information */
+    system_monitoring_data.active_diagnostic_session = 0x01; /* Default session */
+    strcpy(system_monitoring_data.spare_part_number, "SAME54-XPRO-DEV-001");
+    strcpy(system_monitoring_data.ecu_sw_number, "ECU-SW-SAME54-001");
+    strcpy(system_monitoring_data.ecu_sw_version_detailed, "v1.2.3-beta-20240729");
+    strcpy(system_monitoring_data.system_supplier_id, "MICROCHIP");
+    strcpy(system_monitoring_data.ecu_manufacturing_date, "2024-07-29");
+    strcpy(system_monitoring_data.ecu_serial_number, "SAME54P20A-SN001234");
+    strcpy(system_monitoring_data.kit_assembly_part_number, "ATSAME54-XPRO");
+    
+    /* Initialize network information */
+    strcpy(system_monitoring_data.ecu_network_name, "DOIP_SAME54_NET");
+    strcpy(system_monitoring_data.ecu_network_address, "192.168.100.50");
+    strcpy(system_monitoring_data.identification_data_traceability, "SAME54-DOIP-TRACE-001");
+    strcpy(system_monitoring_data.ecu_pin_traceability, "PIN-TRACE-SAME54-001");
+    
+    /* Initialize runtime monitoring with mock values */
+    system_monitoring_data.ecu_operating_hours = 1247; /* Hours since manufacturing */
+    system_monitoring_data.vehicle_speed_kmh = 0;      /* Will be updated dynamically */
+    system_monitoring_data.engine_rpm = 800;           /* Idle RPM */
+    system_monitoring_data.battery_voltage_mv = 12750; /* 12.75V */
+    system_monitoring_data.temperature_celsius = 250;  /* 25.0°C */
+    system_monitoring_data.fuel_level_percent = 85;    /* 85% */
+    
+    /* Initialize diagnostic status */
+    system_monitoring_data.error_memory_status = 0x00; /* No errors */
+    system_monitoring_data.last_reset_reason = 0x01;   /* Power-on reset */
+    strcpy(system_monitoring_data.boot_software_id, "BOOTLOADER-V2.1.0");
+    strcpy(system_monitoring_data.application_sw_fingerprint, "SHA256:A1B2C3D4E5F67890ABCDEF1234567890FEDCBA0987654321");
+}
+
+static void doip_update_dynamic_monitoring_data(void)
+{
+    static uint32_t cycle_count = 0;
+    cycle_count++;
+    
+    /* Simulate dynamic vehicle data */
+    system_monitoring_data.vehicle_speed_kmh = (cycle_count % 2) ? 45 + (cycle_count % 30) : 0;
+    system_monitoring_data.engine_rpm = 800 + (cycle_count % 1000);
+    system_monitoring_data.battery_voltage_mv = 12500 + (cycle_count % 500);
+    system_monitoring_data.temperature_celsius = 200 + (cycle_count % 300); /* 20-50°C range */
+    system_monitoring_data.fuel_level_percent = 85 - (cycle_count % 85);
+    
+    /* Update operating hours periodically */
+    if (cycle_count % 3600 == 0) { /* Every hour equivalent in cycles */
+        system_monitoring_data.ecu_operating_hours++;
+    }
+}
+
 /* Function implementations */
 
 bool doip_client_init(void)
@@ -317,6 +373,9 @@ bool doip_client_init(void)
     doip_status = DOIP_STATUS_IDLE;
     tcp_socket = -1;
     memset(&current_vehicle, 0, sizeof(current_vehicle));
+    
+    /* Initialize system monitoring data */
+    doip_init_system_monitoring_data();
 
     /* Try to initialize raw lwIP resources */
     if (doip_raw_init()) {
@@ -1053,6 +1112,155 @@ bool doip_read_ecu_hardware_version(char *version_buffer, size_t buffer_size)
     return false;
 }
 
+int doip_read_monitoring_data(uint16_t did, uint8_t *response, size_t max_response_len)
+{
+    /* Update dynamic data before reading */
+    doip_update_dynamic_monitoring_data();
+    
+    return doip_send_diagnostic_request(UDS_READ_DATA_BY_IDENTIFIER, did, response, max_response_len);
+}
+
+bool doip_get_system_monitoring_data(doip_system_monitoring_t *monitoring_data)
+{
+    if (monitoring_data == NULL) {
+        return false;
+    }
+    
+    /* Update dynamic data */
+    doip_update_dynamic_monitoring_data();
+    
+    /* Copy current monitoring data */
+    memcpy(monitoring_data, &system_monitoring_data, sizeof(doip_system_monitoring_t));
+    return true;
+}
+
+bool doip_read_active_diagnostic_session(uint8_t *session_buffer, size_t buffer_size)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_ACTIVE_DIAGNOSTIC_SESSION, response, sizeof(response));
+    
+    if (response_len > 3 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        size_t data_len = response_len - 3;
+        if (data_len > 0 && buffer_size > 0) {
+            session_buffer[0] = response[3]; /* First byte contains session type */
+            printf("DOIP Client: Active Diagnostic Session: 0x%02X\r\n", session_buffer[0]);
+            return true;
+        }
+    }
+
+    printf("DOIP Client: Failed to read active diagnostic session\r\n");
+    return false;
+}
+
+bool doip_read_ecu_serial_number(char *serial_buffer, size_t buffer_size)
+{
+    uint8_t response[64];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_ECU_SERIAL_NUMBER, response, sizeof(response));
+    
+    if (response_len > 3 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        size_t serial_len = response_len - 3;
+        if (serial_len >= buffer_size) serial_len = buffer_size - 1;
+        
+        memcpy(serial_buffer, &response[3], serial_len);
+        serial_buffer[serial_len] = '\0';
+        
+        printf("DOIP Client: ECU Serial Number: %s\r\n", serial_buffer);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read ECU serial number\r\n");
+    return false;
+}
+
+bool doip_read_vehicle_speed(uint16_t *speed_kmh)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_VEHICLE_SPEED_INFORMATION, response, sizeof(response));
+    
+    if (response_len > 4 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        *speed_kmh = (response[3] << 8) | response[4];
+        printf("DOIP Client: Vehicle Speed: %d km/h\r\n", *speed_kmh);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read vehicle speed\r\n");
+    return false;
+}
+
+bool doip_read_engine_rpm(uint16_t *rpm)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_ENGINE_RPM_INFORMATION, response, sizeof(response));
+    
+    if (response_len > 4 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        *rpm = (response[3] << 8) | response[4];
+        printf("DOIP Client: Engine RPM: %d\r\n", *rpm);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read engine RPM\r\n");
+    return false;
+}
+
+bool doip_read_battery_voltage(uint16_t *voltage_mv)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_BATTERY_VOLTAGE_INFORMATION, response, sizeof(response));
+    
+    if (response_len > 4 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        *voltage_mv = (response[3] << 8) | response[4];
+        printf("DOIP Client: Battery Voltage: %d mV (%.2f V)\r\n", *voltage_mv, *voltage_mv / 1000.0);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read battery voltage\r\n");
+    return false;
+}
+
+bool doip_read_temperature_data(int16_t *temperature_celsius)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_TEMPERATURE_SENSOR_DATA, response, sizeof(response));
+    
+    if (response_len > 4 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        *temperature_celsius = (int16_t)((response[3] << 8) | response[4]);
+        printf("DOIP Client: Temperature: %d (%.1f °C)\r\n", *temperature_celsius, *temperature_celsius / 10.0);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read temperature data\r\n");
+    return false;
+}
+
+bool doip_read_fuel_level(uint8_t *fuel_percent)
+{
+    uint8_t response[32];
+    int response_len;
+
+    response_len = doip_read_monitoring_data(DID_FUEL_LEVEL_INFORMATION, response, sizeof(response));
+    
+    if (response_len > 3 && response[0] == (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
+        *fuel_percent = response[3];
+        printf("DOIP Client: Fuel Level: %d%%\r\n", *fuel_percent);
+        return true;
+    }
+
+    printf("DOIP Client: Failed to read fuel level\r\n");
+    return false;
+}
+
 /* Alive Check Functions */
 
 bool doip_send_alive_check_request(int socket)
@@ -1346,18 +1554,73 @@ void doip_client_task(void *pvParameters)
                     printf("VIN: %s\r\n", vin_buffer);
                 }
                 
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(pdMS_TO_TICKS(500));
                 
                 /* Read ECU software version */
                 if (doip_read_ecu_software_version(version_buffer, sizeof(version_buffer))) {
                     printf("ECU Software Version: %s\r\n", version_buffer);
                 }
                 
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(pdMS_TO_TICKS(500));
                 
                 /* Read ECU hardware version */
                 if (doip_read_ecu_hardware_version(version_buffer, sizeof(version_buffer))) {
                     printf("ECU Hardware Version: %s\r\n", version_buffer);
+                }
+                
+                printf("\r\n--- Reading System Information ---\r\n");
+                
+                /* Read ECU serial number */
+                if (doip_read_ecu_serial_number(version_buffer, sizeof(version_buffer))) {
+                    printf("ECU Serial Number: %s\r\n", version_buffer);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(500));
+                
+                /* Read active diagnostic session */
+                uint8_t session_info;
+                if (doip_read_active_diagnostic_session(&session_info, sizeof(session_info))) {
+                    printf("Active Diagnostic Session: 0x%02X\r\n", session_info);
+                }
+                
+                printf("\r\n--- Reading Runtime Monitoring Data ---\r\n");
+                
+                /* Read vehicle speed */
+                uint16_t speed;
+                if (doip_read_vehicle_speed(&speed)) {
+                    printf("Vehicle Speed: %d km/h\r\n", speed);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(500));
+                
+                /* Read engine RPM */
+                uint16_t rpm;
+                if (doip_read_engine_rpm(&rpm)) {
+                    printf("Engine RPM: %d\r\n", rpm);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(500));
+                
+                /* Read battery voltage */
+                uint16_t voltage;
+                if (doip_read_battery_voltage(&voltage)) {
+                    printf("Battery Voltage: %d mV (%.2f V)\r\n", voltage, voltage / 1000.0);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(500));
+                
+                /* Read temperature */
+                int16_t temperature;
+                if (doip_read_temperature_data(&temperature)) {
+                    printf("Temperature: %.1f °C\r\n", temperature / 10.0);
+                }
+                
+                vTaskDelay(pdMS_TO_TICKS(500));
+                
+                /* Read fuel level */
+                uint8_t fuel_level;
+                if (doip_read_fuel_level(&fuel_level)) {
+                    printf("Fuel Level: %d%%\r\n", fuel_level);
                 }
                 
                 printf("--- Diagnostic cycle completed ---\r\n");

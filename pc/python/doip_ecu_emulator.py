@@ -10,6 +10,7 @@ import struct
 import threading
 import time
 import sys
+import math
 from typing import Optional, Tuple
 
 # DOIP Protocol Constants
@@ -33,10 +34,40 @@ DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK = 0x8003
 UDS_READ_DATA_BY_IDENTIFIER = 0x22
 UDS_POSITIVE_RESPONSE_MASK = 0x40
 
-# Data Identifiers (DIDs)
+# Data Identifiers (DIDs) - AUTOSAR Standard
 DID_VIN = 0xF190
 DID_ECU_SOFTWARE_VERSION = 0xF1A0
 DID_ECU_HARDWARE_VERSION = 0xF1A1
+
+# System Information DIDs
+DID_ACTIVE_DIAGNOSTIC_SESSION = 0xF186
+DID_VEHICLE_MANUFACTURER_SPARE_PART_NUMBER = 0xF187
+DID_VEHICLE_MANUFACTURER_ECU_SW_NUMBER = 0xF188
+DID_VEHICLE_MANUFACTURER_ECU_SW_VERSION = 0xF189
+DID_SYSTEM_SUPPLIER_IDENTIFIER = 0xF18A
+DID_ECU_MANUFACTURING_DATE = 0xF18B
+DID_ECU_SERIAL_NUMBER = 0xF18C
+DID_VEHICLE_MANUFACTURER_KIT_ASSEMBLY_PART_NUMBER = 0xF192
+
+# Network/Communication DIDs
+DID_VEHICLE_MANUFACTURER_ECU_NETWORK_NAME = 0xF1A2
+DID_VEHICLE_MANUFACTURER_ECU_NETWORK_ADDRESS = 0xF1A3
+DID_VEHICLE_IDENTIFICATION_DATA_TRACEABILITY = 0xF1A4
+DID_VEHICLE_MANUFACTURER_ECU_PIN_TRACEABILITY = 0xF1A5
+
+# Runtime Monitoring DIDs
+DID_ECU_OPERATING_HOURS = 0xF1A6
+DID_VEHICLE_SPEED_INFORMATION = 0xF1A7
+DID_ENGINE_RPM_INFORMATION = 0xF1A8
+DID_BATTERY_VOLTAGE_INFORMATION = 0xF1A9
+DID_TEMPERATURE_SENSOR_DATA = 0xF1AA
+DID_FUEL_LEVEL_INFORMATION = 0xF1AB
+
+# Diagnostic Status DIDs
+DID_ERROR_MEMORY_STATUS = 0xF1AC
+DID_LAST_RESET_REASON = 0xF1AD
+DID_BOOT_SOFTWARE_IDENTIFICATION = 0xF1AE
+DID_APPLICATION_SOFTWARE_FINGERPRINT = 0xF1AF
 
 class DOIPECUEmulator:
     def __init__(self, vin: str = "WBAVN31010AE12345", ecu_address: int = 0x1001):
@@ -49,6 +80,40 @@ class DOIPECUEmulator:
         # ECU information
         self.ecu_sw_version = "SW_V1.2.3"
         self.ecu_hw_version = "HW_V2.0.1"
+        
+        # System Information
+        self.active_diagnostic_session = 0x01  # Default session
+        self.spare_part_number = "DOIP-ECU-EMULATOR-001"
+        self.ecu_sw_number = "ECU-SW-PYTHON-001"
+        self.ecu_sw_version_detailed = "v1.2.3-python-20240729"
+        self.system_supplier_id = "PYTHON_EMU"
+        self.ecu_manufacturing_date = "2024-07-29"
+        self.ecu_serial_number = "PYTHON-ECU-SN987654"
+        self.kit_assembly_part_number = "PYTHON-DOIP-KIT"
+        
+        # Network Information
+        self.ecu_network_name = "DOIP_PYTHON_NET"
+        self.ecu_network_address = "192.168.100.100"
+        self.identification_data_traceability = "PYTHON-DOIP-TRACE-001"
+        self.ecu_pin_traceability = "PIN-TRACE-PYTHON-001"
+        
+        # Runtime Monitoring (will be updated dynamically)
+        self.ecu_operating_hours = 2450  # Hours since manufacturing
+        self.vehicle_speed_kmh = 0       # Will be updated dynamically
+        self.engine_rpm = 850            # Idle RPM
+        self.battery_voltage_mv = 12600  # 12.6V
+        self.temperature_celsius = 230   # 23.0°C
+        self.fuel_level_percent = 75     # 75%
+        
+        # Diagnostic Status
+        self.error_memory_status = 0x00  # No errors
+        self.last_reset_reason = 0x01    # Power-on reset
+        self.boot_software_id = "PYTHON-BOOTLOADER-V1.0.0"
+        self.application_sw_fingerprint = "SHA256:1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF"
+        
+        # Dynamic data simulation
+        self.simulation_cycle = 0
+        self.start_time = time.time()
         
         self.udp_socket = None
         self.tcp_socket = None
@@ -174,14 +239,104 @@ class DOIPECUEmulator:
         print(f"Unsupported service 0x{service_id:02x}")
         return self.create_negative_ack(0x03)
 
+    def update_dynamic_data(self):
+        """Update dynamic monitoring data for simulation"""
+        self.simulation_cycle += 1
+        current_time = time.time()
+        elapsed_time = current_time - self.start_time
+        
+        # Simulate realistic vehicle behavior
+        if self.simulation_cycle % 10 < 7:  # 70% of time vehicle is moving
+            base_speed = 40 + (self.simulation_cycle % 50)
+            self.vehicle_speed_kmh = max(0, base_speed + int(10 * math.sin(elapsed_time / 10)))
+        else:
+            self.vehicle_speed_kmh = 0  # Vehicle stopped
+        
+        # Engine RPM varies with speed and has some randomness
+        if self.vehicle_speed_kmh > 0:
+            self.engine_rpm = 1000 + int(self.vehicle_speed_kmh * 25) + int(100 * math.cos(elapsed_time / 5))
+        else:
+            self.engine_rpm = 800 + int(50 * math.sin(elapsed_time / 3))  # Idle variation
+        
+        # Battery voltage varies slightly
+        self.battery_voltage_mv = 12500 + int(300 * math.sin(elapsed_time / 20)) + (self.simulation_cycle % 200)
+        
+        # Temperature increases gradually, then cycles
+        temp_base = 200 + int(100 * math.sin(elapsed_time / 30))  # 20-30°C base
+        self.temperature_celsius = temp_base + (self.simulation_cycle % 150)
+        
+        # Fuel level decreases over time (very slowly)
+        fuel_consumption = int(elapsed_time / 100)  # 1% per 100 seconds
+        self.fuel_level_percent = max(5, 100 - fuel_consumption)
+        
+        # Operating hours increase realistically
+        self.ecu_operating_hours = 2450 + int(elapsed_time / 3600)  # Add actual hours
+
     def handle_read_data_by_identifier(self, did: int) -> Optional[bytes]:
         """Handle UDS Read Data By Identifier service"""
+        # Update dynamic data before reading
+        self.update_dynamic_data()
+        
+        # Basic DIDs
         if did == DID_VIN:
             return self.vin.encode('ascii')
         elif did == DID_ECU_SOFTWARE_VERSION:
             return self.ecu_sw_version.encode('ascii')
         elif did == DID_ECU_HARDWARE_VERSION:
             return self.ecu_hw_version.encode('ascii')
+        
+        # System Information DIDs
+        elif did == DID_ACTIVE_DIAGNOSTIC_SESSION:
+            return struct.pack('B', self.active_diagnostic_session)
+        elif did == DID_VEHICLE_MANUFACTURER_SPARE_PART_NUMBER:
+            return self.spare_part_number.encode('ascii')
+        elif did == DID_VEHICLE_MANUFACTURER_ECU_SW_NUMBER:
+            return self.ecu_sw_number.encode('ascii')
+        elif did == DID_VEHICLE_MANUFACTURER_ECU_SW_VERSION:
+            return self.ecu_sw_version_detailed.encode('ascii')
+        elif did == DID_SYSTEM_SUPPLIER_IDENTIFIER:
+            return self.system_supplier_id.encode('ascii')
+        elif did == DID_ECU_MANUFACTURING_DATE:
+            return self.ecu_manufacturing_date.encode('ascii')
+        elif did == DID_ECU_SERIAL_NUMBER:
+            return self.ecu_serial_number.encode('ascii')
+        elif did == DID_VEHICLE_MANUFACTURER_KIT_ASSEMBLY_PART_NUMBER:
+            return self.kit_assembly_part_number.encode('ascii')
+        
+        # Network/Communication DIDs
+        elif did == DID_VEHICLE_MANUFACTURER_ECU_NETWORK_NAME:
+            return self.ecu_network_name.encode('ascii')
+        elif did == DID_VEHICLE_MANUFACTURER_ECU_NETWORK_ADDRESS:
+            return self.ecu_network_address.encode('ascii')
+        elif did == DID_VEHICLE_IDENTIFICATION_DATA_TRACEABILITY:
+            return self.identification_data_traceability.encode('ascii')
+        elif did == DID_VEHICLE_MANUFACTURER_ECU_PIN_TRACEABILITY:
+            return self.ecu_pin_traceability.encode('ascii')
+        
+        # Runtime Monitoring DIDs
+        elif did == DID_ECU_OPERATING_HOURS:
+            return struct.pack('>I', self.ecu_operating_hours)
+        elif did == DID_VEHICLE_SPEED_INFORMATION:
+            return struct.pack('>H', self.vehicle_speed_kmh)
+        elif did == DID_ENGINE_RPM_INFORMATION:
+            return struct.pack('>H', self.engine_rpm)
+        elif did == DID_BATTERY_VOLTAGE_INFORMATION:
+            return struct.pack('>H', self.battery_voltage_mv)
+        elif did == DID_TEMPERATURE_SENSOR_DATA:
+            return struct.pack('>h', self.temperature_celsius)
+        elif did == DID_FUEL_LEVEL_INFORMATION:
+            return struct.pack('B', self.fuel_level_percent)
+        
+        # Diagnostic Status DIDs
+        elif did == DID_ERROR_MEMORY_STATUS:
+            return struct.pack('B', self.error_memory_status)
+        elif did == DID_LAST_RESET_REASON:
+            return struct.pack('B', self.last_reset_reason)
+        elif did == DID_BOOT_SOFTWARE_IDENTIFICATION:
+            return self.boot_software_id.encode('ascii')
+        elif did == DID_APPLICATION_SOFTWARE_FINGERPRINT:
+            return self.application_sw_fingerprint.encode('ascii')
+        
         else:
             return None
 
@@ -436,6 +591,23 @@ class DOIPECUEmulator:
         print(f"  - Alive Check Request/Response (0x0007/0x0008)")
         print(f"  - Diagnostic Messages (0x8001)")
         print(f"  - Diagnostic ACKs (0x8002/0x8003)")
+        print(f"")
+        print(f"Supported Data Identifiers (DIDs):")
+        print(f"  System Information:")
+        print(f"    - VIN (0xF190)")
+        print(f"    - ECU SW Version (0xF1A0), HW Version (0xF1A1)")
+        print(f"    - Active Diagnostic Session (0xF186)")
+        print(f"    - ECU Serial Number (0xF18C)")
+        print(f"    - Spare Part Number (0xF187)")
+        print(f"  Runtime Monitoring:")
+        print(f"    - Vehicle Speed (0xF1A7), Engine RPM (0xF1A8)")
+        print(f"    - Battery Voltage (0xF1A9), Temperature (0xF1AA)")
+        print(f"    - Fuel Level (0xF1AB), Operating Hours (0xF1A6)")
+        print(f"  Diagnostic Status:")
+        print(f"    - Error Memory Status (0xF1AC)")
+        print(f"    - Last Reset Reason (0xF1AD)")
+        print(f"    - Boot Software ID (0xF1AE)")
+        print(f"  + {len([x for x in dir() if x.startswith('DID_')]) - 13} additional DIDs")
         print("Press Ctrl+C to stop")
         
         self.running = True
