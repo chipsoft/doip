@@ -11,6 +11,14 @@
 #include "stream_buffer.h"
 #include "semphr.h"
 #include "printf.h"
+#include "lwip/tcp.h"
+#include "lwip/err.h"
+#include "lwip/pbuf.h"
+#include "lwip/sockets.h"
+#include "lwip/ip_addr.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/ip4_frag.h"
+#include "lwip/ip4.h"
 #include "eth_ipstack_main.h"
 #include <string.h>
 #include <stdlib.h>
