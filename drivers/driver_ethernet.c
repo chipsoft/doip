@@ -144,6 +144,66 @@ drv_eth_status_t hw_eth_write_phy_reg(drv_eth_t *handle, uint16_t reg, uint16_t 
     return handle->write_phy_reg(handle->hw_context, reg, value);
 }
 
+drv_eth_status_t hw_eth_set_phy_powerdown(drv_eth_t *handle, bool state)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_phy_powerdown != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->set_phy_powerdown(handle->hw_context, state);
+}
+
+drv_eth_status_t hw_eth_set_phy_isolate(drv_eth_t *handle, bool state)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_phy_isolate != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->set_phy_isolate(handle->hw_context, state);
+}
+
+drv_eth_status_t hw_eth_set_phy_loopback(drv_eth_t *handle, bool state)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_phy_loopback != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->set_phy_loopback(handle->hw_context, state);
+}
+
+drv_eth_status_t hw_eth_set_phy_reg_bit(drv_eth_t *handle, uint16_t reg, uint16_t mask)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_phy_reg_bit != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->set_phy_reg_bit(handle->hw_context, reg, mask);
+}
+
+drv_eth_status_t hw_eth_clear_phy_reg_bit(drv_eth_t *handle, uint16_t reg, uint16_t mask)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->clear_phy_reg_bit != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->clear_phy_reg_bit(handle->hw_context, reg, mask);
+}
+
 drv_eth_status_t hw_eth_register_callback(drv_eth_t *handle, drv_eth_cb_type_t type, drv_eth_callback_t callback)
 {
     ASSERT(handle != NULL);

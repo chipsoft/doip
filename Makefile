@@ -199,12 +199,10 @@ $(ASF4_DIR)/hal/src/hal_cache.c
 DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
 $(DRIVERS_DIR)/driver_ethernet.c \
-$(DRIVERS_DIR)/driver_phy.c \
 $(DRIVERS_DIR)/driver_net.c \
 $(DRIVERS_DIR)/driver_net_lwip.c \
 $(BSP_DRIVERS_DIR)/bsp_led.c \
 $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
-$(BSP_DRIVERS_DIR)/bsp_phy.c \
 $(BSP_DRIVERS_DIR)/bsp_net.c
 
 # Application Files

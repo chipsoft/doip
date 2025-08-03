@@ -10,9 +10,9 @@
 #include "bsp_ethernet.h"
 #include "hal_mac_async.h"
 #include "hal_gpio.h"
-#include "bsp_phy.h"
 #include "printf.h"
 #include "ieee8023_mii_standard_config.h"
+#include "ieee8023_mii_standard_register.h"
 #include "same54p20a.h"
 #include <string.h>
 #include <hri_mclk_e54.h>
@@ -88,11 +88,8 @@ typedef struct tag_gmac_device {
 #define PINMUX_PA14L_GMAC_GTXCK    ((PIN_PA14L_GMAC_GTXCK << 16) | MUX_PA14L_GMAC_GTXCK)
 #define PINMUX_PA17L_GMAC_GTXEN    ((PIN_PA17L_GMAC_GTXEN << 16) | MUX_PA17L_GMAC_GTXEN)
 
-/* External peripheral descriptors */
+/* External peripheral descriptors declaration (will be integrated) */
 extern struct mac_async_descriptor COMMUNICATION_IO;
-
-/* External PHY driver instance - defined in bsp_phy.c */
-extern drv_phy_t phy_0;
 
 /* Network interface variables - now part of driver context */
 
@@ -113,8 +110,8 @@ static drv_eth_status_t convert_error_code(int32_t asf4_error)
 
 typedef struct
 {
-    struct mac_async_descriptor *mac_desc;
-    drv_phy_t *phy_driver;
+    struct mac_async_descriptor *mac_desc;  // Pointer to MAC descriptor
+    uint16_t phy_address;                   // PHY address on MDIO bus
     drv_eth_callback_t receive_callback;
     drv_eth_callback_t transmit_callback;
     
@@ -127,23 +124,28 @@ typedef struct
     
     // Link monitoring task
     TaskHandle_t link_monitor_task;
+    
+    // PHY callbacks (formerly from PHY driver)
+    drv_eth_callback_t phy_link_change_callback;
+    drv_eth_callback_t phy_error_callback;
 } drv_eth_hw_context_t;
 
 static drv_eth_hw_context_t drv_eth_hw_context_communication = {
-    .mac_desc = &COMMUNICATION_IO,
-    .phy_driver = &phy_0,
+    .mac_desc = &COMMUNICATION_IO,  // Pointer to external MAC descriptor
+    .phy_address = CONF_ETHERNET_PHY_0_IEEE8023_MII_PHY_ADDRESS,
     .receive_callback = NULL,
     .transmit_callback = NULL,
     .gmac_dev = {0},
     .link_up = false,
     .recv_flag = false,
     .link_monitor_task = NULL,
+    .phy_link_change_callback = NULL,
+    .phy_error_callback = NULL,
 };
 
 // Forward declarations of static functions
 static void gmac_clock_init(void);
 static void gmac_pin_init(void);
-static void mac_receive_cb(struct mac_async_descriptor *desc);
 static void gmac_handler_cb(void);
 static void gmac_task(void *pvParameters);
 static void link_monitor_task(void *p);
@@ -157,6 +159,11 @@ static drv_eth_status_t drv_eth_get_link_status(const void *hw_context, bool *li
 static drv_eth_status_t drv_eth_restart_autoneg(const void *hw_context);
 static drv_eth_status_t drv_eth_read_phy_reg(const void *hw_context, uint16_t reg, uint16_t *value);
 static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t reg, uint16_t value);
+static drv_eth_status_t drv_eth_set_phy_powerdown(const void *hw_context, bool state);
+static drv_eth_status_t drv_eth_set_phy_isolate(const void *hw_context, bool state);
+static drv_eth_status_t drv_eth_set_phy_loopback(const void *hw_context, bool state);
+static drv_eth_status_t drv_eth_set_phy_reg_bit(const void *hw_context, uint16_t reg, uint16_t mask);
+static drv_eth_status_t drv_eth_clear_phy_reg_bit(const void *hw_context, uint16_t reg, uint16_t value);
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback);
 static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *data, uint32_t length);
 static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context);
@@ -178,6 +185,11 @@ drv_eth_t eth_communication = {
     .restart_autoneg = drv_eth_restart_autoneg,
     .read_phy_reg = drv_eth_read_phy_reg,
     .write_phy_reg = drv_eth_write_phy_reg,
+    .set_phy_powerdown = drv_eth_set_phy_powerdown,
+    .set_phy_isolate = drv_eth_set_phy_isolate,
+    .set_phy_loopback = drv_eth_set_phy_loopback,
+    .set_phy_reg_bit = drv_eth_set_phy_reg_bit,
+    .clear_phy_reg_bit = drv_eth_clear_phy_reg_bit,
     .register_callback = drv_eth_register_callback,
     .write = drv_eth_write,
     .get_tcpip_init_done_fn = drv_eth_get_tcpip_init_done_fn_impl,
@@ -188,7 +200,7 @@ drv_eth_t eth_communication = {
 static drv_eth_status_t drv_eth_init(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
     printf("[ETH] Initializing GMAC clocks and pins\r\n");
     
@@ -198,7 +210,7 @@ static drv_eth_status_t drv_eth_init(const void *hw_context)
     // Configure GMAC pins
     gmac_pin_init();
     
-    // Initialize MAC
+    // Initialize MAC with pointer to external descriptor
     int32_t result = mac_async_init(context->mac_desc, GMAC);
     if (result != ERR_NONE) {
         return convert_error_code(result);
@@ -211,7 +223,7 @@ static drv_eth_status_t drv_eth_init(const void *hw_context)
 static drv_eth_status_t drv_eth_deinit(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
     int32_t result = mac_async_deinit(context->mac_desc);
     printf("[ETH] MAC deinitialized\r\n");
@@ -221,7 +233,7 @@ static drv_eth_status_t drv_eth_deinit(const void *hw_context)
 static drv_eth_status_t drv_eth_enable(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
     int32_t result = mac_async_enable(context->mac_desc);
     if (result == ERR_NONE) {
@@ -233,7 +245,7 @@ static drv_eth_status_t drv_eth_enable(const void *hw_context)
 static drv_eth_status_t drv_eth_disable(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
     int32_t result = mac_async_disable(context->mac_desc);
     printf("[ETH] MAC disabled\r\n");
@@ -243,20 +255,28 @@ static drv_eth_status_t drv_eth_disable(const void *hw_context)
 static drv_eth_status_t drv_eth_phy_init(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
-    printf("[ETH] Initializing PHY\r\n");
+    printf("[ETH] Initializing PHY at address 0x%02X\r\n", context->phy_address);
     
-    drv_phy_status_t result = hw_phy_init(context->phy_driver);
-    if (result != DRV_PHY_STATUS_OK) {
-        printf("[ETH] PHY initialization failed\r\n");
-        return (drv_eth_status_t)result;
+    // Configure PHY with default settings
+    int32_t result = mac_async_write_phy_reg(context->mac_desc, context->phy_address,
+                                           MDIO_REG0_BMCR, CONF_ETHERNET_PHY_0_IEEE8023_MII_CONTROL_REG0);
+    if (result != ERR_NONE) {
+        printf("[ETH] Failed to configure PHY control register\r\n");
+        return convert_error_code(result);
     }
     
-    result = hw_phy_enable(context->phy_driver);
-    if (result != DRV_PHY_STATUS_OK) {
-        printf("[ETH] PHY enable failed\r\n");
-        return (drv_eth_status_t)result;
+    // Read and display PHY status for debugging
+    uint16_t reg_value;
+    if (mac_async_read_phy_reg(context->mac_desc, context->phy_address, 0, &reg_value) == ERR_NONE) {
+        printf("[ETH] PHY Control Register: 0x%04X\r\n", reg_value);
+    }
+    if (mac_async_read_phy_reg(context->mac_desc, context->phy_address, 1, &reg_value) == ERR_NONE) {
+        printf("[ETH] PHY Status Register: 0x%04X\r\n", reg_value);
+    }
+    if (mac_async_read_phy_reg(context->mac_desc, context->phy_address, 4, &reg_value) == ERR_NONE) {
+        printf("[ETH] PHY Auto-negotiation Advertisement: 0x%04X\r\n", reg_value);
     }
     
     printf("[ETH] PHY initialized successfully\r\n");
@@ -266,54 +286,128 @@ static drv_eth_status_t drv_eth_phy_init(const void *hw_context)
 static drv_eth_status_t drv_eth_phy_reset(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
-    drv_phy_status_t result = hw_phy_reset(context->phy_driver);
-    if (result == DRV_PHY_STATUS_OK) {
+    printf("[ETH] Resetting PHY\r\n");
+    
+    int32_t result = mac_async_write_phy_reg(context->mac_desc, context->phy_address,
+                                           MDIO_REG0_BMCR, MDIO_REG0_BIT_RESET);
+    if (result == ERR_NONE) {
         printf("[ETH] PHY reset completed\r\n");
     }
-    return (drv_eth_status_t)result;
+    return convert_error_code(result);
 }
 
 static drv_eth_status_t drv_eth_get_link_status(const void *hw_context, bool *link_up)
 {
     ASSERT(hw_context != NULL);
     ASSERT(link_up != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
-    drv_phy_status_t result = hw_phy_get_link_status(context->phy_driver, link_up);
-    return (drv_eth_status_t)result;
+    uint16_t reg_value;
+    int32_t result = mac_async_read_phy_reg(context->mac_desc, context->phy_address,
+                                          MDIO_REG1_BMSR, &reg_value);
+    if (result == ERR_NONE) {
+        *link_up = (reg_value & MDIO_REG1_BIT_LINK_STATUS) ? true : false;
+    }
+    
+    return convert_error_code(result);
 }
 
 static drv_eth_status_t drv_eth_restart_autoneg(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
     
-    drv_phy_status_t result = hw_phy_restart_autoneg(context->phy_driver);
-    if (result == DRV_PHY_STATUS_OK) {
-        printf("[ETH] Auto-negotiation restarted\r\n");
-    }
-    return (drv_eth_status_t)result;
+    printf("[ETH] Restarting auto-negotiation\r\n");
+    
+    // Use helper function to set the restart auto-negotiation bit
+    return drv_eth_set_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_RESTART_AUTONEG);
 }
 
 static drv_eth_status_t drv_eth_read_phy_reg(const void *hw_context, uint16_t reg, uint16_t *value)
 {
     ASSERT(hw_context != NULL);
     ASSERT(value != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    ASSERT(reg <= 0x1F);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
-    drv_phy_status_t result = hw_phy_read_reg(context->phy_driver, reg, value);
-    return (drv_eth_status_t)result;
+    int32_t result = mac_async_read_phy_reg(context->mac_desc, context->phy_address, reg, value);
+    return convert_error_code(result);
 }
 
 static drv_eth_status_t drv_eth_write_phy_reg(const void *hw_context, uint16_t reg, uint16_t value)
 {
     ASSERT(hw_context != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    ASSERT(reg <= 0x1F);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
-    drv_phy_status_t result = hw_phy_write_reg(context->phy_driver, reg, value);
-    return (drv_eth_status_t)result;
+    int32_t result = mac_async_write_phy_reg(context->mac_desc, context->phy_address, reg, value);
+    return convert_error_code(result);
+}
+
+static drv_eth_status_t drv_eth_set_phy_powerdown(const void *hw_context, bool state)
+{
+    ASSERT(hw_context != NULL);
+    
+    if (state) {
+        return drv_eth_set_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_POWER_DOWN);
+    } else {
+        return drv_eth_clear_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_POWER_DOWN);
+    }
+}
+
+static drv_eth_status_t drv_eth_set_phy_isolate(const void *hw_context, bool state)
+{
+    ASSERT(hw_context != NULL);
+    
+    if (state) {
+        return drv_eth_set_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_ISOLATE);
+    } else {
+        return drv_eth_clear_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_ISOLATE);
+    }
+}
+
+static drv_eth_status_t drv_eth_set_phy_loopback(const void *hw_context, bool state)
+{
+    ASSERT(hw_context != NULL);
+    
+    if (state) {
+        return drv_eth_set_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_LOOPBACK);
+    } else {
+        return drv_eth_clear_phy_reg_bit(hw_context, MDIO_REG0_BMCR, MDIO_REG0_BIT_LOOPBACK);
+    }
+}
+
+static drv_eth_status_t drv_eth_set_phy_reg_bit(const void *hw_context, uint16_t reg, uint16_t mask)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(reg <= 0x1F);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    uint16_t reg_value;
+    int32_t result = mac_async_read_phy_reg(context->mac_desc, context->phy_address, reg, &reg_value);
+    if (result == ERR_NONE) {
+        reg_value |= mask;
+        result = mac_async_write_phy_reg(context->mac_desc, context->phy_address, reg, reg_value);
+    }
+    
+    return convert_error_code(result);
+}
+
+static drv_eth_status_t drv_eth_clear_phy_reg_bit(const void *hw_context, uint16_t reg, uint16_t mask)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(reg <= 0x1F);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    uint16_t reg_value;
+    int32_t result = mac_async_read_phy_reg(context->mac_desc, context->phy_address, reg, &reg_value);
+    if (result == ERR_NONE) {
+        reg_value &= ~mask;
+        result = mac_async_write_phy_reg(context->mac_desc, context->phy_address, reg, reg_value);
+    }
+    
+    return convert_error_code(result);
 }
 
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback)
@@ -341,7 +435,7 @@ static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *dat
 {
     ASSERT(hw_context != NULL);
     ASSERT(data != NULL);
-    const drv_eth_hw_context_t *context = (const drv_eth_hw_context_t *)hw_context;
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
     
     int32_t result = mac_async_write(context->mac_desc, (uint8_t *)data, length);
     return convert_error_code(result);
@@ -373,11 +467,6 @@ static void gmac_pin_init(void)
 
 /* GMAC and link monitoring functions moved from webserver_tasks.c */
 
-static void mac_receive_cb(struct mac_async_descriptor *desc)
-{
-    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
-    context->recv_flag = true;
-}
 
 /**
  * \brief Callback for GMAC interrupt.
@@ -485,7 +574,8 @@ static void eth_tcpip_init_done(void *arg)
     log_lwip_init(ERR_OK);
     
     hw_eth_register_callback(&eth_communication, DRV_ETH_CB_RECEIVE, gmac_handler_cb);
-    hri_gmac_set_IMR_RCOMP_bit(COMMUNICATION_IO.dev.hw);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)eth_communication.hw_context;
+    hri_gmac_set_IMR_RCOMP_bit(context->mac_desc->dev.hw);
 
     printf("[INIT] Waiting for Ethernet link...\r\n");
     
@@ -498,8 +588,6 @@ static void eth_tcpip_init_done(void *arg)
     /* Give PHY more time to initialize and establish link */
     int link_attempts = 0;
     const int max_link_attempts = 100;  /* 10 seconds at 100ms intervals */
-    
-    drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
     
     while (link_attempts < max_link_attempts) {
         drv_eth_status_t phy_status = hw_eth_get_link_status(&eth_communication, &context->link_up);
@@ -533,7 +621,7 @@ static void eth_tcpip_init_done(void *arg)
     /* Setting to 5 (numerically higher than 4, so lower priority) */
     NVIC_SetPriority(GMAC_IRQn, 5);
     NVIC_EnableIRQ(GMAC_IRQn);
-    mac_async_enable(&COMMUNICATION_IO);
+    mac_async_enable(context->mac_desc);
 
     printf("[INIT] Initializing network interface...\r\n");
     TCPIP_STACK_INTERFACE_0_init(mac);

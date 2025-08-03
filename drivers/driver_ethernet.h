@@ -43,6 +43,15 @@ typedef struct
     drv_eth_status_t (*read_phy_reg)(const void *hw_context, uint16_t reg, uint16_t *value);
     drv_eth_status_t (*write_phy_reg)(const void *hw_context, uint16_t reg, uint16_t value);
     
+    // PHY power management
+    drv_eth_status_t (*set_phy_powerdown)(const void *hw_context, bool state);
+    drv_eth_status_t (*set_phy_isolate)(const void *hw_context, bool state);
+    drv_eth_status_t (*set_phy_loopback)(const void *hw_context, bool state);
+    
+    // Advanced PHY register operations
+    drv_eth_status_t (*set_phy_reg_bit)(const void *hw_context, uint16_t reg, uint16_t mask);
+    drv_eth_status_t (*clear_phy_reg_bit)(const void *hw_context, uint16_t reg, uint16_t mask);
+    
     // Callback management
     drv_eth_status_t (*register_callback)(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback);
     
@@ -77,6 +86,15 @@ drv_eth_status_t hw_eth_restart_autoneg(drv_eth_t *handle);
 // Register access functions
 drv_eth_status_t hw_eth_read_phy_reg(drv_eth_t *handle, uint16_t reg, uint16_t *value);
 drv_eth_status_t hw_eth_write_phy_reg(drv_eth_t *handle, uint16_t reg, uint16_t value);
+
+// PHY power management functions
+drv_eth_status_t hw_eth_set_phy_powerdown(drv_eth_t *handle, bool state);
+drv_eth_status_t hw_eth_set_phy_isolate(drv_eth_t *handle, bool state);
+drv_eth_status_t hw_eth_set_phy_loopback(drv_eth_t *handle, bool state);
+
+// Advanced PHY register operations
+drv_eth_status_t hw_eth_set_phy_reg_bit(drv_eth_t *handle, uint16_t reg, uint16_t mask);
+drv_eth_status_t hw_eth_clear_phy_reg_bit(drv_eth_t *handle, uint16_t reg, uint16_t mask);
 
 // Callback management
 drv_eth_status_t hw_eth_register_callback(drv_eth_t *handle, drv_eth_cb_type_t type, drv_eth_callback_t callback);
