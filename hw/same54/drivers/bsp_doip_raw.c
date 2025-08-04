@@ -652,17 +652,102 @@ static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *da
     data->temperature_celsius = 200 + (update_counter % 100); // 20-30°C
 }
 
-// Task function (simplified version)
+// Task function - performs DOIP operations
 static void doip_client_task(void *pvParameters)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)pvParameters;
+    drv_doip_vehicle_info_t vehicle_info;
+    char vin_buffer[18];
+    char version_buffer[64];
+    uint16_t speed_kmh, rpm, voltage_mv;
+    int16_t temperature;
+    uint8_t fuel_percent;
     
     printf("DOIP Client: Task started (Raw lwIP mode)\r\n");
     
+    // Wait a bit for network to be fully ready
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
     while (1) {
-        // Task would perform periodic operations like alive checks
-        // For now, just delay
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        // Only proceed if we're in idle state (not connected)
+        if (context->current_state == DRV_DOIP_STATE_IDLE) {
+            printf("DOIP Client: Starting vehicle discovery...\r\n");
+            
+            // Discover vehicles
+            if (drv_doip_discover_vehicles_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
+                printf("DOIP Client: Vehicle discovered, attempting connection...\r\n");
+                
+                // Connect to discovered vehicle
+                if (drv_doip_connect_to_vehicle_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
+                    printf("\r\n--- Reading Vehicle Information ---\r\n");
+                    
+                    // Read VIN
+                    if (drv_doip_read_vin_impl(context, vin_buffer) == DRV_DOIP_STATUS_OK) {
+                        printf("VIN: %s\r\n", vin_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    // Read ECU software version
+                    if (drv_doip_read_ecu_software_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
+                        printf("ECU SW Version: %s\r\n", version_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    // Read ECU hardware version
+                    if (drv_doip_read_ecu_hardware_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
+                        printf("ECU HW Version: %s\r\n", version_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    printf("\r\n--- Reading Monitoring Data ---\r\n");
+                    
+                    // Read vehicle speed
+                    if (drv_doip_read_vehicle_speed_impl(context, &speed_kmh) == DRV_DOIP_STATUS_OK) {
+                        printf("Vehicle Speed: %d km/h\r\n", speed_kmh);
+                    }
+                    
+                    // Read engine RPM
+                    if (drv_doip_read_engine_rpm_impl(context, &rpm) == DRV_DOIP_STATUS_OK) {
+                        printf("Engine RPM: %d\r\n", rpm);
+                    }
+                    
+                    // Read battery voltage
+                    if (drv_doip_read_battery_voltage_impl(context, &voltage_mv) == DRV_DOIP_STATUS_OK) {
+                        printf("Battery Voltage: %d.%03d V\r\n", voltage_mv / 1000, voltage_mv % 1000);
+                    }
+                    
+                    // Read temperature
+                    if (drv_doip_read_temperature_data_impl(context, &temperature) == DRV_DOIP_STATUS_OK) {
+                        printf("Temperature: %d.%d °C\r\n", temperature / 10, temperature % 10);
+                    }
+                    
+                    // Read fuel level
+                    if (drv_doip_read_fuel_level_impl(context, &fuel_percent) == DRV_DOIP_STATUS_OK) {
+                        printf("Fuel Level: %d%%\r\n", fuel_percent);
+                    }
+                    
+                    printf("\r\n--- DOIP Communication Complete ---\r\n");
+                    
+                    // Disconnect after reading data
+                    drv_doip_disconnect_impl(context);
+                    
+                    // Wait before next cycle
+                    vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
+                } else {
+                    printf("DOIP Client: Failed to connect to vehicle\r\n");
+                    vTaskDelay(pdMS_TO_TICKS(10000)); // Wait 10 seconds before retry
+                }
+            } else {
+                printf("DOIP Client: No vehicles discovered\r\n");
+                vTaskDelay(pdMS_TO_TICKS(10000)); // Wait 10 seconds before retry
+            }
+        } else {
+            // If in connected state, perform periodic alive checks or monitoring
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
         
         // Update dynamic monitoring data
         doip_update_dynamic_monitoring_data(&context->monitoring_data);
