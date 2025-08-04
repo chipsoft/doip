@@ -384,7 +384,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     strncpy(vehicle_info->vin, "MOCK_VIN_12345678", 17);
     vehicle_info->vin[17] = '\0';
     vehicle_info->logical_address = 0x1001;
-    vehicle_info->ip_address = 0xC0A86432; // 192.168.100.50
+    // Store IP as individual bytes: 192.168.100.50
+    vehicle_info->ip_address = (192) | (168 << 8) | (100 << 16) | (50 << 24);
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
     
     return DRV_DOIP_STATUS_OK;
