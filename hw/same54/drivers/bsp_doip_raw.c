@@ -397,10 +397,10 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     
     // Use device's own network for demonstration (will still fail but shows concept)
     // In real scenario, this would be the IP from the UDP response
-    vehicle_info->ip_address = (192) | (168 << 8) | (100 << 16) | (50 << 24); // 192.168.100.50
+    vehicle_info->ip_address = (192) | (168 << 8) | (100 << 16) | (1 << 24); // 192.168.100.1 (gateway)
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
     
-    printf("DOIP Client: Found vehicle - VIN: %s, Address: 192.168.100.50:13400\r\n", vehicle_info->vin);
+    printf("DOIP Client: Found vehicle - VIN: %s, Address: 192.168.100.1:13400\r\n", vehicle_info->vin);
     
     return DRV_DOIP_STATUS_OK;
 }
