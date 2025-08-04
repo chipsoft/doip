@@ -1,10 +1,5 @@
 #include "driver_doip.h"
-#include "utils_assert.h"
-#include "printf.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "stream_buffer.h"
-#include "semphr.h"
+// Include lwIP headers first to avoid ERR_TIMEOUT conflict with ASF4
 #include "lwip/tcp.h"
 #include "lwip/err.h"
 #include "lwip/pbuf.h"
@@ -14,6 +9,12 @@
 #include "lwip/ip4_frag.h"
 #include "lwip/ip4.h"
 #include "eth_ipstack_main.h"
+#include "utils_assert.h"
+#include "printf.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "stream_buffer.h"
+#include "semphr.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -98,11 +99,6 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
 };
 
 // Helper functions
-static void doip_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length);
-static bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg);
-static bool doip_send_udp_message(const doip_message_t *msg, uint32_t dest_ip, uint16_t dest_port);
-static bool doip_send_tcp_message_raw(struct tcp_pcb *pcb, const doip_message_t *msg);
-static bool doip_receive_tcp_message_raw(struct tcp_pcb *pcb, doip_message_t *msg, uint32_t timeout_ms);
 static void doip_init_system_monitoring_data(drv_doip_system_monitoring_t *data);
 static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *data);
 
@@ -385,7 +381,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     
     // Implementation would perform UDP broadcast discovery
     // For now, return mock data
-    strcpy(vehicle_info->vin, "MOCK_VIN_1234567890");
+    strncpy(vehicle_info->vin, "MOCK_VIN_12345678", 17);
+    vehicle_info->vin[17] = '\0';
     vehicle_info->logical_address = 0x1001;
     vehicle_info->ip_address = 0xC0A86432; // 192.168.100.50
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
