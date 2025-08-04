@@ -41,8 +41,8 @@
 #include "bsp_ethernet.h"
 #include "eth_ipstack_main.h"
 #include "webserver_tasks.h"
-#include "doip_client.h" 
-#include "bsp_net.h"  // New universal network driver
+#include "bsp_doip.h"  // Universal DOIP driver
+#include "bsp_net.h"   // New universal network driver
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -105,7 +105,7 @@ static void network_init_task(void *pvParameters)
 	printf("Network stack initialized successfully\r\n");
 	
 	// Start DOIP client now that network is ready
-	doip_client_start_task();
+	hw_doip_start_task(&doip_0);
 	
 	// This task is done, delete itself
 	printf("Network initialization complete, deleting init task\r\n");
@@ -137,8 +137,8 @@ int main(void)
 	/* Initialize SEGGER RTT for debug output */
 	rtt_printf_init();
 
-	/* Initialize DOIP client */
-	doip_client_init();
+	/* Initialize DOIP client using universal driver */
+	hw_doip_init(&doip_0);
 
 	/* Create application tasks */
 	task_led_create();

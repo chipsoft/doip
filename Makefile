@@ -195,15 +195,28 @@ $(ASF4_DIR)/hal/utils/src/utils_assert.c \
 $(ASF4_DIR)/hpl/mclk/hpl_mclk.c \
 $(ASF4_DIR)/hal/src/hal_cache.c
 
+# DOIP Configuration - Set to 1 for raw lwIP, 0 for socket implementation
+DOIP_USE_RAW_LWIP ?= 0
+
 # Driver Files
 DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
 $(DRIVERS_DIR)/driver_ethernet.c \
 $(DRIVERS_DIR)/driver_net.c \
 $(DRIVERS_DIR)/driver_net_lwip.c \
+$(DRIVERS_DIR)/driver_doip.c \
 $(BSP_DRIVERS_DIR)/bsp_led.c \
 $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
 $(BSP_DRIVERS_DIR)/bsp_net.c
+
+# DOIP BSP Implementation Selection
+ifeq ($(DOIP_USE_RAW_LWIP), 1)
+DRIVER_CFILES += $(BSP_DRIVERS_DIR)/bsp_doip_raw.c
+DEFINES += -DDOIP_USE_RAW_LWIP=1
+else
+DRIVER_CFILES += $(BSP_DRIVERS_DIR)/bsp_doip_socket.c
+DEFINES += -DDOIP_USE_RAW_LWIP=0
+endif
 
 # Application Files
 APP_CFILES = \
@@ -211,8 +224,7 @@ main.c \
 eth_ipstack_main.c \
 webserver_tasks.c \
 rtt_printf.c \
-network_events.c \
-doip_client.c
+network_events.c
 
 # Ethernet PHY Files (now integrated into PHY driver)
 ETHERNET_PHY_CFILES =
