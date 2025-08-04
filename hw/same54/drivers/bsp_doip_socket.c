@@ -798,17 +798,148 @@ static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *da
     data->temperature_celsius = 200 + (update_counter % 100); // 20-30°C
 }
 
-// Task function (simplified version)
+static void doip_display_all_server_data(const drv_doip_system_monitoring_t *data)
+{
+    printf("\r\n=== DOIP Server: Comprehensive System Monitoring Data ===\r\n");
+    
+    printf("DOIP Server: [INFO] Displaying all 22 AUTOSAR-standard DIDs\r\n");
+    printf("DOIP Server: [INFO] System ready - all monitoring parameters available\r\n");
+    
+    printf("\r\n--- System Information ---\r\n");
+    printf("DOIP Server: Active Diagnostic Session: 0x%02X\r\n", data->active_diagnostic_session);
+    printf("DOIP Server: Spare Part Number: %s\r\n", data->spare_part_number);
+    printf("DOIP Server: ECU Software Number: %s\r\n", data->ecu_sw_number);
+    printf("DOIP Server: ECU Software Version: %s\r\n", data->ecu_sw_version_detailed);
+    printf("DOIP Server: System Supplier: %s\r\n", data->system_supplier_id);
+    printf("DOIP Server: Manufacturing Date: %s\r\n", data->ecu_manufacturing_date);
+    printf("DOIP Server: ECU Serial Number: %s\r\n", data->ecu_serial_number);
+    printf("DOIP Server: Kit Assembly Part: %s\r\n", data->kit_assembly_part_number);
+    
+    printf("\r\n--- Network Information ---\r\n");
+    printf("DOIP Server: Network Name: %s\r\n", data->ecu_network_name);
+    printf("DOIP Server: Network Address: %s\r\n", data->ecu_network_address);
+    printf("DOIP Server: ID Data Traceability: %s\r\n", data->identification_data_traceability);
+    printf("DOIP Server: PIN Traceability: %s\r\n", data->ecu_pin_traceability);
+    
+    printf("\r\n--- Runtime Monitoring ---\r\n");
+    printf("DOIP Server: Operating Hours: %lu hours\r\n", (unsigned long)data->ecu_operating_hours);
+    printf("DOIP Server: Vehicle Speed: %u km/h\r\n", data->vehicle_speed_kmh);
+    printf("DOIP Server: Engine RPM: %u RPM\r\n", data->engine_rpm);
+    printf("DOIP Server: Battery Voltage: %u.%03u V\r\n", data->battery_voltage_mv / 1000, data->battery_voltage_mv % 1000);
+    printf("DOIP Server: Temperature: %d.%d °C\r\n", data->temperature_celsius / 10, abs(data->temperature_celsius % 10));
+    printf("DOIP Server: Fuel Level: %u%%\r\n", data->fuel_level_percent);
+    
+    printf("\r\n--- Diagnostic Status ---\r\n");
+    printf("DOIP Server: Error Memory Status: 0x%02X\r\n", data->error_memory_status);
+    printf("DOIP Server: Last Reset Reason: 0x%02X\r\n", data->last_reset_reason);
+    printf("DOIP Server: Boot Software ID: %s\r\n", data->boot_software_id);
+    printf("DOIP Server: Application SW Fingerprint: %s\r\n", data->application_sw_fingerprint);
+    
+    printf("\r\n=== DOIP Server: End of Monitoring Data Display ===\r\n");
+    printf("DOIP Server: [INFO] All system parameters successfully reported\r\n");
+    printf("DOIP Server: [INFO] Data updated with current runtime values\r\n\r\n");
+}
+
+// Task function - performs full DOIP operations
 static void doip_client_task(void *pvParameters)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)pvParameters;
+    drv_doip_vehicle_info_t vehicle_info;
+    char vin_buffer[18];
+    char version_buffer[64];
+    uint16_t speed_kmh, rpm, voltage_mv;
+    int16_t temperature;
+    uint8_t fuel_percent;
     
     printf("DOIP Client: Task started (Socket mode)\r\n");
     
+    // Wait a bit for network to be fully ready
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
     while (1) {
-        // Task would perform periodic operations like alive checks
-        // For now, just delay
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        // Only proceed if we're in idle state (not connected)
+        if (context->current_state == DRV_DOIP_STATE_IDLE) {
+            printf("DOIP Client: Starting vehicle discovery (Socket)...\r\n");
+            
+            // Discover vehicles
+            if (drv_doip_discover_vehicles_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
+                printf("DOIP Client: Vehicle discovered, attempting connection (Socket)...\r\n");
+                
+                // Connect to discovered vehicle
+                if (drv_doip_connect_to_vehicle_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
+                    printf("\r\n--- Reading Vehicle Information (Socket) ---\r\n");
+                    
+                    // Read VIN
+                    if (drv_doip_read_vin_impl(context, vin_buffer) == DRV_DOIP_STATUS_OK) {
+                        printf("VIN: %s\r\n", vin_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    // Read ECU software version
+                    if (drv_doip_read_ecu_software_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
+                        printf("ECU SW Version: %s\r\n", version_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    // Read ECU hardware version
+                    if (drv_doip_read_ecu_hardware_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
+                        printf("ECU HW Version: %s\r\n", version_buffer);
+                    }
+                    
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    
+                    printf("\r\n--- Reading Monitoring Data (Socket) ---\r\n");
+                    
+                    // Read vehicle speed
+                    if (drv_doip_read_vehicle_speed_impl(context, &speed_kmh) == DRV_DOIP_STATUS_OK) {
+                        printf("Vehicle Speed: %d km/h\r\n", speed_kmh);
+                    }
+                    
+                    // Read engine RPM
+                    if (drv_doip_read_engine_rpm_impl(context, &rpm) == DRV_DOIP_STATUS_OK) {
+                        printf("Engine RPM: %d\r\n", rpm);
+                    }
+                    
+                    // Read battery voltage
+                    if (drv_doip_read_battery_voltage_impl(context, &voltage_mv) == DRV_DOIP_STATUS_OK) {
+                        printf("Battery Voltage: %d.%03d V\r\n", voltage_mv / 1000, voltage_mv % 1000);
+                    }
+                    
+                    // Read temperature
+                    if (drv_doip_read_temperature_data_impl(context, &temperature) == DRV_DOIP_STATUS_OK) {
+                        printf("Temperature: %d.%d °C\r\n", temperature / 10, temperature % 10);
+                    }
+                    
+                    // Read fuel level
+                    if (drv_doip_read_fuel_level_impl(context, &fuel_percent) == DRV_DOIP_STATUS_OK) {
+                        printf("Fuel Level: %d%%\r\n", fuel_percent);
+                    }
+                    
+                    printf("\r\n--- DOIP Communication Complete (Socket) ---\r\n");
+                    
+                    // Display comprehensive monitoring data
+                    doip_update_dynamic_monitoring_data(&context->monitoring_data);
+                    doip_display_all_server_data(&context->monitoring_data);
+                    
+                    // Disconnect after reading data
+                    drv_doip_disconnect_impl(context);
+                    
+                    // Wait before next cycle
+                    vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
+                } else {
+                    printf("DOIP Client: [SOCKET] Connection failed\r\n");
+                    vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
+                }
+            } else {
+                printf("DOIP Client: No vehicles discovered (Socket)\r\n");
+                vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
+            }
+        } else {
+            // If in connected state, perform periodic alive checks or monitoring
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
         
         // Update dynamic monitoring data
         doip_update_dynamic_monitoring_data(&context->monitoring_data);
