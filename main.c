@@ -133,10 +133,7 @@ int main(void)
 	
 	// Initialize LED using universal driver
 	hw_led_init(&led_yellow);
-	
-	// Initialize Ethernet using universal driver (now handles pins/clocks internally)
-	hw_eth_init(&eth_communication);
-		
+			
 	/* Initialize SEGGER RTT for debug output */
 	rtt_printf_init();
 
