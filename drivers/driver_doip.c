@@ -35,50 +35,12 @@ drv_doip_status_t hw_doip_deinit(drv_doip_t *handle)
     drv_doip_status_t result = handle->deinit(handle->hw_context);
     if (result == DRV_DOIP_STATUS_OK) {
         handle->is_init = false;
-        handle->is_task_running = false;
         handle->current_state = DRV_DOIP_STATE_IDLE;
     }
     
     return result;
 }
 
-drv_doip_status_t hw_doip_start_task(drv_doip_t *handle)
-{
-    ASSERT(handle != NULL);
-    ASSERT(handle->start_task != NULL);
-    
-    if (!handle->is_init) {
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    if (handle->is_task_running) {
-        return DRV_DOIP_STATUS_OK;
-    }
-    
-    drv_doip_status_t result = handle->start_task(handle->hw_context);
-    if (result == DRV_DOIP_STATUS_OK) {
-        handle->is_task_running = true;
-    }
-    
-    return result;
-}
-
-drv_doip_status_t hw_doip_stop_task(drv_doip_t *handle)
-{
-    ASSERT(handle != NULL);
-    ASSERT(handle->stop_task != NULL);
-    
-    if (!handle->is_task_running) {
-        return DRV_DOIP_STATUS_OK;
-    }
-    
-    drv_doip_status_t result = handle->stop_task(handle->hw_context);
-    if (result == DRV_DOIP_STATUS_OK) {
-        handle->is_task_running = false;
-    }
-    
-    return result;
-}
 
 drv_doip_status_t hw_doip_discover_vehicles(drv_doip_t *handle, drv_doip_vehicle_info_t *vehicle_info)
 {

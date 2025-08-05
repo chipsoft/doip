@@ -1,7 +1,5 @@
 /**
- * \file
- *
- * \brief Starts Ethernet, GMAC and TCP tasks
+ * user_tasks.h
  *
  * Copyright (c) 2019 Microchip Technology Inc. and its subsidiaries.
  *
@@ -31,47 +29,41 @@
  *
  */
 
-#include "webserver_tasks.h"
-#include "semphr.h"
-#include "lwip/tcpip.h"
-#include "printf.h"
-#include "network_events.h"
+#ifndef USER_TASKS_H_
+#define USER_TASKS_H_
+
+#include "lwip/sys.h"
+#include "hpl_gmac_config.h"
+#include "lwip_macif_config.h"
+#include "arch/sys_arch.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "bsp_led.h"
-#include "bsp_ethernet.h"
-#include "eth_ipstack_main.h"
+
+#define TASK_LED_STACK_SIZE (512 / sizeof(portSTACK_TYPE))
+#define TASK_LED_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+
+#define TASK_ETHERNETBASIC_STACK_SIZE (1024 / sizeof(portSTACK_TYPE))
+#define TASK_ETHERNETBASIC_STACK_PRIORITY (tskIDLE_PRIORITY + 2)
+
+#define netifINTERFACE_TASK_STACK_SIZE 512
+#define netifINTERFACE_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+
+/** Number of buffer for RX */
+#define GMAC_RX_BUFFERS 5
+
+/** Number of buffer for TX */
+#define GMAC_TX_BUFFERS 3
+
+#define SYS_THREAD_MAX 8
+
+#define BLINK_NORMAL 500
+
 #include <hal_mac_async.h>
-#include "app_libs/asf4/hri/hri_gmac_e54.h"
-#include "ethif_mac.h"
 
-uint16_t led_blink_rate = BLINK_NORMAL;
+// Include DOIP driver header for proper type definitions
+#include "driver_doip.h"
 
-static TaskHandle_t xLed_Task;
+void task_led_create();
+void task_doip_client_create(drv_doip_t *doip_handle);
 
-/**
- * OS task that blinks LED
- */
-static void led_task(void *p)
-{
-	(void)p;
-	for (;;) {
-		hw_led_toggle(&led_yellow);
-		vTaskDelay(led_blink_rate);
-	}
-}
-
-
-/**
- * \brief Create OS task for LED blinking
- */
-void task_led_create(void)
-{
-	/* Create task to make led blink */
-	if (xTaskCreate(led_task, "Led", TASK_LED_STACK_SIZE, NULL, TASK_LED_TASK_PRIORITY, &xLed_Task) != pdPASS) {
-		while (1) {
-			;
-		}
-	}
-}
-
+#endif /* USER_TASKS_H_ */

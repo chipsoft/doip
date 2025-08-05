@@ -128,15 +128,12 @@ typedef struct {
 // Driver structure with function pointers
 typedef struct {
     bool is_init;
-    bool is_task_running;
     drv_doip_state_t current_state;
     const void *hw_context;
     
     // Core operations
     drv_doip_status_t (*init)(const void *hw_context);
     drv_doip_status_t (*deinit)(const void *hw_context);
-    drv_doip_status_t (*start_task)(const void *hw_context);
-    drv_doip_status_t (*stop_task)(const void *hw_context);
     
     // Discovery and connection
     drv_doip_status_t (*discover_vehicles)(const void *hw_context, drv_doip_vehicle_info_t *vehicle_info);
@@ -162,8 +159,6 @@ extern "C" {
 // Universal API functions
 drv_doip_status_t hw_doip_init(drv_doip_t *handle);
 drv_doip_status_t hw_doip_deinit(drv_doip_t *handle);
-drv_doip_status_t hw_doip_start_task(drv_doip_t *handle);
-drv_doip_status_t hw_doip_stop_task(drv_doip_t *handle);
 
 drv_doip_status_t hw_doip_discover_vehicles(drv_doip_t *handle, drv_doip_vehicle_info_t *vehicle_info);
 drv_doip_status_t hw_doip_connect_to_vehicle(drv_doip_t *handle, const drv_doip_vehicle_info_t *vehicle_info);

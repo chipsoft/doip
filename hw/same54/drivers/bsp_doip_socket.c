@@ -51,8 +51,6 @@ static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_cont
 // Forward declarations of implementation functions
 static drv_doip_status_t drv_doip_init_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context);
-static drv_doip_status_t drv_doip_start_task_impl(const void *hw_context);
-static drv_doip_status_t drv_doip_stop_task_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context, drv_doip_vehicle_info_t *vehicle_info);
 static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context, const drv_doip_vehicle_info_t *vehicle_info);
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context);
@@ -61,19 +59,14 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
-// Task function
-static void doip_client_task(void *pvParameters);
 
 // Global driver instance
 drv_doip_t doip_0 = {
     .is_init = false,
-    .is_task_running = false,
     .current_state = DRV_DOIP_STATE_IDLE,
     .hw_context = &drv_doip_hw_context_0,
     .init = drv_doip_init_impl,
     .deinit = drv_doip_deinit_impl,
-    .start_task = drv_doip_start_task_impl,
-    .stop_task = drv_doip_stop_task_impl,
     .discover_vehicles = drv_doip_discover_vehicles_impl,
     .connect_to_vehicle = drv_doip_connect_to_vehicle_impl,
     .disconnect = drv_doip_disconnect_impl,
@@ -110,12 +103,6 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
     
     printf("DOIP Client: Cleaning up socket resources\r\n");
     
-    // Stop task if running
-    if (context->client_task_handle != NULL) {
-        vTaskDelete(context->client_task_handle);
-        context->client_task_handle = NULL;
-    }
-    
     // Close socket
     if (context->tcp_socket >= 0) {
         close(context->tcp_socket);
@@ -126,41 +113,6 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
     return DRV_DOIP_STATUS_OK;
 }
 
-static drv_doip_status_t drv_doip_start_task_impl(const void *hw_context)
-{
-    ASSERT(hw_context != NULL);
-    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
-    
-    if (context->client_task_handle != NULL) {
-        return DRV_DOIP_STATUS_OK; // Already running
-    }
-    
-    if (xTaskCreate(doip_client_task,
-                    "DOIPClient",
-                    DOIP_CLIENT_TASK_STACK_SIZE,
-                    (void *)context,
-                    DOIP_CLIENT_TASK_PRIORITY,
-                    &context->client_task_handle) != pdPASS) {
-        printf("DOIP Client: Failed to create client task\r\n");
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP Client: Task started successfully\r\n");
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_stop_task_impl(const void *hw_context)
-{
-    ASSERT(hw_context != NULL);
-    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
-    
-    if (context->client_task_handle != NULL) {
-        vTaskDelete(context->client_task_handle);
-        context->client_task_handle = NULL;
-    }
-    
-    return DRV_DOIP_STATUS_OK;
-}
 
 static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context, drv_doip_vehicle_info_t *vehicle_info)
 {
@@ -661,104 +613,3 @@ static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_cont
     return DRV_DOIP_STATUS_OK;
 }
 
-// Task function - performs full DOIP operations
-static void doip_client_task(void *pvParameters)
-{
-    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)pvParameters;
-    drv_doip_vehicle_info_t vehicle_info;
-    
-    printf("DOIP Client: Task started (Socket mode)\r\n");
-    
-    // Wait a bit for network to be fully ready
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    
-    while (1) {
-        // Only proceed if we're in idle state (not connected)
-        if (context->current_state == DRV_DOIP_STATE_IDLE) {
-            printf("DOIP Client: Starting vehicle discovery (Socket)...\r\n");
-            
-            // Discover vehicles
-            if (drv_doip_discover_vehicles_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
-                printf("DOIP Client: Vehicle discovered, attempting connection (Socket)...\r\n");
-                
-                // Connect to discovered vehicle
-                if (drv_doip_connect_to_vehicle_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
-                    printf("\r\n--- DOIP Communication Complete (Socket) ---\r\n");
-                    
-                    // Test alive check functionality
-                    printf("\r\n--- Testing Alive Check ---\r\n");
-                    if (doip_send_alive_check_request_socket(context) == DRV_DOIP_STATUS_OK) {
-                        printf("DOIP Client: Alive check request sent successfully\r\n");
-                        
-                        // Set socket to non-blocking mode for alive check listening
-                        int nonblock = 1;
-                        if (ioctlsocket(context->tcp_socket, FIONBIO, &nonblock) != 0) {
-                            printf("DOIP Client: Warning - could not set socket to non-blocking mode\r\n");
-                        }
-                        
-                        // Listen for incoming messages for a short time
-                        printf("DOIP Client: Listening for ECU messages...\r\n");
-                        TickType_t start_time = xTaskGetTickCount();
-                        TickType_t timeout_ticks = pdMS_TO_TICKS(3000); // 3 second timeout
-                        
-                        while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
-                            uint8_t buffer[1024];
-                            int bytes_received = recv(context->tcp_socket, buffer, sizeof(buffer), 0);
-                            
-                            if (bytes_received > 0) {
-                                printf("DOIP Client: Received %d bytes during alive check listening\r\n", bytes_received);
-                                
-                                // Parse DOIP header if we have enough data
-                                if (bytes_received >= DOIP_HEADER_SIZE) {
-                                    uint16_t payload_type = (buffer[2] << 8) | buffer[3];
-                                    uint32_t payload_length = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
-                                    
-                                    printf("DOIP Client: Received message - Type: 0x%04X, Length: %lu bytes\r\n", 
-                                           payload_type, payload_length);
-                                    
-                                    // Handle alive check messages
-                                    if (payload_type == DOIP_ALIVE_CHECK_REQUEST && bytes_received >= (DOIP_HEADER_SIZE + payload_length)) {
-                                        printf("DOIP Client: Handling alive check request from ECU\r\n");
-                                        doip_handle_alive_check_request_socket(context, &buffer[DOIP_HEADER_SIZE], payload_length);
-                                    } else if (payload_type == DOIP_ALIVE_CHECK_RESPONSE && bytes_received >= (DOIP_HEADER_SIZE + payload_length)) {
-                                        printf("DOIP Client: Handling alive check response from ECU\r\n");
-                                        doip_handle_alive_check_response_socket(context, &buffer[DOIP_HEADER_SIZE], payload_length);
-                                    } else {
-                                        printf("DOIP Client: Received other message type: 0x%04X\r\n", payload_type);
-                                    }
-                                }
-                            } else if (bytes_received == 0) {
-                                printf("DOIP Client: TCP connection closed during alive check listening\r\n");
-                                break;
-                            } else {
-                                // No data available, continue waiting
-                                vTaskDelay(pdMS_TO_TICKS(100)); // 100ms delay
-                            }
-                        }
-                        
-                        printf("DOIP Client: Alive check testing completed\r\n");
-                    } else {
-                        printf("DOIP Client: Failed to send alive check request\r\n");
-                    }
-                    
-                    // Disconnect after reading data
-                    drv_doip_disconnect_impl(context);
-                    
-                    // Wait before next cycle
-                    vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
-                } else {
-                    printf("DOIP Client: [SOCKET] Connection failed\r\n");
-                    vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
-                }
-            } else {
-                printf("DOIP Client: No vehicles discovered (Socket)\r\n");
-                vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
-            }
-        } else {
-            // If in connected state, perform periodic alive checks or monitoring
-            vTaskDelay(pdMS_TO_TICKS(5000));
-        }
-        
-
-    }
-}
