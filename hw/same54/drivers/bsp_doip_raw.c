@@ -255,18 +255,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
 static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context, const drv_doip_vehicle_info_t *vehicle_info);
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, uint8_t *response, size_t max_response_len, size_t *actual_len);
-static drv_doip_status_t drv_doip_read_vin_impl(const void *hw_context, char *vin_buffer);
-static drv_doip_status_t drv_doip_read_ecu_software_version_impl(const void *hw_context, char *version_buffer, size_t buffer_size);
-static drv_doip_status_t drv_doip_read_ecu_hardware_version_impl(const void *hw_context, char *version_buffer, size_t buffer_size);
-static drv_doip_status_t drv_doip_read_monitoring_data_impl(const void *hw_context, uint16_t did, uint8_t *response, size_t max_response_len, size_t *actual_len);
-static drv_doip_status_t drv_doip_get_system_monitoring_data_impl(const void *hw_context, drv_doip_system_monitoring_t *monitoring_data);
-static drv_doip_status_t drv_doip_read_active_diagnostic_session_impl(const void *hw_context, uint8_t *session_buffer, size_t buffer_size);
-static drv_doip_status_t drv_doip_read_ecu_serial_number_impl(const void *hw_context, char *serial_buffer, size_t buffer_size);
-static drv_doip_status_t drv_doip_read_vehicle_speed_impl(const void *hw_context, uint16_t *speed_kmh);
-static drv_doip_status_t drv_doip_read_engine_rpm_impl(const void *hw_context, uint16_t *rpm);
-static drv_doip_status_t drv_doip_read_battery_voltage_impl(const void *hw_context, uint16_t *voltage_mv);
-static drv_doip_status_t drv_doip_read_temperature_data_impl(const void *hw_context, int16_t *temperature_celsius);
-static drv_doip_status_t drv_doip_read_fuel_level_impl(const void *hw_context, uint8_t *fuel_percent);
+
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
@@ -287,18 +276,7 @@ drv_doip_t doip_0 = {
     .connect_to_vehicle = drv_doip_connect_to_vehicle_impl,
     .disconnect = drv_doip_disconnect_impl,
     .send_diagnostic_request = drv_doip_send_diagnostic_request_impl,
-    .read_vin = drv_doip_read_vin_impl,
-    .read_ecu_software_version = drv_doip_read_ecu_software_version_impl,
-    .read_ecu_hardware_version = drv_doip_read_ecu_hardware_version_impl,
-    .read_monitoring_data = drv_doip_read_monitoring_data_impl,
-    .get_system_monitoring_data = drv_doip_get_system_monitoring_data_impl,
-    .read_active_diagnostic_session = drv_doip_read_active_diagnostic_session_impl,
-    .read_ecu_serial_number = drv_doip_read_ecu_serial_number_impl,
-    .read_vehicle_speed = drv_doip_read_vehicle_speed_impl,
-    .read_engine_rpm = drv_doip_read_engine_rpm_impl,
-    .read_battery_voltage = drv_doip_read_battery_voltage_impl,
-    .read_temperature_data = drv_doip_read_temperature_data_impl,
-    .read_fuel_level = drv_doip_read_fuel_level_impl,
+
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,
 };
@@ -364,8 +342,7 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Initialize system monitoring data
-    doip_utils_init_monitoring_data(&context->monitoring_data);
+
     
     // Initialize callbacks array
     memset(context->callbacks, 0, sizeof(context->callbacks));
@@ -835,97 +812,7 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
     return DRV_DOIP_STATUS_OK;
 }
 
-static drv_doip_status_t drv_doip_read_vin_impl(const void *hw_context, char *vin_buffer)
-{
-    ASSERT(hw_context != NULL);
-    ASSERT(vin_buffer != NULL);
-    
-    // Return mock VIN
-    strcpy(vin_buffer, "MOCK_VIN_1234567890");
-    return DRV_DOIP_STATUS_OK;
-}
 
-static drv_doip_status_t drv_doip_read_ecu_software_version_impl(const void *hw_context, char *version_buffer, size_t buffer_size)
-{
-    ASSERT(hw_context != NULL);
-    ASSERT(version_buffer != NULL);
-    
-    strncpy(version_buffer, "v1.2.3-raw", buffer_size - 1);
-    version_buffer[buffer_size - 1] = '\0';
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_ecu_hardware_version_impl(const void *hw_context, char *version_buffer, size_t buffer_size)
-{
-    ASSERT(hw_context != NULL);
-    ASSERT(version_buffer != NULL);
-    
-    strncpy(version_buffer, "HW_v2.0-raw", buffer_size - 1);
-    version_buffer[buffer_size - 1] = '\0';
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_monitoring_data_impl(const void *hw_context, uint16_t did, uint8_t *response, size_t max_response_len, size_t *actual_len)
-{
-    *actual_len = 0;
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_get_system_monitoring_data_impl(const void *hw_context, drv_doip_system_monitoring_t *monitoring_data)
-{
-    ASSERT(hw_context != NULL);
-    ASSERT(monitoring_data != NULL);
-    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
-    
-    doip_utils_update_dynamic_data(&context->monitoring_data);
-    memcpy(monitoring_data, &context->monitoring_data, sizeof(drv_doip_system_monitoring_t));
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_active_diagnostic_session_impl(const void *hw_context, uint8_t *session_buffer, size_t buffer_size)
-{
-    if (buffer_size > 0) {
-        session_buffer[0] = 0x01; // Default session
-    }
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_ecu_serial_number_impl(const void *hw_context, char *serial_buffer, size_t buffer_size)
-{
-    strncpy(serial_buffer, "SAME54P20A-SN001234", buffer_size - 1);
-    serial_buffer[buffer_size - 1] = '\0';
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_vehicle_speed_impl(const void *hw_context, uint16_t *speed_kmh)
-{
-    *speed_kmh = 0; // Mock stationary
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_engine_rpm_impl(const void *hw_context, uint16_t *rpm)
-{
-    *rpm = 800; // Mock idle RPM
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_battery_voltage_impl(const void *hw_context, uint16_t *voltage_mv)
-{
-    *voltage_mv = 12750; // Mock 12.75V
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_temperature_data_impl(const void *hw_context, int16_t *temperature_celsius)
-{
-    *temperature_celsius = 250; // Mock 25.0°C
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t drv_doip_read_fuel_level_impl(const void *hw_context, uint8_t *fuel_percent)
-{
-    *fuel_percent = 85; // Mock 85%
-    return DRV_DOIP_STATUS_OK;
-}
 
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context)
 {
@@ -1024,11 +911,6 @@ static void doip_client_task(void *pvParameters)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)pvParameters;
     drv_doip_vehicle_info_t vehicle_info;
-    char vin_buffer[18];
-    char version_buffer[64];
-    uint16_t speed_kmh, rpm, voltage_mv;
-    int16_t temperature;
-    uint8_t fuel_percent;
     
     printf("DOIP Client: Task started (Raw lwIP mode)\r\n");
     
@@ -1046,61 +928,7 @@ static void doip_client_task(void *pvParameters)
                 
                 // Connect to discovered vehicle
                 if (drv_doip_connect_to_vehicle_impl(context, &vehicle_info) == DRV_DOIP_STATUS_OK) {
-                    printf("\r\n--- Reading Vehicle Information ---\r\n");
-                    
-                    // Read VIN
-                    if (drv_doip_read_vin_impl(context, vin_buffer) == DRV_DOIP_STATUS_OK) {
-                        printf("VIN: %s\r\n", vin_buffer);
-                    }
-                    
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    
-                    // Read ECU software version
-                    if (drv_doip_read_ecu_software_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
-                        printf("ECU SW Version: %s\r\n", version_buffer);
-                    }
-                    
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    
-                    // Read ECU hardware version
-                    if (drv_doip_read_ecu_hardware_version_impl(context, version_buffer, sizeof(version_buffer)) == DRV_DOIP_STATUS_OK) {
-                        printf("ECU HW Version: %s\r\n", version_buffer);
-                    }
-                    
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    
-                    printf("\r\n--- Reading Monitoring Data ---\r\n");
-                    
-                    // Read vehicle speed
-                    if (drv_doip_read_vehicle_speed_impl(context, &speed_kmh) == DRV_DOIP_STATUS_OK) {
-                        printf("Vehicle Speed: %d km/h\r\n", speed_kmh);
-                    }
-                    
-                    // Read engine RPM
-                    if (drv_doip_read_engine_rpm_impl(context, &rpm) == DRV_DOIP_STATUS_OK) {
-                        printf("Engine RPM: %d\r\n", rpm);
-                    }
-                    
-                    // Read battery voltage
-                    if (drv_doip_read_battery_voltage_impl(context, &voltage_mv) == DRV_DOIP_STATUS_OK) {
-                        printf("Battery Voltage: %d.%03d V\r\n", voltage_mv / 1000, voltage_mv % 1000);
-                    }
-                    
-                    // Read temperature
-                    if (drv_doip_read_temperature_data_impl(context, &temperature) == DRV_DOIP_STATUS_OK) {
-                        printf("Temperature: %d.%d °C\r\n", temperature / 10, temperature % 10);
-                    }
-                    
-                    // Read fuel level
-                    if (drv_doip_read_fuel_level_impl(context, &fuel_percent) == DRV_DOIP_STATUS_OK) {
-                        printf("Fuel Level: %d%%\r\n", fuel_percent);
-                    }
-                    
                     printf("\r\n--- DOIP Communication Complete ---\r\n");
-                    
-                    // Display comprehensive monitoring data
-                    doip_utils_update_dynamic_data(&context->monitoring_data);
-                    doip_utils_display_server_data(&context->monitoring_data);
                     
                     // Test alive check functionality
                     printf("\r\n--- Testing Alive Check ---\r\n");
@@ -1169,7 +997,6 @@ static void doip_client_task(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(5000));
         }
         
-        // Update dynamic monitoring data
-        doip_utils_update_dynamic_data(&context->monitoring_data);
+
     }
 }

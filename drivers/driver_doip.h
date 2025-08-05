@@ -147,22 +147,7 @@ typedef struct {
     drv_doip_status_t (*send_diagnostic_request)(const void *hw_context, uint8_t service_id, uint16_t data_id, 
                                                 uint8_t *response, size_t max_response_len, size_t *actual_len);
     
-    // Data reading functions
-    drv_doip_status_t (*read_vin)(const void *hw_context, char *vin_buffer);
-    drv_doip_status_t (*read_ecu_software_version)(const void *hw_context, char *version_buffer, size_t buffer_size);
-    drv_doip_status_t (*read_ecu_hardware_version)(const void *hw_context, char *version_buffer, size_t buffer_size);
-    drv_doip_status_t (*read_monitoring_data)(const void *hw_context, uint16_t did, uint8_t *response, 
-                                             size_t max_response_len, size_t *actual_len);
-    drv_doip_status_t (*get_system_monitoring_data)(const void *hw_context, drv_doip_system_monitoring_t *monitoring_data);
-    
-    // Specific monitoring data readers
-    drv_doip_status_t (*read_active_diagnostic_session)(const void *hw_context, uint8_t *session_buffer, size_t buffer_size);
-    drv_doip_status_t (*read_ecu_serial_number)(const void *hw_context, char *serial_buffer, size_t buffer_size);
-    drv_doip_status_t (*read_vehicle_speed)(const void *hw_context, uint16_t *speed_kmh);
-    drv_doip_status_t (*read_engine_rpm)(const void *hw_context, uint16_t *rpm);
-    drv_doip_status_t (*read_battery_voltage)(const void *hw_context, uint16_t *voltage_mv);
-    drv_doip_status_t (*read_temperature_data)(const void *hw_context, int16_t *temperature_celsius);
-    drv_doip_status_t (*read_fuel_level)(const void *hw_context, uint8_t *fuel_percent);
+
     
     // Status and callback management
     drv_doip_state_t (*get_status)(const void *hw_context);
@@ -187,20 +172,7 @@ drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle);
 drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
                                                  uint8_t *response, size_t max_response_len, size_t *actual_len);
 
-drv_doip_status_t hw_doip_read_vin(drv_doip_t *handle, char *vin_buffer);
-drv_doip_status_t hw_doip_read_ecu_software_version(drv_doip_t *handle, char *version_buffer, size_t buffer_size);
-drv_doip_status_t hw_doip_read_ecu_hardware_version(drv_doip_t *handle, char *version_buffer, size_t buffer_size);
-drv_doip_status_t hw_doip_read_monitoring_data(drv_doip_t *handle, uint16_t did, uint8_t *response, 
-                                              size_t max_response_len, size_t *actual_len);
-drv_doip_status_t hw_doip_get_system_monitoring_data(drv_doip_t *handle, drv_doip_system_monitoring_t *monitoring_data);
 
-drv_doip_status_t hw_doip_read_active_diagnostic_session(drv_doip_t *handle, uint8_t *session_buffer, size_t buffer_size);
-drv_doip_status_t hw_doip_read_ecu_serial_number(drv_doip_t *handle, char *serial_buffer, size_t buffer_size);
-drv_doip_status_t hw_doip_read_vehicle_speed(drv_doip_t *handle, uint16_t *speed_kmh);
-drv_doip_status_t hw_doip_read_engine_rpm(drv_doip_t *handle, uint16_t *rpm);
-drv_doip_status_t hw_doip_read_battery_voltage(drv_doip_t *handle, uint16_t *voltage_mv);
-drv_doip_status_t hw_doip_read_temperature_data(drv_doip_t *handle, int16_t *temperature_celsius);
-drv_doip_status_t hw_doip_read_fuel_level(drv_doip_t *handle, uint8_t *fuel_percent);
 
 drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
@@ -212,9 +184,8 @@ bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_
 bool doip_utils_validate_protocol(uint8_t protocol_version, uint8_t inverse_protocol_version);
 void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer);
 
-void doip_utils_init_monitoring_data(drv_doip_system_monitoring_t *data);
-void doip_utils_update_dynamic_data(drv_doip_system_monitoring_t *data);
-void doip_utils_display_server_data(const drv_doip_system_monitoring_t *data);
+
+
 
 void doip_utils_create_alive_check_request(uint8_t *buffer, uint16_t source_address);
 void doip_utils_create_alive_check_response(uint8_t *buffer, const uint8_t *request_payload);
