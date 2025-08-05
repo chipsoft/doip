@@ -1,9 +1,9 @@
 #include "driver_doip.h"
 // Include lwIP headers first to avoid ERR_TIMEOUT conflict with ASF4
 #include "lwip/tcp.h"
+#include "lwip/udp.h"
 #include "lwip/err.h"
 #include "lwip/pbuf.h"
-#include "lwip/sockets.h"
 #include "lwip/ip_addr.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/ip4_frag.h"
@@ -35,9 +35,15 @@ typedef struct {
     
     // Raw lwIP resources
     struct tcp_pcb *tcp_pcb;
+    struct udp_pcb *udp_pcb;
     StreamBufferHandle_t stream_buffer;
+    StreamBufferHandle_t udp_stream_buffer;
     SemaphoreHandle_t connected_sem;
     SemaphoreHandle_t send_sem;
+    SemaphoreHandle_t discovery_sem;
+    
+    // Discovery response tracking
+    uint32_t discovered_ip_address;
     
     // System monitoring data
     drv_doip_system_monitoring_t monitoring_data;
@@ -51,9 +57,13 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .current_state = DRV_DOIP_STATE_IDLE,
     .client_task_handle = NULL,
     .tcp_pcb = NULL,
+    .udp_pcb = NULL,
     .stream_buffer = NULL,
+    .udp_stream_buffer = NULL,
     .connected_sem = NULL,
     .send_sem = NULL,
+    .discovery_sem = NULL,
+    .discovered_ip_address = 0,
 };
 
 // Helper functions
@@ -65,7 +75,84 @@ static drv_doip_status_t doip_send_alive_check_request(drv_doip_hw_context_t *co
 static drv_doip_status_t doip_handle_alive_check_response(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
 static drv_doip_status_t doip_handle_alive_check_request(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
 
-// Raw lwIP callback functions
+// Raw lwIP UDP callback functions
+static void doip_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                         const ip_addr_t *addr, u16_t port)
+{
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)arg;
+    
+    if (p == NULL) {
+        return;
+    }
+    
+    printf("DOIP Client: Raw UDP received %d bytes from %u.%u.%u.%u:%d\r\n", 
+           p->tot_len,
+           (unsigned)(ip4_addr_get_u32(addr) & 0xFF),
+           (unsigned)((ip4_addr_get_u32(addr) >> 8) & 0xFF),
+           (unsigned)((ip4_addr_get_u32(addr) >> 16) & 0xFF),
+           (unsigned)((ip4_addr_get_u32(addr) >> 24) & 0xFF),
+           port);
+    
+    // Store source IP address for later use
+    context->discovered_ip_address = ip4_addr_get_u32(addr);
+    
+    if (context->udp_stream_buffer != NULL && p->tot_len > 0) {
+        // Copy pbuf data to stream buffer
+        uint8_t *buffer = (uint8_t *)p->payload;
+        if (p->len == p->tot_len) {
+            // Single pbuf - direct copy
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            size_t sent = xStreamBufferSendFromISR(
+                context->udp_stream_buffer,
+                buffer,
+                p->len,
+                &xHigherPriorityTaskWoken
+            );
+            
+            if (sent == p->len) {
+                printf("DOIP Client: UDP data buffered successfully (%d bytes)\r\n", p->len);
+                
+                // Signal discovery completion
+                if (context->discovery_sem != NULL) {
+                    xSemaphoreGiveFromISR(context->discovery_sem, &xHigherPriorityTaskWoken);
+                }
+            } else {
+                printf("DOIP Client: UDP buffer full, dropped %d bytes\r\n", p->len);
+            }
+            
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        } else {
+            // Multiple pbufs - need to copy sequentially
+            printf("DOIP Client: Multi-pbuf UDP packet - handling sequentially\r\n");
+            struct pbuf *q;
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            
+            for (q = p; q != NULL; q = q->next) {
+                size_t sent = xStreamBufferSendFromISR(
+                    context->udp_stream_buffer,
+                    q->payload,
+                    q->len,
+                    &xHigherPriorityTaskWoken
+                );
+                
+                if (sent != q->len) {
+                    printf("DOIP Client: UDP buffer overflow during multi-pbuf copy\r\n");
+                    break;
+                }
+            }
+            
+            if (context->discovery_sem != NULL) {
+                xSemaphoreGiveFromISR(context->discovery_sem, &xHigherPriorityTaskWoken);
+            }
+            
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    }
+    
+    pbuf_free(p);
+}
+
+// Raw lwIP TCP callback functions
 static err_t doip_tcp_connected(void *arg, struct tcp_pcb *tpcb, err_t err)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)arg;
@@ -224,10 +311,19 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     
     printf("DOIP Client: Initializing raw lwIP resources\r\n");
     
-    // Create stream buffer for received data
+    // Create stream buffer for received TCP data
     context->stream_buffer = xStreamBufferCreate(DOIP_STREAM_BUFFER_SIZE, DOIP_STREAM_TRIGGER_LEVEL);
     if (context->stream_buffer == NULL) {
-        printf("DOIP Client: Failed to create stream buffer\r\n");
+        printf("DOIP Client: Failed to create TCP stream buffer\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Create stream buffer for received UDP data
+    context->udp_stream_buffer = xStreamBufferCreate(DOIP_STREAM_BUFFER_SIZE, DOIP_STREAM_TRIGGER_LEVEL);
+    if (context->udp_stream_buffer == NULL) {
+        printf("DOIP Client: Failed to create UDP stream buffer\r\n");
+        vStreamBufferDelete(context->stream_buffer);
+        context->stream_buffer = NULL;
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -235,6 +331,8 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->connected_sem = xSemaphoreCreateBinary();
     if (context->connected_sem == NULL) {
         printf("DOIP Client: Failed to create connection semaphore\r\n");
+        vStreamBufferDelete(context->udp_stream_buffer);
+        context->udp_stream_buffer = NULL;
         vStreamBufferDelete(context->stream_buffer);
         context->stream_buffer = NULL;
         return DRV_DOIP_STATUS_ERROR;
@@ -245,6 +343,22 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
         printf("DOIP Client: Failed to create send semaphore\r\n");
         vSemaphoreDelete(context->connected_sem);
         context->connected_sem = NULL;
+        vStreamBufferDelete(context->udp_stream_buffer);
+        context->udp_stream_buffer = NULL;
+        vStreamBufferDelete(context->stream_buffer);
+        context->stream_buffer = NULL;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    context->discovery_sem = xSemaphoreCreateBinary();
+    if (context->discovery_sem == NULL) {
+        printf("DOIP Client: Failed to create discovery semaphore\r\n");
+        vSemaphoreDelete(context->send_sem);
+        context->send_sem = NULL;
+        vSemaphoreDelete(context->connected_sem);
+        context->connected_sem = NULL;
+        vStreamBufferDelete(context->udp_stream_buffer);
+        context->udp_stream_buffer = NULL;
         vStreamBufferDelete(context->stream_buffer);
         context->stream_buffer = NULL;
         return DRV_DOIP_STATUS_ERROR;
@@ -279,10 +393,21 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
         context->tcp_pcb = NULL;
     }
     
+    // Close UDP connection
+    if (context->udp_pcb != NULL) {
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
+    }
+    
     // Clean up resources
     if (context->stream_buffer != NULL) {
         vStreamBufferDelete(context->stream_buffer);
         context->stream_buffer = NULL;
+    }
+    
+    if (context->udp_stream_buffer != NULL) {
+        vStreamBufferDelete(context->udp_stream_buffer);
+        context->udp_stream_buffer = NULL;
     }
     
     if (context->connected_sem != NULL) {
@@ -293,6 +418,11 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
     if (context->send_sem != NULL) {
         vSemaphoreDelete(context->send_sem);
         context->send_sem = NULL;
+    }
+    
+    if (context->discovery_sem != NULL) {
+        vSemaphoreDelete(context->discovery_sem);
+        context->discovery_sem = NULL;
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
@@ -341,105 +471,104 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     ASSERT(vehicle_info != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    int udp_socket = -1;
-    struct sockaddr_in broadcast_addr, response_addr;
-    socklen_t addr_len;
     doip_message_t request_msg, response_msg;
     uint8_t buffer[1024];
-    int result;
+    err_t err;
+    ip_addr_t broadcast_addr;
+    struct pbuf *p;
     
-    printf("DOIP Client: Discovering vehicles via UDP broadcast\r\n");
+    printf("DOIP Client: Discovering vehicles via raw UDP\r\n");
     context->current_state = DRV_DOIP_STATE_DISCOVERING;
     
-    // Create UDP socket
-    udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_socket < 0) {
-        printf("DOIP Client: Failed to create UDP socket (error: %d)\r\n", udp_socket);
+    // Create UDP PCB
+    context->udp_pcb = udp_new();
+    if (context->udp_pcb == NULL) {
+        printf("DOIP Client: Failed to create UDP PCB\r\n");
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP Client: UDP socket created successfully\r\n");
+    printf("DOIP Client: UDP PCB created successfully\r\n");
     
-    // Enable broadcast
-    int broadcast_enable = 1;
-    if (setsockopt(udp_socket, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) < 0) {
-        printf("DOIP Client: Failed to enable broadcast\r\n");
-        close(udp_socket);
+    // Set up UDP receive callback
+    udp_recv(context->udp_pcb, doip_udp_recv, context);
+    
+    // Bind to local port (any port for sending)
+    err = udp_bind(context->udp_pcb, IP_ADDR_ANY, 0);
+    if (err != ERR_OK) {
+        printf("DOIP Client: Failed to bind UDP PCB - err=%d\r\n", err);
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Set socket to non-blocking mode using lwIP API
-    int nonblock = 1;
-    if (ioctlsocket(udp_socket, FIONBIO, &nonblock) == 0) {
-        printf("DOIP Client: Socket set to non-blocking mode\r\n");
-    } else {
-        printf("DOIP Client: Warning - could not set non-blocking mode, using blocking mode\r\n");
-    }
+    // Clear UDP stream buffer
+    xStreamBufferReset(context->udp_stream_buffer);
     
     // Prepare broadcast address
-    memset(&broadcast_addr, 0, sizeof(broadcast_addr));
-    broadcast_addr.sin_family = AF_INET;
-    broadcast_addr.sin_port = htons(DOIP_UDP_DISCOVERY_PORT);
-    broadcast_addr.sin_addr.s_addr = PP_HTONL(IPADDR_BROADCAST);
+    IP4_ADDR(&broadcast_addr, 255, 255, 255, 255);
     
     // Create vehicle identification request using utility
     doip_utils_create_header(&request_msg, DOIP_VEHICLE_IDENTIFICATION_REQUEST, 0);
     
     // Convert message to buffer
     doip_utils_serialize_message(&request_msg, buffer);
+    uint32_t message_len = DOIP_HEADER_SIZE + request_msg.payload_length;
+    
+    // Create pbuf for sending
+    p = pbuf_alloc(PBUF_TRANSPORT, message_len, PBUF_RAM);
+    if (p == NULL) {
+        printf("DOIP Client: Failed to allocate pbuf for discovery\r\n");
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
+        context->current_state = DRV_DOIP_STATE_ERROR;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Copy data to pbuf
+    memcpy(p->payload, buffer, message_len);
     
     // Send broadcast request
-    result = sendto(udp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0,
-                    (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
-    if (result < 0) {
-        printf("DOIP Client: Failed to send discovery request (error: %d)\r\n", result);
-        close(udp_socket);
+    err = udp_sendto(context->udp_pcb, p, &broadcast_addr, DOIP_UDP_DISCOVERY_PORT);
+    pbuf_free(p);
+    
+    if (err != ERR_OK) {
+        printf("DOIP Client: Failed to send discovery request - err=%d\r\n", err);
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
     printf("DOIP Client: Discovery request sent, waiting for response...\r\n");
     
-    // Wait for response with manual timeout handling
-    addr_len = sizeof(response_addr);
-    TickType_t start_time = xTaskGetTickCount();
-    TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_DISCOVERY_TIMEOUT_MS);
-    
-    result = -1;
-    while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
-        result = recvfrom(udp_socket, buffer, sizeof(buffer), 0,
-                          (struct sockaddr*)&response_addr, &addr_len);
-        
-        if (result > 0) {
-            printf("DOIP Client: Received response (%d bytes)\r\n", result);
-            break;
-        } else if (result == 0) {
-            printf("DOIP Client: Connection closed during discovery\r\n");
-            break;
-        } else {
-            // No data available yet, wait a bit and try again
-            vTaskDelay(pdMS_TO_TICKS(10)); // 10ms delay
-        }
-    }
-    
-    close(udp_socket);
-    
-    if (result <= 0) {
-        if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
-            printf("DOIP Client: Discovery timeout - no response received\r\n");
-        } else {
-            printf("DOIP Client: Discovery failed - connection issue\r\n");
-        }
+    // Wait for response with timeout
+    if (xSemaphoreTake(context->discovery_sem, pdMS_TO_TICKS(DOIP_DISCOVERY_TIMEOUT_MS)) != pdTRUE) {
+        printf("DOIP Client: Discovery timeout - no response received\r\n");
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
         context->current_state = DRV_DOIP_STATE_IDLE;
         return DRV_DOIP_STATUS_TIMEOUT;
     }
     
-    printf("DOIP Client: Received %d bytes response\r\n", result);
+    // Read response from UDP stream buffer
+    size_t received = xStreamBufferReceive(context->udp_stream_buffer, buffer, sizeof(buffer), 0);
+    
+    // Clean up UDP PCB
+    udp_remove(context->udp_pcb);
+    context->udp_pcb = NULL;
+    
+    if (received < DOIP_HEADER_SIZE) {
+        printf("DOIP Client: Insufficient data received (%d bytes)\r\n", received);
+        context->current_state = DRV_DOIP_STATE_ERROR;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Client: Received %d bytes response\r\n", received);
     
     // Parse response header using utility
-    if (!doip_utils_parse_header(buffer, result, &response_msg)) {
+    if (!doip_utils_parse_header(buffer, received, &response_msg)) {
         printf("DOIP Client: Invalid discovery response header\r\n");
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
@@ -450,7 +579,6 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
-    
     
     // Parse vehicle announcement payload (VIN(17) + LA(2) + EID(6) + ...)
     if (response_msg.payload_length < 25) {
@@ -482,8 +610,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         memset(vehicle_info->group_id, 0x00, 6);
     }
     
-    // Set IP address and port from response source
-    vehicle_info->ip_address = response_addr.sin_addr.s_addr;
+    // Use the IP address captured in the UDP callback
+    vehicle_info->ip_address = context->discovered_ip_address;
     vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
     
     // Store vehicle info in context
