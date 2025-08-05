@@ -1,5 +1,9 @@
 #include "driver_doip.h"
 #include "utils_assert.h"
+#include "printf.h"
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
 
 drv_doip_status_t hw_doip_init(drv_doip_t *handle)
 {
@@ -317,4 +321,230 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     }
     
     return handle->register_callback(handle->hw_context, type, callback);
+}
+
+// Common utility function implementations
+
+void doip_utils_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length)
+{
+    ASSERT(msg != NULL);
+    
+    msg->protocol_version = DOIP_PROTOCOL_VERSION;
+    msg->inverse_protocol_version = DOIP_INVERSE_PROTOCOL_VERSION;
+    msg->payload_type = payload_type;
+    msg->payload_length = payload_length;
+}
+
+bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg)
+{
+    ASSERT(data != NULL);
+    ASSERT(msg != NULL);
+    
+    if (data_len < DOIP_HEADER_SIZE) {
+        printf("DOIP: Header too short: %zu bytes (expected %d)\r\n", data_len, DOIP_HEADER_SIZE);
+        return false;
+    }
+    
+    msg->protocol_version = data[0];
+    msg->inverse_protocol_version = data[1];
+    msg->payload_type = (data[2] << 8) | data[3];
+    msg->payload_length = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
+    
+    if (!doip_utils_validate_protocol(msg->protocol_version, msg->inverse_protocol_version)) {
+        return false;
+    }
+    
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP: Payload too large: %lu bytes (max %d)\r\n", 
+               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        return false;
+    }
+    
+    if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
+        printf("DOIP: Incomplete message: %zu bytes (expected %lu)\r\n", 
+               data_len, DOIP_HEADER_SIZE + msg->payload_length);
+        return false;
+    }
+    
+    if (msg->payload_length > 0) {
+        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+    }
+    
+    return true;
+}
+
+bool doip_utils_validate_protocol(uint8_t protocol_version, uint8_t inverse_protocol_version)
+{
+    if (protocol_version != DOIP_PROTOCOL_VERSION ||
+        inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+        printf("DOIP: Invalid protocol version: 0x%02X/0x%02X (expected 0x%02X/0x%02X)\r\n",
+               protocol_version, inverse_protocol_version,
+               DOIP_PROTOCOL_VERSION, DOIP_INVERSE_PROTOCOL_VERSION);
+        return false;
+    }
+    return true;
+}
+
+void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer)
+{
+    ASSERT(msg != NULL);
+    ASSERT(buffer != NULL);
+    
+    buffer[0] = msg->protocol_version;
+    buffer[1] = msg->inverse_protocol_version;
+    buffer[2] = (msg->payload_type >> 8) & 0xFF;
+    buffer[3] = msg->payload_type & 0xFF;
+    buffer[4] = (msg->payload_length >> 24) & 0xFF;
+    buffer[5] = (msg->payload_length >> 16) & 0xFF;
+    buffer[6] = (msg->payload_length >> 8) & 0xFF;
+    buffer[7] = msg->payload_length & 0xFF;
+    
+    if (msg->payload_length > 0) {
+        memcpy(&buffer[DOIP_HEADER_SIZE], msg->payload, msg->payload_length);
+    }
+}
+
+void doip_utils_init_monitoring_data(drv_doip_system_monitoring_t *data)
+{
+    ASSERT(data != NULL);
+    
+    data->active_diagnostic_session = 0x01;
+    strcpy(data->spare_part_number, "SAME54-XPRO-DEV-001");
+    strcpy(data->ecu_sw_number, "ECU-SW-SAME54-001");
+    strcpy(data->ecu_sw_version_detailed, "v1.2.3-common-20240729");
+    strcpy(data->system_supplier_id, "MICROCHIP");
+    strcpy(data->ecu_manufacturing_date, "2024-07-29");
+    strcpy(data->ecu_serial_number, "SAME54P20A-COMMON-001");
+    strcpy(data->kit_assembly_part_number, "ATSAME54-XPRO");
+    
+    strcpy(data->ecu_network_name, "DOIP_SAME54_NET");
+    strcpy(data->ecu_network_address, "192.168.100.50");
+    strcpy(data->identification_data_traceability, "SAME54-DOIP-TRACE-001");
+    strcpy(data->ecu_pin_traceability, "PIN-TRACE-SAME54-001");
+    
+    data->ecu_operating_hours = 1247;
+    data->vehicle_speed_kmh = 0;
+    data->engine_rpm = 800;
+    data->battery_voltage_mv = 12750;
+    data->temperature_celsius = 250;
+    data->fuel_level_percent = 85;
+    
+    data->error_memory_status = 0x00;
+    data->last_reset_reason = 0x01;
+    strcpy(data->boot_software_id, "BOOTLOADER-V2.1.0");
+    strcpy(data->application_sw_fingerprint, "SHA256:A1B2C3D4E5F67890ABCDEF1234567890FEDCBA0987654321");
+}
+
+void doip_utils_update_dynamic_data(drv_doip_system_monitoring_t *data)
+{
+    ASSERT(data != NULL);
+    
+    static uint32_t update_counter = 0;
+    update_counter++;
+    
+    data->vehicle_speed_kmh = (update_counter % 100);
+    data->engine_rpm = 800 + (update_counter % 3000);
+    data->temperature_celsius = 200 + (update_counter % 100);
+}
+
+void doip_utils_display_server_data(const drv_doip_system_monitoring_t *data)
+{
+    ASSERT(data != NULL);
+    
+    printf("\r\n=== DOIP Server: Comprehensive System Monitoring Data ===\r\n");
+    
+    printf("DOIP Server: [INFO] Displaying all 22 AUTOSAR-standard DIDs\r\n");
+    printf("DOIP Server: [INFO] System ready - all monitoring parameters available\r\n");
+    
+    printf("\r\n--- System Information ---\r\n");
+    printf("DOIP Server: Active Diagnostic Session: 0x%02X\r\n", data->active_diagnostic_session);
+    printf("DOIP Server: Spare Part Number: %s\r\n", data->spare_part_number);
+    printf("DOIP Server: ECU Software Number: %s\r\n", data->ecu_sw_number);
+    printf("DOIP Server: ECU Software Version: %s\r\n", data->ecu_sw_version_detailed);
+    printf("DOIP Server: System Supplier: %s\r\n", data->system_supplier_id);
+    printf("DOIP Server: Manufacturing Date: %s\r\n", data->ecu_manufacturing_date);
+    printf("DOIP Server: ECU Serial Number: %s\r\n", data->ecu_serial_number);
+    printf("DOIP Server: Kit Assembly Part: %s\r\n", data->kit_assembly_part_number);
+    
+    printf("\r\n--- Network Information ---\r\n");
+    printf("DOIP Server: Network Name: %s\r\n", data->ecu_network_name);
+    printf("DOIP Server: Network Address: %s\r\n", data->ecu_network_address);
+    printf("DOIP Server: ID Data Traceability: %s\r\n", data->identification_data_traceability);
+    printf("DOIP Server: PIN Traceability: %s\r\n", data->ecu_pin_traceability);
+    
+    printf("\r\n--- Runtime Monitoring ---\r\n");
+    printf("DOIP Server: Operating Hours: %lu hours\r\n", (unsigned long)data->ecu_operating_hours);
+    printf("DOIP Server: Vehicle Speed: %u km/h\r\n", data->vehicle_speed_kmh);
+    printf("DOIP Server: Engine RPM: %u RPM\r\n", data->engine_rpm);
+    printf("DOIP Server: Battery Voltage: %u.%03u V\r\n", data->battery_voltage_mv / 1000, data->battery_voltage_mv % 1000);
+    printf("DOIP Server: Temperature: %d.%d °C\r\n", data->temperature_celsius / 10, abs(data->temperature_celsius % 10));
+    printf("DOIP Server: Fuel Level: %u%%\r\n", data->fuel_level_percent);
+    
+    printf("\r\n--- Diagnostic Status ---\r\n");
+    printf("DOIP Server: Error Memory Status: 0x%02X\r\n", data->error_memory_status);
+    printf("DOIP Server: Last Reset Reason: 0x%02X\r\n", data->last_reset_reason);
+    printf("DOIP Server: Boot Software ID: %s\r\n", data->boot_software_id);
+    printf("DOIP Server: Application SW Fingerprint: %s\r\n", data->application_sw_fingerprint);
+    
+    printf("\r\n=== DOIP Server: End of Monitoring Data Display ===\r\n");
+    printf("DOIP Server: [INFO] All system parameters successfully reported\r\n");
+    printf("DOIP Server: [INFO] Data updated with current runtime values\r\n\r\n");
+}
+
+void doip_utils_create_alive_check_request(uint8_t *buffer, uint16_t source_address)
+{
+    ASSERT(buffer != NULL);
+    
+    uint8_t *ptr = buffer;
+    
+    *ptr++ = DOIP_PROTOCOL_VERSION;
+    *ptr++ = DOIP_INVERSE_PROTOCOL_VERSION;
+    *ptr++ = (DOIP_ALIVE_CHECK_REQUEST >> 8) & 0xFF;
+    *ptr++ = DOIP_ALIVE_CHECK_REQUEST & 0xFF;
+    *ptr++ = 0x00; *ptr++ = 0x00; *ptr++ = 0x00; *ptr++ = 0x02;
+    
+    *ptr++ = (source_address >> 8) & 0xFF;
+    *ptr++ = source_address & 0xFF;
+}
+
+void doip_utils_create_alive_check_response(uint8_t *buffer, const uint8_t *request_payload)
+{
+    ASSERT(buffer != NULL);
+    ASSERT(request_payload != NULL);
+    
+    uint8_t *ptr = buffer;
+    
+    *ptr++ = DOIP_PROTOCOL_VERSION;
+    *ptr++ = DOIP_INVERSE_PROTOCOL_VERSION;
+    *ptr++ = (DOIP_ALIVE_CHECK_RESPONSE >> 8) & 0xFF;
+    *ptr++ = DOIP_ALIVE_CHECK_RESPONSE & 0xFF;
+    *ptr++ = 0x00; *ptr++ = 0x00; *ptr++ = 0x00; *ptr++ = 0x02;
+    
+    *ptr++ = request_payload[0];
+    *ptr++ = request_payload[1];
+}
+
+bool doip_utils_handle_alive_check_payload(const uint8_t *payload, uint32_t payload_length, uint16_t *source_address)
+{
+    ASSERT(payload != NULL);
+    ASSERT(source_address != NULL);
+    
+    printf("DOIP: Alive check payload received - length: %lu bytes\r\n", payload_length);
+    
+    if (payload_length > 0) {
+        printf("DOIP: Payload bytes: ");
+        for (uint32_t i = 0; i < payload_length && i < 16; i++) {
+            printf("0x%02X ", payload[i]);
+        }
+        printf("\r\n");
+    }
+    
+    if (payload_length >= 2) {
+        *source_address = (payload[0] << 8) | payload[1];
+        printf("DOIP: Source address: 0x%04X\r\n", *source_address);
+        return true;
+    } else {
+        printf("DOIP: Payload too short (expected >= 2 bytes)\r\n");
+        return false;
+    }
 }

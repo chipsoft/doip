@@ -12,49 +12,6 @@
 #include <stdlib.h>
 #include <math.h>
 
-// DOIP Protocol Constants
-#define DOIP_UDP_DISCOVERY_PORT         13400
-#define DOIP_TCP_DATA_PORT             13400
-#define DOIP_PROTOCOL_VERSION          0x02
-#define DOIP_INVERSE_PROTOCOL_VERSION  0xFD
-#define DOIP_HEADER_SIZE               8
-#define DOIP_CLIENT_SOURCE_ADDRESS     0x0E80
-#define DOIP_DISCOVERY_TIMEOUT_MS      5000
-#define DOIP_TCP_TIMEOUT_MS           10000
-#define DOIP_MAX_PAYLOAD_SIZE         1024
-
-// DOIP Payload Types
-#define DOIP_VEHICLE_IDENTIFICATION_REQUEST     0x0001
-#define DOIP_VEHICLE_IDENTIFICATION_RESPONSE    0x0004
-#define DOIP_ROUTING_ACTIVATION_REQUEST         0x0005
-#define DOIP_ROUTING_ACTIVATION_RESPONSE        0x0006
-#define DOIP_ALIVE_CHECK_REQUEST                0x0007
-#define DOIP_ALIVE_CHECK_RESPONSE               0x0008
-#define DOIP_DIAGNOSTIC_MESSAGE                 0x8001
-#define DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK    0x8002
-#define DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK    0x8003
-
-// UDS Service IDs
-#define UDS_READ_DATA_BY_IDENTIFIER     0x22
-#define UDS_POSITIVE_RESPONSE_MASK      0x40
-
-// Data Identifiers (DIDs)
-#define DID_VIN                         0xF190
-#define DID_ECU_SOFTWARE_VERSION        0xF1A0
-#define DID_ECU_HARDWARE_VERSION        0xF1A1
-
-// Task configuration
-#define DOIP_CLIENT_TASK_PRIORITY       (tskIDLE_PRIORITY + 3)
-#define DOIP_CLIENT_TASK_STACK_SIZE     (2048)
-
-// DOIP Message Structure
-typedef struct {
-    uint8_t  protocol_version;
-    uint8_t  inverse_protocol_version;
-    uint16_t payload_type;
-    uint32_t payload_length;
-    uint8_t  payload[DOIP_MAX_PAYLOAD_SIZE];
-} doip_message_t;
 
 // Hardware context structure
 typedef struct {
@@ -83,12 +40,8 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
 };
 
 // Helper functions
-static void doip_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length);
-static bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg);
 static bool doip_send_tcp_message_socket(int socket, const doip_message_t *msg);
 static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uint32_t timeout_ms);
-static void doip_init_system_monitoring_data(drv_doip_system_monitoring_t *data);
-static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *data);
 
 // Alive check functions
 static drv_doip_status_t doip_send_alive_check_request_socket(drv_doip_hw_context_t *context);
@@ -164,7 +117,7 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->tcp_socket = -1;
     
     // Initialize system monitoring data
-    doip_init_system_monitoring_data(&context->monitoring_data);
+    doip_utils_init_monitoring_data(&context->monitoring_data);
     
     // Initialize callbacks array
     memset(context->callbacks, 0, sizeof(context->callbacks));
@@ -279,20 +232,10 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     broadcast_addr.sin_addr.s_addr = PP_HTONL(IPADDR_BROADCAST);
     
     // Create vehicle identification request
-    doip_create_header(&request_msg, DOIP_VEHICLE_IDENTIFICATION_REQUEST, 0);
-    
-    // Send broadcast request
-    doip_create_header(&request_msg, DOIP_VEHICLE_IDENTIFICATION_REQUEST, 0);
+    doip_utils_create_header(&request_msg, DOIP_VEHICLE_IDENTIFICATION_REQUEST, 0);
     
     // Convert message to buffer
-    buffer[0] = request_msg.protocol_version;
-    buffer[1] = request_msg.inverse_protocol_version;
-    buffer[2] = (request_msg.payload_type >> 8) & 0xFF;
-    buffer[3] = request_msg.payload_type & 0xFF;
-    buffer[4] = (request_msg.payload_length >> 24) & 0xFF;
-    buffer[5] = (request_msg.payload_length >> 16) & 0xFF;
-    buffer[6] = (request_msg.payload_length >> 8) & 0xFF;
-    buffer[7] = request_msg.payload_length & 0xFF;
+    doip_utils_serialize_message(&request_msg, buffer);
     
     result = sendto(udp_socket, buffer, DOIP_HEADER_SIZE + request_msg.payload_length, 0,
                     (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
@@ -340,7 +283,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     }
     
     // Parse response
-    if (!doip_parse_header(buffer, result, &response_msg)) {
+    if (!doip_utils_parse_header(buffer, result, &response_msg)) {
         printf("DOIP Client: Invalid discovery response header\r\n");
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
@@ -428,7 +371,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     printf("DOIP Client: TCP connection established successfully\r\n");
     
     // Send routing activation request
-    doip_create_header(&request_msg, DOIP_ROUTING_ACTIVATION_REQUEST, 7);
+    doip_utils_create_header(&request_msg, DOIP_ROUTING_ACTIVATION_REQUEST, 7);
     request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
     request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
     request_msg.payload[2] = 0x00; // Activation type
@@ -526,7 +469,7 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
     }
     
     // Prepare diagnostic message
-    doip_create_header(&request_msg, DOIP_DIAGNOSTIC_MESSAGE, 7);
+    doip_utils_create_header(&request_msg, DOIP_DIAGNOSTIC_MESSAGE, 7);
     request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
     request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
     request_msg.payload[2] = (context->current_vehicle.logical_address >> 8) & 0xFF;
@@ -618,7 +561,7 @@ static drv_doip_status_t drv_doip_read_ecu_hardware_version_impl(const void *hw_
 // Simplified implementations for remaining functions
 static drv_doip_status_t drv_doip_read_monitoring_data_impl(const void *hw_context, uint16_t did, uint8_t *response, size_t max_response_len, size_t *actual_len)
 {
-    doip_update_dynamic_monitoring_data(&((drv_doip_hw_context_t *)hw_context)->monitoring_data);
+    doip_utils_update_dynamic_data(&((drv_doip_hw_context_t *)hw_context)->monitoring_data);
     return drv_doip_send_diagnostic_request_impl(hw_context, UDS_READ_DATA_BY_IDENTIFIER, did, response, max_response_len, actual_len);
 }
 
@@ -628,7 +571,7 @@ static drv_doip_status_t drv_doip_get_system_monitoring_data_impl(const void *hw
     ASSERT(monitoring_data != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    doip_update_dynamic_monitoring_data(&context->monitoring_data);
+    doip_utils_update_dynamic_data(&context->monitoring_data);
     memcpy(monitoring_data, &context->monitoring_data, sizeof(drv_doip_system_monitoring_t));
     return DRV_DOIP_STATUS_OK;
 }
@@ -700,74 +643,14 @@ static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context,
 }
 
 // Helper function implementations
-static void doip_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length)
-{
-    msg->protocol_version = DOIP_PROTOCOL_VERSION;
-    msg->inverse_protocol_version = DOIP_INVERSE_PROTOCOL_VERSION;
-    msg->payload_type = payload_type;
-    msg->payload_length = payload_length;
-}
-
-static bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg)
-{
-    if (data_len < DOIP_HEADER_SIZE) {
-        printf("DOIP Client: Header too short: %zu bytes (expected %d)\r\n", data_len, DOIP_HEADER_SIZE);
-        return false;
-    }
-    
-    msg->protocol_version = data[0];
-    msg->inverse_protocol_version = data[1];
-    msg->payload_type = (data[2] << 8) | data[3];
-    msg->payload_length = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
-    
-    // Validate protocol version
-    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
-        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
-        printf("DOIP Client: Invalid protocol version: 0x%02X/0x%02X (expected 0x%02X/0x%02X)\r\n",
-               msg->protocol_version, msg->inverse_protocol_version,
-               DOIP_PROTOCOL_VERSION, DOIP_INVERSE_PROTOCOL_VERSION);
-        return false;
-    }
-    
-    // Validate payload length
-    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
-        printf("DOIP Client: Payload too large: %lu bytes (max %d)\r\n", 
-               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
-        return false;
-    }
-    
-    if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
-        printf("DOIP Client: Incomplete message: %zu bytes (expected %lu)\r\n", 
-               data_len, DOIP_HEADER_SIZE + msg->payload_length);
-        return false;
-    }
-    
-    if (msg->payload_length > 0) {
-        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
-    }
-    
-    return true;
-}
 
 static bool doip_send_tcp_message_socket(int socket, const doip_message_t *msg)
 {
     uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
     uint32_t total_length = DOIP_HEADER_SIZE + msg->payload_length;
     
-    // Pack header
-    buffer[0] = msg->protocol_version;
-    buffer[1] = msg->inverse_protocol_version;
-    buffer[2] = (msg->payload_type >> 8) & 0xFF;
-    buffer[3] = msg->payload_type & 0xFF;
-    buffer[4] = (msg->payload_length >> 24) & 0xFF;
-    buffer[5] = (msg->payload_length >> 16) & 0xFF;
-    buffer[6] = (msg->payload_length >> 8) & 0xFF;
-    buffer[7] = msg->payload_length & 0xFF;
-    
-    // Copy payload
-    if (msg->payload_length > 0) {
-        memcpy(&buffer[DOIP_HEADER_SIZE], msg->payload, msg->payload_length);
-    }
+    // Serialize message using utility function
+    doip_utils_serialize_message(msg, buffer);
     
     // Send message
     int result = send(socket, buffer, total_length, 0);
@@ -801,22 +684,16 @@ static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uin
         }
     }
     
-    // Parse header manually (similar to raw implementation)
+    // Parse header using utility function
     msg->protocol_version = header_buffer[0];
     msg->inverse_protocol_version = header_buffer[1];
     msg->payload_type = (header_buffer[2] << 8) | header_buffer[3];
     msg->payload_length = (header_buffer[4] << 24) | (header_buffer[5] << 16) | (header_buffer[6] << 8) | header_buffer[7];
     
-    // Validate protocol version
-    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
-        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
-        printf("DOIP Client: Invalid protocol version: 0x%02X/0x%02X (expected 0x%02X/0x%02X)\r\n",
-               msg->protocol_version, msg->inverse_protocol_version,
-               DOIP_PROTOCOL_VERSION, DOIP_INVERSE_PROTOCOL_VERSION);
+    if (!doip_utils_validate_protocol(msg->protocol_version, msg->inverse_protocol_version)) {
         return false;
     }
     
-    // Validate payload length
     if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
         printf("DOIP Client: Payload too large: %lu bytes (max %d)\r\n", 
                msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
@@ -854,102 +731,17 @@ static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uin
     return true;
 }
 
-static void doip_init_system_monitoring_data(drv_doip_system_monitoring_t *data)
-{
-    // Initialize system information
-    data->active_diagnostic_session = 0x01;
-    strcpy(data->spare_part_number, "SAME54-XPRO-DEV-001");
-    strcpy(data->ecu_sw_number, "ECU-SW-SAME54-001");
-    strcpy(data->ecu_sw_version_detailed, "v1.2.3-socket-20240729");
-    strcpy(data->system_supplier_id, "MICROCHIP");
-    strcpy(data->ecu_manufacturing_date, "2024-07-29");
-    strcpy(data->ecu_serial_number, "SAME54P20A-SOCKET-001");
-    strcpy(data->kit_assembly_part_number, "ATSAME54-XPRO");
-    
-    // Initialize network information
-    strcpy(data->ecu_network_name, "DOIP_SAME54_NET");
-    strcpy(data->ecu_network_address, "192.168.100.50");
-    strcpy(data->identification_data_traceability, "SAME54-DOIP-TRACE-001");
-    strcpy(data->ecu_pin_traceability, "PIN-TRACE-SAME54-001");
-    
-    // Initialize runtime monitoring with mock values
-    data->ecu_operating_hours = 1247;
-    data->vehicle_speed_kmh = 0;
-    data->engine_rpm = 800;
-    data->battery_voltage_mv = 12750;
-    data->temperature_celsius = 250;
-    data->fuel_level_percent = 85;
-    
-    // Initialize diagnostic status
-    data->error_memory_status = 0x00;
-    data->last_reset_reason = 0x01;
-    strcpy(data->boot_software_id, "BOOTLOADER-V2.1.0");
-    strcpy(data->application_sw_fingerprint, "SHA256:A1B2C3D4E5F67890ABCDEF1234567890FEDCBA0987654321");
-}
 
-static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *data)
-{
-    // Update dynamic values (mock implementation)
-    static uint32_t update_counter = 0;
-    update_counter++;
-    
-    // Simulate changing values
-    data->vehicle_speed_kmh = (update_counter % 100);
-    data->engine_rpm = 800 + (update_counter % 3000);
-    data->temperature_celsius = 200 + (update_counter % 100); // 20-30°C
-}
-
-static void doip_display_all_server_data(const drv_doip_system_monitoring_t *data)
-{
-    printf("\r\n=== DOIP Server: Comprehensive System Monitoring Data ===\r\n");
-    
-    printf("DOIP Server: [INFO] Displaying all 22 AUTOSAR-standard DIDs\r\n");
-    printf("DOIP Server: [INFO] System ready - all monitoring parameters available\r\n");
-    
-    printf("\r\n--- System Information ---\r\n");
-    printf("DOIP Server: Active Diagnostic Session: 0x%02X\r\n", data->active_diagnostic_session);
-    printf("DOIP Server: Spare Part Number: %s\r\n", data->spare_part_number);
-    printf("DOIP Server: ECU Software Number: %s\r\n", data->ecu_sw_number);
-    printf("DOIP Server: ECU Software Version: %s\r\n", data->ecu_sw_version_detailed);
-    printf("DOIP Server: System Supplier: %s\r\n", data->system_supplier_id);
-    printf("DOIP Server: Manufacturing Date: %s\r\n", data->ecu_manufacturing_date);
-    printf("DOIP Server: ECU Serial Number: %s\r\n", data->ecu_serial_number);
-    printf("DOIP Server: Kit Assembly Part: %s\r\n", data->kit_assembly_part_number);
-    
-    printf("\r\n--- Network Information ---\r\n");
-    printf("DOIP Server: Network Name: %s\r\n", data->ecu_network_name);
-    printf("DOIP Server: Network Address: %s\r\n", data->ecu_network_address);
-    printf("DOIP Server: ID Data Traceability: %s\r\n", data->identification_data_traceability);
-    printf("DOIP Server: PIN Traceability: %s\r\n", data->ecu_pin_traceability);
-    
-    printf("\r\n--- Runtime Monitoring ---\r\n");
-    printf("DOIP Server: Operating Hours: %lu hours\r\n", (unsigned long)data->ecu_operating_hours);
-    printf("DOIP Server: Vehicle Speed: %u km/h\r\n", data->vehicle_speed_kmh);
-    printf("DOIP Server: Engine RPM: %u RPM\r\n", data->engine_rpm);
-    printf("DOIP Server: Battery Voltage: %u.%03u V\r\n", data->battery_voltage_mv / 1000, data->battery_voltage_mv % 1000);
-    printf("DOIP Server: Temperature: %d.%d °C\r\n", data->temperature_celsius / 10, abs(data->temperature_celsius % 10));
-    printf("DOIP Server: Fuel Level: %u%%\r\n", data->fuel_level_percent);
-    
-    printf("\r\n--- Diagnostic Status ---\r\n");
-    printf("DOIP Server: Error Memory Status: 0x%02X\r\n", data->error_memory_status);
-    printf("DOIP Server: Last Reset Reason: 0x%02X\r\n", data->last_reset_reason);
-    printf("DOIP Server: Boot Software ID: %s\r\n", data->boot_software_id);
-    printf("DOIP Server: Application SW Fingerprint: %s\r\n", data->application_sw_fingerprint);
-    
-    printf("\r\n=== DOIP Server: End of Monitoring Data Display ===\r\n");
-    printf("DOIP Server: [INFO] All system parameters successfully reported\r\n");
-    printf("DOIP Server: [INFO] Data updated with current runtime values\r\n\r\n");
-}
 
 // Alive check function implementations
 static drv_doip_status_t doip_send_alive_check_request_socket(drv_doip_hw_context_t *context)
 {
     doip_message_t request_msg;
     
-    // Create alive check request message
-    doip_create_header(&request_msg, DOIP_ALIVE_CHECK_REQUEST, 2);
-    request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;  // Source address high byte
-    request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;         // Source address low byte
+    // Create alive check request message using utility
+    doip_utils_create_header(&request_msg, DOIP_ALIVE_CHECK_REQUEST, 2);
+    request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
+    request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
     
     // Send the message
     if (!doip_send_tcp_message_socket(context->tcp_socket, &request_msg)) {
@@ -963,23 +755,12 @@ static drv_doip_status_t doip_send_alive_check_request_socket(drv_doip_hw_contex
 
 static drv_doip_status_t doip_handle_alive_check_response_socket(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length)
 {
-    printf("DOIP Client: Alive check response received - payload length: %lu bytes\r\n", payload_length);
+    uint16_t source_address;
     
-    // Print payload bytes for debugging
-    if (payload_length > 0) {
-        printf("DOIP Client: Payload bytes: ");
-        for (uint32_t i = 0; i < payload_length && i < 16; i++) {
-            printf("0x%02X ", payload[i]);
-        }
-        printf("\r\n");
-    }
+    printf("DOIP Client: Alive check response received\r\n");
     
-    // According to ISO 13400, alive check response should have 2 bytes (source address)
-    if (payload_length >= 2) {
-        uint16_t source_address = (payload[0] << 8) | payload[1];
+    if (doip_utils_handle_alive_check_payload(payload, payload_length, &source_address)) {
         printf("DOIP Client: Alive check response received from 0x%04X\r\n", source_address);
-    } else {
-        printf("DOIP Client: Alive check response payload too short (expected >= 2 bytes)\r\n");
     }
     
     return DRV_DOIP_STATUS_OK;
@@ -996,10 +777,8 @@ static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_cont
     
     printf("DOIP Client: Alive check request received, sending response\r\n");
     
-    // Create alive check response message
-    doip_create_header(&response_msg, DOIP_ALIVE_CHECK_RESPONSE, 2);
-    
-    // Echo back the source address from the request
+    // Create alive check response message using utility
+    doip_utils_create_header(&response_msg, DOIP_ALIVE_CHECK_RESPONSE, 2);
     response_msg.payload[0] = payload[0];
     response_msg.payload[1] = payload[1];
     
@@ -1093,8 +872,8 @@ static void doip_client_task(void *pvParameters)
                     printf("\r\n--- DOIP Communication Complete (Socket) ---\r\n");
                     
                     // Display comprehensive monitoring data
-                    doip_update_dynamic_monitoring_data(&context->monitoring_data);
-                    doip_display_all_server_data(&context->monitoring_data);
+                    doip_utils_update_dynamic_data(&context->monitoring_data);
+                    doip_utils_display_server_data(&context->monitoring_data);
                     
                     // Test alive check functionality
                     printf("\r\n--- Testing Alive Check ---\r\n");
@@ -1171,6 +950,6 @@ static void doip_client_task(void *pvParameters)
         }
         
         // Update dynamic monitoring data
-        doip_update_dynamic_monitoring_data(&context->monitoring_data);
+        doip_utils_update_dynamic_data(&context->monitoring_data);
     }
 }

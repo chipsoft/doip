@@ -4,6 +4,51 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "FreeRTOS.h"
+
+// DOIP Protocol Constants
+#define DOIP_UDP_DISCOVERY_PORT         13400
+#define DOIP_TCP_DATA_PORT             13400
+#define DOIP_PROTOCOL_VERSION          0x02
+#define DOIP_INVERSE_PROTOCOL_VERSION  0xFD
+#define DOIP_HEADER_SIZE               8
+#define DOIP_CLIENT_SOURCE_ADDRESS     0x0E80
+#define DOIP_DISCOVERY_TIMEOUT_MS      5000
+#define DOIP_TCP_TIMEOUT_MS           10000
+#define DOIP_MAX_PAYLOAD_SIZE         1024
+
+// DOIP Payload Types
+#define DOIP_VEHICLE_IDENTIFICATION_REQUEST     0x0001
+#define DOIP_VEHICLE_IDENTIFICATION_RESPONSE    0x0004
+#define DOIP_ROUTING_ACTIVATION_REQUEST         0x0005
+#define DOIP_ROUTING_ACTIVATION_RESPONSE        0x0006
+#define DOIP_ALIVE_CHECK_REQUEST                0x0007
+#define DOIP_ALIVE_CHECK_RESPONSE               0x0008
+#define DOIP_DIAGNOSTIC_MESSAGE                 0x8001
+#define DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK    0x8002
+#define DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK    0x8003
+
+// UDS Service IDs
+#define UDS_READ_DATA_BY_IDENTIFIER     0x22
+#define UDS_POSITIVE_RESPONSE_MASK      0x40
+
+// Data Identifiers (DIDs)
+#define DID_VIN                         0xF190
+#define DID_ECU_SOFTWARE_VERSION        0xF1A0
+#define DID_ECU_HARDWARE_VERSION        0xF1A1
+
+// Task configuration
+#define DOIP_CLIENT_TASK_PRIORITY       (tskIDLE_PRIORITY + 3)
+#define DOIP_CLIENT_TASK_STACK_SIZE     (2048)
+
+// DOIP Message Structure
+typedef struct {
+    uint8_t  protocol_version;
+    uint8_t  inverse_protocol_version;
+    uint16_t payload_type;
+    uint32_t payload_length;
+    uint8_t  payload[DOIP_MAX_PAYLOAD_SIZE];
+} doip_message_t;
 
 // Status enumeration
 typedef enum {
@@ -160,6 +205,20 @@ drv_doip_status_t hw_doip_read_fuel_level(drv_doip_t *handle, uint8_t *fuel_perc
 drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
+
+// Common utility functions
+void doip_utils_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length);
+bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg);
+bool doip_utils_validate_protocol(uint8_t protocol_version, uint8_t inverse_protocol_version);
+void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer);
+
+void doip_utils_init_monitoring_data(drv_doip_system_monitoring_t *data);
+void doip_utils_update_dynamic_data(drv_doip_system_monitoring_t *data);
+void doip_utils_display_server_data(const drv_doip_system_monitoring_t *data);
+
+void doip_utils_create_alive_check_request(uint8_t *buffer, uint16_t source_address);
+void doip_utils_create_alive_check_response(uint8_t *buffer, const uint8_t *request_payload);
+bool doip_utils_handle_alive_check_payload(const uint8_t *payload, uint32_t payload_length, uint16_t *source_address);
 
 #ifdef __cplusplus
 }
