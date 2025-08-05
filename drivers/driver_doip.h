@@ -37,6 +37,36 @@
 #define DID_ECU_SOFTWARE_VERSION        0xF1A0
 #define DID_ECU_HARDWARE_VERSION        0xF1A1
 
+// System Information DIDs
+#define DID_ACTIVE_DIAGNOSTIC_SESSION           0xF186
+#define DID_VEHICLE_MANUFACTURER_SPARE_PART_NUMBER      0xF187
+#define DID_VEHICLE_MANUFACTURER_ECU_SW_NUMBER          0xF188
+#define DID_VEHICLE_MANUFACTURER_ECU_SW_VERSION         0xF189
+#define DID_SYSTEM_SUPPLIER_IDENTIFIER                  0xF18A
+#define DID_ECU_MANUFACTURING_DATE                      0xF18B
+#define DID_ECU_SERIAL_NUMBER                           0xF18C
+#define DID_VEHICLE_MANUFACTURER_KIT_ASSEMBLY_PART_NUMBER   0xF192
+
+// Network/Communication DIDs
+#define DID_VEHICLE_MANUFACTURER_ECU_NETWORK_NAME       0xF1A2
+#define DID_VEHICLE_MANUFACTURER_ECU_NETWORK_ADDRESS    0xF1A3
+#define DID_VEHICLE_IDENTIFICATION_DATA_TRACEABILITY    0xF1A4
+#define DID_VEHICLE_MANUFACTURER_ECU_PIN_TRACEABILITY   0xF1A5
+
+// Runtime Monitoring DIDs
+#define DID_ECU_OPERATING_HOURS                         0xF1A6
+#define DID_VEHICLE_SPEED_INFORMATION                   0xF1A7
+#define DID_ENGINE_RPM_INFORMATION                      0xF1A8
+#define DID_BATTERY_VOLTAGE_INFORMATION                 0xF1A9
+#define DID_TEMPERATURE_SENSOR_DATA                     0xF1AA
+#define DID_FUEL_LEVEL_INFORMATION                      0xF1AB
+
+// Diagnostic Status DIDs
+#define DID_ERROR_MEMORY_STATUS                         0xF1AC
+#define DID_LAST_RESET_REASON                           0xF1AD
+#define DID_BOOT_SOFTWARE_IDENTIFICATION                0xF1AE
+#define DID_APPLICATION_SOFTWARE_FINGERPRINT            0xF1AF
+
 // Task configuration
 #define DOIP_CLIENT_TASK_PRIORITY       (tskIDLE_PRIORITY + 3)
 #define DOIP_CLIENT_TASK_STACK_SIZE     (2048)
@@ -167,7 +197,8 @@ drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle);
 drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
                                                  uint8_t *response, size_t max_response_len, size_t *actual_len);
 
-
+// DID reading utility functions
+drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t did, const char *name, const char *format);
 
 drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 

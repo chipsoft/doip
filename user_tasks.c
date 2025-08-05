@@ -108,8 +108,39 @@ static void doip_client_task(void *pvParameters)
 				if (hw_doip_connect_to_vehicle(doip_handle, &vehicle_info) == DRV_DOIP_STATUS_OK) {
 					printf("\r\n--- DOIP Communication Complete ---\r\n");
 					
-					// For socket implementation, we wait a bit to listen for alive check responses
+					// Read and display system information after successful connection
 					if (hw_doip_get_status(doip_handle) == DRV_DOIP_STATE_ACTIVATED) {
+						printf("\r\n=== ECU System Information ===\r\n");
+						
+						// Basic identification
+						doip_read_did_and_display(doip_handle, DID_VIN, "VIN", "string");
+						doip_read_did_and_display(doip_handle, DID_ECU_SOFTWARE_VERSION, "ECU SW Version", "string");
+						doip_read_did_and_display(doip_handle, DID_ECU_HARDWARE_VERSION, "ECU HW Version", "string");
+						doip_read_did_and_display(doip_handle, DID_ECU_SERIAL_NUMBER, "ECU Serial Number", "string");
+						
+						printf("\r\n=== System Details ===\r\n");
+						doip_read_did_and_display(doip_handle, DID_ACTIVE_DIAGNOSTIC_SESSION, "Diagnostic Session", "uint8");
+						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_SPARE_PART_NUMBER, "Spare Part Number", "string");
+						doip_read_did_and_display(doip_handle, DID_SYSTEM_SUPPLIER_IDENTIFIER, "System Supplier", "string");
+						doip_read_did_and_display(doip_handle, DID_ECU_MANUFACTURING_DATE, "Manufacturing Date", "string");
+						
+						printf("\r\n=== Network Information ===\r\n");
+						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_ECU_NETWORK_NAME, "Network Name", "string");
+						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_ECU_NETWORK_ADDRESS, "Network Address", "string");
+						
+						printf("\r\n=== Runtime Monitoring ===\r\n");
+						doip_read_did_and_display(doip_handle, DID_ECU_OPERATING_HOURS, "Operating Hours", "uint32_hours");
+						doip_read_did_and_display(doip_handle, DID_VEHICLE_SPEED_INFORMATION, "Vehicle Speed", "uint16_kmh");
+						doip_read_did_and_display(doip_handle, DID_ENGINE_RPM_INFORMATION, "Engine RPM", "uint16_rpm");
+						doip_read_did_and_display(doip_handle, DID_BATTERY_VOLTAGE_INFORMATION, "Battery Voltage", "uint16_mv");
+						doip_read_did_and_display(doip_handle, DID_TEMPERATURE_SENSOR_DATA, "Temperature", "int16_temp");
+						doip_read_did_and_display(doip_handle, DID_FUEL_LEVEL_INFORMATION, "Fuel Level", "uint8_percent");
+						
+						printf("\r\n=== Diagnostic Status ===\r\n");
+						doip_read_did_and_display(doip_handle, DID_ERROR_MEMORY_STATUS, "Error Memory Status", "uint8");
+						doip_read_did_and_display(doip_handle, DID_LAST_RESET_REASON, "Last Reset Reason", "uint8");
+						doip_read_did_and_display(doip_handle, DID_BOOT_SOFTWARE_IDENTIFICATION, "Boot Software ID", "string");
+						
 						printf("\r\n--- Testing Alive Check ---\r\n");
 						printf("DOIP Client: Connection established, listening for ECU messages...\r\n");
 						
@@ -117,6 +148,28 @@ static void doip_client_task(void *pvParameters)
 						vTaskDelay(pdMS_TO_TICKS(3000)); // 3 second listening period
 						
 						printf("DOIP Client: Alive check testing completed\r\n");
+						
+						// Periodic monitoring of dynamic data
+						printf("\r\n--- Periodic Runtime Monitoring ---\r\n");
+						printf("DOIP Client: Monitoring dynamic data for 60 seconds...\r\n");
+						
+						for (int cycle = 0; cycle < 4; cycle++) { // 4 cycles = 60 seconds
+							printf("\r\n--- Monitoring Cycle %d ---\r\n", cycle + 1);
+							
+							// Read dynamic runtime values
+							doip_read_did_and_display(doip_handle, DID_VEHICLE_SPEED_INFORMATION, "Vehicle Speed", "uint16_kmh");
+							doip_read_did_and_display(doip_handle, DID_ENGINE_RPM_INFORMATION, "Engine RPM", "uint16_rpm");
+							doip_read_did_and_display(doip_handle, DID_BATTERY_VOLTAGE_INFORMATION, "Battery Voltage", "uint16_mv");
+							doip_read_did_and_display(doip_handle, DID_TEMPERATURE_SENSOR_DATA, "Temperature", "int16_temp");
+							doip_read_did_and_display(doip_handle, DID_FUEL_LEVEL_INFORMATION, "Fuel Level", "uint8_percent");
+							doip_read_did_and_display(doip_handle, DID_ECU_OPERATING_HOURS, "Operating Hours", "uint32_hours");
+							
+							if (cycle < 3) { // Don't wait after last cycle
+								vTaskDelay(pdMS_TO_TICKS(15000)); // Wait 15 seconds between readings
+							}
+						}
+						
+						printf("DOIP Client: Periodic monitoring completed\r\n");
 					}
 					
 					// Disconnect after communication

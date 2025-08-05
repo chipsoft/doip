@@ -196,7 +196,7 @@ $(ASF4_DIR)/hpl/mclk/hpl_mclk.c \
 $(ASF4_DIR)/hal/src/hal_cache.c
 
 # DOIP Configuration - Set to 1 for raw lwIP, 0 for socket implementation
-DOIP_USE_RAW_LWIP ?= 1
+DOIP_USE_RAW_LWIP ?= 0
 
 # Driver Files
 DRIVER_CFILES = \

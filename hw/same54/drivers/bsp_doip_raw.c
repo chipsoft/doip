@@ -744,11 +744,18 @@ static drv_doip_status_t doip_send_diagnostic_message(drv_doip_hw_context_t *con
 static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, uint8_t *response, size_t max_response_len, size_t *actual_len)
 {
     ASSERT(hw_context != NULL);
+    ASSERT(response != NULL);
+    ASSERT(actual_len != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
     if (context->current_state != DRV_DOIP_STATE_ACTIVATED) {
         printf("DOIP Client: Not activated - cannot send diagnostic request\r\n");
         return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Clear stream buffer before sending request
+    if (context->stream_buffer != NULL) {
+        xStreamBufferReset(context->stream_buffer);
     }
     
     // Send diagnostic message
@@ -757,11 +764,83 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         return status;
     }
     
-    // For now, just return success - proper response handling would require
-    // implementing the receive callbacks properly
+    // Wait for response in stream buffer
+    uint8_t buffer[256];
+    size_t received = 0;
+    TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS);
+    
+    // Try to receive DOIP header first (8 bytes)
+    received = xStreamBufferReceive(context->stream_buffer, buffer, 8, timeout_ticks);
+    if (received < 8) {
+        printf("DOIP Client: Failed to receive response header (got %zu bytes)\r\n", received);
+        *actual_len = 0;
+        return DRV_DOIP_STATUS_TIMEOUT;
+    }
+    
+    // Parse DOIP header
+    uint8_t protocol_version = buffer[0];
+    uint8_t inverse_protocol_version = buffer[1];
+    uint16_t payload_type = (buffer[2] << 8) | buffer[3];
+    uint32_t payload_length = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+    
+    printf("DOIP Client: Received response - Type: 0x%04X, Length: %lu bytes\r\n", 
+           payload_type, payload_length);
+    
+    // Validate protocol version
+    if (protocol_version != DOIP_PROTOCOL_VERSION || 
+        inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+        printf("DOIP Client: Invalid protocol version: 0x%02X/0x%02X\r\n", 
+               protocol_version, inverse_protocol_version);
+        *actual_len = 0;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Check response type
+    if (payload_type != DOIP_DIAGNOSTIC_MESSAGE) {
+        printf("DOIP Client: Unexpected response type: 0x%04X\r\n", payload_type);
+        *actual_len = 0;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Receive payload if present
+    if (payload_length > 0 && payload_length <= sizeof(buffer) - 8) {
+        size_t payload_received = xStreamBufferReceive(context->stream_buffer, 
+                                                      &buffer[8], payload_length, timeout_ticks);
+        if (payload_received != payload_length) {
+            printf("DOIP Client: Failed to receive complete payload (got %zu of %lu bytes)\r\n", 
+                   payload_received, payload_length);
+            *actual_len = 0;
+            return DRV_DOIP_STATUS_TIMEOUT;
+        }
+        
+        // Debug: Print raw payload bytes
+        printf("DOIP Client: Payload bytes: ");
+        for (uint32_t i = 0; i < payload_length && i < 16; i++) {
+            printf("0x%02X ", buffer[8 + i]);
+        }
+        printf("\r\n");
+        
+        // Extract diagnostic payload (skip DOIP addressing info - first 4 bytes of payload)
+        if (payload_length > 4) {
+            size_t diag_payload_len = payload_length - 4;
+            size_t copy_len = (diag_payload_len > max_response_len) ? max_response_len : diag_payload_len;
+            
+            memcpy(response, &buffer[8 + 4], copy_len);  // Skip 8-byte header + 4-byte addressing
+            *actual_len = copy_len;
+            
+            printf("DOIP Client: Diagnostic payload length: %zu bytes\r\n", diag_payload_len);
+            printf("DOIP Client: Diagnostic request completed\r\n");
+            return DRV_DOIP_STATUS_OK;
+        } else {
+            printf("DOIP Client: Short payload - likely negative response or ACK only\r\n");
+        }
+    } else if (payload_length > sizeof(buffer) - 8) {
+        printf("DOIP Client: Payload too large: %lu bytes (max %zu)\r\n", 
+               payload_length, sizeof(buffer) - 8);
+    }
+    
     *actual_len = 0;
-    printf("DOIP Client: Diagnostic request completed\r\n");
-    return DRV_DOIP_STATUS_OK;
+    return DRV_DOIP_STATUS_ERROR;
 }
 
 
