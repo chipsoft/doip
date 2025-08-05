@@ -197,9 +197,6 @@ drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle);
 drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
                                                  uint8_t *response, size_t max_response_len, size_t *actual_len);
 
-// DID reading utility functions
-drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t did, const char *name, const char *format);
-
 drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
