@@ -90,6 +90,11 @@ static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uin
 static void doip_init_system_monitoring_data(drv_doip_system_monitoring_t *data);
 static void doip_update_dynamic_monitoring_data(drv_doip_system_monitoring_t *data);
 
+// Alive check functions
+static drv_doip_status_t doip_send_alive_check_request_socket(drv_doip_hw_context_t *context);
+static drv_doip_status_t doip_handle_alive_check_response_socket(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
+static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
+
 // Forward declarations of implementation functions
 static drv_doip_status_t drv_doip_init_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context);
@@ -936,6 +941,78 @@ static void doip_display_all_server_data(const drv_doip_system_monitoring_t *dat
     printf("DOIP Server: [INFO] Data updated with current runtime values\r\n\r\n");
 }
 
+// Alive check function implementations
+static drv_doip_status_t doip_send_alive_check_request_socket(drv_doip_hw_context_t *context)
+{
+    doip_message_t request_msg;
+    
+    // Create alive check request message
+    doip_create_header(&request_msg, DOIP_ALIVE_CHECK_REQUEST, 2);
+    request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;  // Source address high byte
+    request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;         // Source address low byte
+    
+    // Send the message
+    if (!doip_send_tcp_message_socket(context->tcp_socket, &request_msg)) {
+        printf("DOIP Client: Failed to send alive check request\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Client: Alive check request sent (10 bytes)\r\n");
+    return DRV_DOIP_STATUS_OK;
+}
+
+static drv_doip_status_t doip_handle_alive_check_response_socket(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length)
+{
+    printf("DOIP Client: Alive check response received - payload length: %lu bytes\r\n", payload_length);
+    
+    // Print payload bytes for debugging
+    if (payload_length > 0) {
+        printf("DOIP Client: Payload bytes: ");
+        for (uint32_t i = 0; i < payload_length && i < 16; i++) {
+            printf("0x%02X ", payload[i]);
+        }
+        printf("\r\n");
+    }
+    
+    // According to ISO 13400, alive check response should have 2 bytes (source address)
+    if (payload_length >= 2) {
+        uint16_t source_address = (payload[0] << 8) | payload[1];
+        printf("DOIP Client: Alive check response received from 0x%04X\r\n", source_address);
+    } else {
+        printf("DOIP Client: Alive check response payload too short (expected >= 2 bytes)\r\n");
+    }
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length)
+{
+    doip_message_t response_msg;
+    
+    if (payload_length < 2) {
+        printf("DOIP Client: Invalid alive check request payload length\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Client: Alive check request received, sending response\r\n");
+    
+    // Create alive check response message
+    doip_create_header(&response_msg, DOIP_ALIVE_CHECK_RESPONSE, 2);
+    
+    // Echo back the source address from the request
+    response_msg.payload[0] = payload[0];
+    response_msg.payload[1] = payload[1];
+    
+    // Send the response
+    if (!doip_send_tcp_message_socket(context->tcp_socket, &response_msg)) {
+        printf("DOIP Client: Failed to send alive check response\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Client: Alive check response sent (10 bytes)\r\n");
+    return DRV_DOIP_STATUS_OK;
+}
+
 // Task function - performs full DOIP operations
 static void doip_client_task(void *pvParameters)
 {
@@ -1018,6 +1095,62 @@ static void doip_client_task(void *pvParameters)
                     // Display comprehensive monitoring data
                     doip_update_dynamic_monitoring_data(&context->monitoring_data);
                     doip_display_all_server_data(&context->monitoring_data);
+                    
+                    // Test alive check functionality
+                    printf("\r\n--- Testing Alive Check ---\r\n");
+                    if (doip_send_alive_check_request_socket(context) == DRV_DOIP_STATUS_OK) {
+                        printf("DOIP Client: Alive check request sent successfully\r\n");
+                        
+                        // Set socket to non-blocking mode for alive check listening
+                        int nonblock = 1;
+                        if (ioctlsocket(context->tcp_socket, FIONBIO, &nonblock) != 0) {
+                            printf("DOIP Client: Warning - could not set socket to non-blocking mode\r\n");
+                        }
+                        
+                        // Listen for incoming messages for a short time
+                        printf("DOIP Client: Listening for ECU messages...\r\n");
+                        TickType_t start_time = xTaskGetTickCount();
+                        TickType_t timeout_ticks = pdMS_TO_TICKS(3000); // 3 second timeout
+                        
+                        while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+                            uint8_t buffer[1024];
+                            int bytes_received = recv(context->tcp_socket, buffer, sizeof(buffer), 0);
+                            
+                            if (bytes_received > 0) {
+                                printf("DOIP Client: Received %d bytes during alive check listening\r\n", bytes_received);
+                                
+                                // Parse DOIP header if we have enough data
+                                if (bytes_received >= DOIP_HEADER_SIZE) {
+                                    uint16_t payload_type = (buffer[2] << 8) | buffer[3];
+                                    uint32_t payload_length = (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+                                    
+                                    printf("DOIP Client: Received message - Type: 0x%04X, Length: %lu bytes\r\n", 
+                                           payload_type, payload_length);
+                                    
+                                    // Handle alive check messages
+                                    if (payload_type == DOIP_ALIVE_CHECK_REQUEST && bytes_received >= (DOIP_HEADER_SIZE + payload_length)) {
+                                        printf("DOIP Client: Handling alive check request from ECU\r\n");
+                                        doip_handle_alive_check_request_socket(context, &buffer[DOIP_HEADER_SIZE], payload_length);
+                                    } else if (payload_type == DOIP_ALIVE_CHECK_RESPONSE && bytes_received >= (DOIP_HEADER_SIZE + payload_length)) {
+                                        printf("DOIP Client: Handling alive check response from ECU\r\n");
+                                        doip_handle_alive_check_response_socket(context, &buffer[DOIP_HEADER_SIZE], payload_length);
+                                    } else {
+                                        printf("DOIP Client: Received other message type: 0x%04X\r\n", payload_type);
+                                    }
+                                }
+                            } else if (bytes_received == 0) {
+                                printf("DOIP Client: TCP connection closed during alive check listening\r\n");
+                                break;
+                            } else {
+                                // No data available, continue waiting
+                                vTaskDelay(pdMS_TO_TICKS(100)); // 100ms delay
+                            }
+                        }
+                        
+                        printf("DOIP Client: Alive check testing completed\r\n");
+                    } else {
+                        printf("DOIP Client: Failed to send alive check request\r\n");
+                    }
                     
                     // Disconnect after reading data
                     drv_doip_disconnect_impl(context);
