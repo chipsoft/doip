@@ -10,6 +10,7 @@
 #include "semphr.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 // DOIP Protocol Constants
 #define DOIP_UDP_DISCOVERY_PORT         13400
@@ -238,7 +239,6 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     doip_message_t request_msg, response_msg;
     uint8_t buffer[1024];
     int result;
-    struct timeval timeout;
     
     printf("DOIP Client: Discovering vehicles via socket API\r\n");
     context->current_state = DRV_DOIP_STATE_DISCOVERING;
@@ -260,14 +260,11 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Set receive timeout
-    timeout.tv_sec = DOIP_DISCOVERY_TIMEOUT_MS / 1000;
-    timeout.tv_usec = (DOIP_DISCOVERY_TIMEOUT_MS % 1000) * 1000;
-    if (setsockopt(udp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        printf("DOIP Client: Failed to set socket timeout\r\n");
-        close(udp_socket);
-        context->current_state = DRV_DOIP_STATE_ERROR;
-        return DRV_DOIP_STATUS_ERROR;
+    // Set socket to non-blocking mode for manual timeout handling
+    int nonblock = 1;
+    if (ioctlsocket(udp_socket, FIONBIO, &nonblock) != 0) {
+        printf("DOIP Client: Warning - could not set non-blocking mode\r\n");
+        // Continue anyway, we'll handle blocking behavior
     }
     
     // Prepare broadcast address
@@ -303,15 +300,36 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     
     printf("DOIP Client: Discovery request sent, waiting for response...\r\n");
     
-    // Wait for response
+    // Wait for response with manual timeout handling
     addr_len = sizeof(response_addr);
-    result = recvfrom(udp_socket, buffer, sizeof(buffer), 0,
-                      (struct sockaddr*)&response_addr, &addr_len);
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_DISCOVERY_TIMEOUT_MS);
+    
+    result = -1;
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+        result = recvfrom(udp_socket, buffer, sizeof(buffer), 0,
+                          (struct sockaddr*)&response_addr, &addr_len);
+        
+        if (result > 0) {
+            printf("DOIP Client: Received response (%d bytes)\r\n", result);
+            break;
+        } else if (result == 0) {
+            printf("DOIP Client: Connection closed during discovery\r\n");
+            break;
+        } else {
+            // No data available yet, wait a bit and try again
+            vTaskDelay(pdMS_TO_TICKS(10)); // 10ms delay
+        }
+    }
     
     close(udp_socket);
     
-    if (result < 0) {
-        printf("DOIP Client: No discovery response received (timeout)\r\n");
+    if (result <= 0) {
+        if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+            printf("DOIP Client: Discovery timeout - no response received\r\n");
+        } else {
+            printf("DOIP Client: Discovery failed - connection issue\r\n");
+        }
         context->current_state = DRV_DOIP_STATE_IDLE;
         return DRV_DOIP_STATUS_TIMEOUT;
     }
@@ -346,9 +364,12 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     printf("DOIP Client: Vehicle discovered via socket\r\n");
     printf("  VIN: %s\r\n", vehicle_info->vin);
     printf("  Logical Address: 0x%04X\r\n", vehicle_info->logical_address);
-    char ip_str[16];
-    ipaddr_ntoa_r((const ip_addr_t*)&response_addr.sin_addr.s_addr, ip_str, sizeof(ip_str));
-    printf("  IP Address: %s\r\n", ip_str);
+    printf("  IP Address: %u.%u.%u.%u:%d\r\n", 
+           (unsigned)((vehicle_info->ip_address >> 24) & 0xFF),
+           (unsigned)((vehicle_info->ip_address >> 16) & 0xFF),
+           (unsigned)((vehicle_info->ip_address >> 8) & 0xFF),
+           (unsigned)(vehicle_info->ip_address & 0xFF),
+           vehicle_info->tcp_port);
     
     return DRV_DOIP_STATUS_OK;
 }
@@ -362,7 +383,6 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     struct sockaddr_in server_addr;
     doip_message_t request_msg, response_msg;
     int result;
-    struct timeval timeout;
     
     printf("DOIP Client: Connecting to vehicle via socket\r\n");
     context->current_state = DRV_DOIP_STATE_CONNECTING;
@@ -375,11 +395,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Set timeout
-    timeout.tv_sec = DOIP_TCP_TIMEOUT_MS / 1000;
-    timeout.tv_usec = (DOIP_TCP_TIMEOUT_MS % 1000) * 1000;
-    setsockopt(context->tcp_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(context->tcp_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    // Note: lwIP socket timeouts are not supported, we'll handle timeouts manually
     
     // Prepare server address
     memset(&server_addr, 0, sizeof(server_addr));
@@ -388,6 +404,13 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     server_addr.sin_addr.s_addr = htonl(vehicle_info->ip_address);
     
     // Connect to server
+    printf("DOIP Client: Attempting to connect to %u.%u.%u.%u:%d\r\n",
+           (unsigned)((vehicle_info->ip_address >> 24) & 0xFF),
+           (unsigned)((vehicle_info->ip_address >> 16) & 0xFF),
+           (unsigned)((vehicle_info->ip_address >> 8) & 0xFF),
+           (unsigned)(vehicle_info->ip_address & 0xFF),
+           vehicle_info->tcp_port);
+    
     result = connect(context->tcp_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (result < 0) {
         printf("DOIP Client: Failed to connect to vehicle (error: %d)\r\n", result);
@@ -397,7 +420,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP Client: TCP connection established\r\n");
+    printf("DOIP Client: TCP connection established successfully\r\n");
     
     // Send routing activation request
     doip_create_header(&request_msg, DOIP_ROUTING_ACTIVATION_REQUEST, 7);
@@ -434,22 +457,37 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Check activation response code
-    if (response_msg.payload_length >= 9 && response_msg.payload[8] == 0x10) {
-        printf("DOIP Client: Routing activation successful\r\n");
-        context->current_state = DRV_DOIP_STATE_ACTIVATED;
-        
-        // Store vehicle info
-        memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
-        
-        return DRV_DOIP_STATUS_OK;
-    } else {
-        printf("DOIP Client: Routing activation failed\r\n");
-        close(context->tcp_socket);
-        context->tcp_socket = -1;
-        context->current_state = DRV_DOIP_STATE_ERROR;
-        return DRV_DOIP_STATUS_ERROR;
+    // Debug: Print payload bytes
+    printf("DOIP Client: Routing activation response payload (%lu bytes): ", response_msg.payload_length);
+    for (uint32_t i = 0; i < response_msg.payload_length && i < 16; i++) {
+        printf("0x%02X ", response_msg.payload[i]);
     }
+    printf("\r\n");
+    
+    // Check activation response code - correct format
+    if (response_msg.payload_length >= 5) {
+        uint8_t response_code = response_msg.payload[4]; // Response code at 5th byte
+        printf("DOIP Client: Routing activation response code: 0x%02X\r\n", response_code);
+        
+        if (response_code == 0x10) {
+            printf("DOIP Client: Routing activation successful\r\n");
+            context->current_state = DRV_DOIP_STATE_ACTIVATED;
+            
+            // Store vehicle info
+            memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
+            
+            return DRV_DOIP_STATUS_OK;
+        } else {
+            printf("DOIP Client: Routing activation failed with response code: 0x%02X\r\n", response_code);
+        }
+    } else {
+        printf("DOIP Client: Routing activation response payload too short: %lu bytes (expected >= 5)\r\n", response_msg.payload_length);
+    }
+    
+    close(context->tcp_socket);
+    context->tcp_socket = -1;
+    context->current_state = DRV_DOIP_STATE_ERROR;
+    return DRV_DOIP_STATUS_ERROR;
 }
 
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
@@ -668,6 +706,7 @@ static void doip_create_header(doip_message_t *msg, uint16_t payload_type, uint3
 static bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg)
 {
     if (data_len < DOIP_HEADER_SIZE) {
+        printf("DOIP Client: Header too short: %zu bytes (expected %d)\r\n", data_len, DOIP_HEADER_SIZE);
         return false;
     }
     
@@ -676,11 +715,29 @@ static bool doip_parse_header(const uint8_t *data, size_t data_len, doip_message
     msg->payload_type = (data[2] << 8) | data[3];
     msg->payload_length = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
     
-    if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
+    // Validate protocol version
+    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
+        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+        printf("DOIP Client: Invalid protocol version: 0x%02X/0x%02X (expected 0x%02X/0x%02X)\r\n",
+               msg->protocol_version, msg->inverse_protocol_version,
+               DOIP_PROTOCOL_VERSION, DOIP_INVERSE_PROTOCOL_VERSION);
         return false;
     }
     
-    if (msg->payload_length > 0 && msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) {
+    // Validate payload length
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP Client: Payload too large: %lu bytes (max %d)\r\n", 
+               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        return false;
+    }
+    
+    if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
+        printf("DOIP Client: Incomplete message: %zu bytes (expected %lu)\r\n", 
+               data_len, DOIP_HEADER_SIZE + msg->payload_length);
+        return false;
+    }
+    
+    if (msg->payload_length > 0) {
         memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
     }
     
@@ -714,42 +771,81 @@ static bool doip_send_tcp_message_socket(int socket, const doip_message_t *msg)
 
 static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uint32_t timeout_ms)
 {
-    uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
-    size_t total_received = 0;
+    uint8_t header_buffer[DOIP_HEADER_SIZE];
+    size_t header_received = 0;
     int bytes_received;
+    TickType_t start_time = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
     
-    // First, receive the header
-    while (total_received < DOIP_HEADER_SIZE) {
-        bytes_received = recv(socket, buffer + total_received, DOIP_HEADER_SIZE - total_received, 0);
-        if (bytes_received <= 0) {
+    // First, receive the header with timeout
+    while (header_received < DOIP_HEADER_SIZE) {
+        if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+            printf("DOIP Client: TCP receive timeout during header\r\n");
             return false;
         }
-        total_received += bytes_received;
+        
+        bytes_received = recv(socket, header_buffer + header_received, DOIP_HEADER_SIZE - header_received, 0);
+        if (bytes_received > 0) {
+            header_received += bytes_received;
+        } else if (bytes_received == 0) {
+            printf("DOIP Client: TCP connection closed during header receive\r\n");
+            return false;
+        } else {
+            // No data available yet, wait a bit and try again
+            vTaskDelay(pdMS_TO_TICKS(10)); // 10ms delay
+        }
     }
     
-    // Parse header
-    if (!doip_parse_header(buffer, total_received, msg)) {
+    // Parse header manually (similar to raw implementation)
+    msg->protocol_version = header_buffer[0];
+    msg->inverse_protocol_version = header_buffer[1];
+    msg->payload_type = (header_buffer[2] << 8) | header_buffer[3];
+    msg->payload_length = (header_buffer[4] << 24) | (header_buffer[5] << 16) | (header_buffer[6] << 8) | header_buffer[7];
+    
+    // Validate protocol version
+    if (msg->protocol_version != DOIP_PROTOCOL_VERSION ||
+        msg->inverse_protocol_version != DOIP_INVERSE_PROTOCOL_VERSION) {
+        printf("DOIP Client: Invalid protocol version: 0x%02X/0x%02X (expected 0x%02X/0x%02X)\r\n",
+               msg->protocol_version, msg->inverse_protocol_version,
+               DOIP_PROTOCOL_VERSION, DOIP_INVERSE_PROTOCOL_VERSION);
         return false;
     }
     
+    // Validate payload length
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP Client: Payload too large: %lu bytes (max %d)\r\n", 
+               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        return false;
+    }
+    
+    printf("DOIP Client: Received DOIP header - Type: 0x%04X, Length: %lu\r\n", 
+           msg->payload_type, msg->payload_length);
+    
     // Receive payload if present
     if (msg->payload_length > 0) {
-        size_t remaining = msg->payload_length;
-        while (remaining > 0 && total_received < sizeof(buffer)) {
-            bytes_received = recv(socket, buffer + total_received, remaining, 0);
-            if (bytes_received <= 0) {
+        size_t payload_received = 0;
+        
+        while (payload_received < msg->payload_length) {
+            if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
+                printf("DOIP Client: TCP receive timeout during payload\r\n");
                 return false;
             }
-            total_received += bytes_received;
-            remaining -= bytes_received;
-        }
-        
-        // Update payload in message
-        if (msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) {
-            memcpy(msg->payload, &buffer[DOIP_HEADER_SIZE], msg->payload_length);
+            
+            bytes_received = recv(socket, msg->payload + payload_received, msg->payload_length - payload_received, 0);
+            if (bytes_received > 0) {
+                payload_received += bytes_received;
+            } else if (bytes_received == 0) {
+                printf("DOIP Client: TCP connection closed during payload receive\r\n");
+                return false;
+            } else {
+                // No data available yet, wait a bit and try again
+                vTaskDelay(pdMS_TO_TICKS(10)); // 10ms delay
+            }
         }
     }
     
+    printf("DOIP Client: Successfully received DOIP message (%zu total bytes)\r\n", 
+           DOIP_HEADER_SIZE + msg->payload_length);
     return true;
 }
 
