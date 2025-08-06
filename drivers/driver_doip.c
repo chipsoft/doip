@@ -1,9 +1,32 @@
+/**
+ * @file driver_doip.c
+ * @brief Universal DoIP Driver Implementation
+ * 
+ * @details This file implements the universal DoIP driver API functions
+ * providing hardware-agnostic DoIP protocol handling with comprehensive
+ * error checking, memory safety, and ISO 13400 compliance.
+ * 
+ * @section implementation Implementation Notes
+ * - All API functions include parameter validation using ASSERT macros
+ * - Memory safety is enforced with bounds checking in utility functions
+ * - Error conditions are logged with detailed context for debugging
+ * - State management prevents invalid operations
+ * 
+ * @author  SAME54 DoIP Project
+ * @date    2024
+ * @version 1.0
+ */
+
 #include "driver_doip.h"
 #include "utils_assert.h"
 #include "printf.h"
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+
+//-----------------------------------------------------------------------------
+// Universal API Function Implementations
+//-----------------------------------------------------------------------------
 
 drv_doip_status_t hw_doip_init(drv_doip_t *handle)
 {
@@ -124,7 +147,9 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     return handle->register_callback(handle->hw_context, type, callback);
 }
 
-// Raw DOIP messaging API implementations
+//-----------------------------------------------------------------------------
+// Raw DOIP Messaging API Implementations
+//-----------------------------------------------------------------------------
 
 drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, const drv_doip_raw_packet_t *packet)
 {
@@ -165,12 +190,12 @@ drv_doip_status_t hw_doip_start_packet_listener(drv_doip_t *handle, const drv_do
     
     // Validate configuration
     if (config->timeout_ms == 0 || config->timeout_ms > 60000) {
-        printf("DOIP: Invalid timeout_ms: %lu (must be 1-60000)\r\n", config->timeout_ms);
+        printf("DOIP: Invalid timeout_ms: %u (must be 1-60000)\r\n", (unsigned int)config->timeout_ms);
         return DRV_DOIP_STATUS_ERROR;
     }
     
     if (config->max_fragments == 0 || config->max_fragments > 100) {
-        printf("DOIP: Invalid max_fragments: %lu (must be 1-100)\r\n", config->max_fragments);
+        printf("DOIP: Invalid max_fragments: %u (must be 1-100)\r\n", (unsigned int)config->max_fragments);
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -207,7 +232,9 @@ drv_doip_status_t hw_doip_register_packet_callback(drv_doip_t *handle, drv_doip_
     return handle->register_packet_callback(handle->hw_context, callback);
 }
 
-// Common utility function implementations
+//-----------------------------------------------------------------------------
+// Common Utility Function Implementations
+//-----------------------------------------------------------------------------
 
 void doip_utils_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length)
 {
@@ -239,19 +266,37 @@ bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_
     }
     
     if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
-        printf("DOIP: Payload too large: %lu bytes (max %d)\r\n", 
-               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        printf("DOIP: Payload too large: %u bytes (max %d)\r\n", 
+               (unsigned int)msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
         return false;
     }
     
     if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
-        printf("DOIP: Incomplete message: %zu bytes (expected %lu)\r\n", 
-               data_len, DOIP_HEADER_SIZE + msg->payload_length);
+        printf("DOIP: Incomplete message: %zu bytes (expected %u)\r\n", 
+               data_len, (unsigned int)(DOIP_HEADER_SIZE + msg->payload_length));
         return false;
     }
     
+    // MEMORY SAFETY: Validate payload length against both input data and destination buffer
     if (msg->payload_length > 0) {
-        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+        // Double-check bounds: ensure we don't exceed destination buffer size
+        uint32_t safe_copy_length = (msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) ? 
+                                   msg->payload_length : DOIP_MAX_PAYLOAD_SIZE;
+        
+        // Ensure source data has enough bytes available
+        if (data_len >= DOIP_HEADER_SIZE + safe_copy_length) {
+            memcpy(msg->payload, &data[DOIP_HEADER_SIZE], safe_copy_length);
+            
+            // If we had to truncate, update the payload length and warn
+            if (safe_copy_length < msg->payload_length) {
+                printf("DOIP: WARNING - Payload truncated from %u to %u bytes\r\n", 
+                       (unsigned int)msg->payload_length, (unsigned int)safe_copy_length);
+                msg->payload_length = safe_copy_length;
+            }
+        } else {
+            printf("DOIP: ERROR - Insufficient source data for payload copy\r\n");
+            return false;
+        }
     }
     
     return true;
@@ -274,6 +319,13 @@ void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer)
     ASSERT(msg != NULL);
     ASSERT(buffer != NULL);
     
+    // MEMORY SAFETY: Validate payload length before serialization
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP: ERROR - Cannot serialize message with payload length %u > max %d\r\n",
+               (unsigned int)msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        return;
+    }
+    
     buffer[0] = msg->protocol_version;
     buffer[1] = msg->inverse_protocol_version;
     buffer[2] = (msg->payload_type >> 8) & 0xFF;
@@ -283,14 +335,63 @@ void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer)
     buffer[6] = (msg->payload_length >> 8) & 0xFF;
     buffer[7] = msg->payload_length & 0xFF;
     
+    // MEMORY SAFETY: Only copy payload if length is valid and within bounds
+    if (msg->payload_length > 0 && msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) {
+        memcpy(&buffer[DOIP_HEADER_SIZE], msg->payload, msg->payload_length);
+    }
+}
+
+bool doip_utils_serialize_message_safe(const doip_message_t *msg, uint8_t *buffer, size_t buffer_size, size_t *bytes_written)
+{
+    ASSERT(msg != NULL);
+    ASSERT(buffer != NULL);
+    ASSERT(bytes_written != NULL);
+    
+    *bytes_written = 0;
+    
+    // MEMORY SAFETY: Validate payload length
+    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        printf("DOIP: ERROR - Message payload length %u exceeds maximum %d\r\n",
+               (unsigned int)msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+        return false;
+    }
+    
+    // Calculate total required buffer size
+    size_t required_size = DOIP_HEADER_SIZE + msg->payload_length;
+    
+    // MEMORY SAFETY: Validate destination buffer size
+    if (buffer_size < required_size) {
+        printf("DOIP: ERROR - Buffer too small: %zu bytes (need %zu)\r\n", 
+               buffer_size, required_size);
+        return false;
+    }
+    
+    // Serialize header
+    buffer[0] = msg->protocol_version;
+    buffer[1] = msg->inverse_protocol_version;
+    buffer[2] = (msg->payload_type >> 8) & 0xFF;
+    buffer[3] = msg->payload_type & 0xFF;
+    buffer[4] = (msg->payload_length >> 24) & 0xFF;
+    buffer[5] = (msg->payload_length >> 16) & 0xFF;
+    buffer[6] = (msg->payload_length >> 8) & 0xFF;
+    buffer[7] = msg->payload_length & 0xFF;
+    
+    // MEMORY SAFETY: Copy payload with validated bounds
     if (msg->payload_length > 0) {
         memcpy(&buffer[DOIP_HEADER_SIZE], msg->payload, msg->payload_length);
     }
+    
+    *bytes_written = required_size;
+    return true;
 }
 
 
 
 
+
+//-----------------------------------------------------------------------------
+// Alive Check and Multi-ECU Utility Implementations
+//-----------------------------------------------------------------------------
 
 void doip_utils_create_alive_check_request(uint8_t *buffer, uint16_t source_address)
 {
