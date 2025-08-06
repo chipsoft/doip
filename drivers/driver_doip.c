@@ -266,3 +266,126 @@ bool doip_utils_handle_alive_check_payload(const uint8_t *payload, uint32_t payl
         return false;
     }
 }
+
+// Multi-ECU discovery utility implementations
+
+uint8_t doip_utils_parse_multi_ecu_discovery_response(const uint8_t *buffer, size_t buffer_len, 
+                                                     uint32_t source_ip, doip_multi_ecu_cache_t *cache)
+{
+    ASSERT(buffer != NULL);
+    ASSERT(cache != NULL);
+    
+    printf("DOIP Utils: Parsing multi-ECU discovery response (%zu bytes) - current cache has %d ECUs\r\n", 
+           buffer_len, cache->count);
+    
+    // Don't reset cache->count - we want to accumulate ECUs from multiple responses
+    size_t buffer_offset = 0;
+    doip_message_t response_msg;
+    uint8_t initial_count = cache->count;
+    
+    while (buffer_offset < buffer_len && cache->count < DOIP_MAX_DISCOVERED_ECUS) {
+        size_t remaining = buffer_len - buffer_offset;
+        
+        if (remaining < DOIP_HEADER_SIZE) {
+            printf("DOIP Utils: Insufficient remaining data for DOIP header\r\n");
+            break;
+        }
+        
+        // Parse response header using utility
+        if (!doip_utils_parse_header(buffer + buffer_offset, remaining, &response_msg)) {
+            printf("DOIP Utils: Invalid discovery response header at offset %zu\r\n", buffer_offset);
+            // Try to find next DOIP header by looking for protocol version pattern
+            buffer_offset++;
+            continue;
+        }
+        
+        printf("DOIP Utils: Found DOIP message - Type: 0x%04X, Length: %lu\r\n", 
+               response_msg.payload_type, response_msg.payload_length);
+        
+        // Check if this is a vehicle identification response
+        if (response_msg.payload_type == DOIP_VEHICLE_IDENTIFICATION_RESPONSE) {
+            drv_doip_vehicle_info_t temp_vehicle;
+            if (doip_utils_extract_vehicle_info(&response_msg, source_ip, &temp_vehicle)) {
+                // Check for duplicates based on logical address
+                bool duplicate = false;
+                for (uint8_t i = 0; i < cache->count; i++) {
+                    if (cache->vehicles[i].logical_address == temp_vehicle.logical_address) {
+                        printf("DOIP Utils: Duplicate ECU 0x%04X ignored\r\n", temp_vehicle.logical_address);
+                        duplicate = true;
+                        break;
+                    }
+                }
+                
+                if (!duplicate) {
+                    memcpy(&cache->vehicles[cache->count], &temp_vehicle, sizeof(drv_doip_vehicle_info_t));
+                    printf("DOIP Utils: Cached vehicle %d - VIN=%s, LA=0x%04X\r\n",
+                           cache->count + 1, cache->vehicles[cache->count].vin, cache->vehicles[cache->count].logical_address);
+                    cache->count++;
+                }
+            }
+        }
+        
+        // Move to next message
+        buffer_offset += DOIP_HEADER_SIZE + response_msg.payload_length;
+    }
+    
+    uint8_t newly_added = cache->count - initial_count;
+    printf("DOIP Utils: Parsed and cached %d new vehicles from discovery response (total: %d)\r\n", 
+           newly_added, cache->count);
+    // Only reset current_index when starting fresh discovery, not on each response
+    return newly_added;
+}
+
+bool doip_utils_extract_vehicle_info(const doip_message_t *response_msg, uint32_t source_ip, 
+                                     drv_doip_vehicle_info_t *vehicle_info)
+{
+    ASSERT(response_msg != NULL);
+    ASSERT(vehicle_info != NULL);
+    
+    // Check minimum payload size: VIN(17) + Logical Address(2) + EID(6)
+    if (response_msg->payload_length < 25) {
+        printf("DOIP Utils: Vehicle announcement payload too short (%lu bytes)\r\n", response_msg->payload_length);
+        return false;
+    }
+    
+    // Parse VIN (17 bytes)
+    memcpy(vehicle_info->vin, response_msg->payload, 17);
+    vehicle_info->vin[17] = '\0';
+    
+    // Parse Logical Address (2 bytes)
+    vehicle_info->logical_address = (response_msg->payload[17] << 8) | response_msg->payload[18];
+    
+    // Parse Entity ID (6 bytes)  
+    memcpy(vehicle_info->entity_id, &response_msg->payload[19], 6);
+    
+    // Parse Group ID (first 2 bytes if available)
+    if (response_msg->payload_length >= 31) { // VIN(17) + LA(2) + EID(6) + GID(6)
+        memcpy(vehicle_info->group_id, &response_msg->payload[25], 2);
+    } else {
+        memset(vehicle_info->group_id, 0x00, 2);
+    }
+    
+    // Set IP and port from discovery
+    vehicle_info->ip_address = source_ip;
+    vehicle_info->tcp_port = DOIP_TCP_DATA_PORT;
+    
+    return true;
+}
+
+bool doip_utils_handle_negative_ack(uint16_t payload_type, const uint8_t *payload, 
+                                    uint32_t payload_length, size_t *actual_len)
+{
+    ASSERT(actual_len != NULL);
+    
+    if (payload_type == DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK) {
+        printf("DOIP Utils: Received negative ACK response (ECU does not support this request)\r\n");
+        if (payload_length >= 1 && payload != NULL) {
+            printf("DOIP Utils: NACK code: 0x%02X (Request out of range)\r\n", payload[0]);
+        }
+        *actual_len = 0;
+        // Return true to indicate this was handled as a negative ACK (not an error)
+        return true;
+    }
+    
+    return false; // Not a negative ACK
+}

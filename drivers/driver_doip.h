@@ -201,15 +201,30 @@ drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
 
+// Multi-ECU discovery cache structure
+#define DOIP_MAX_DISCOVERED_ECUS 8
+
+typedef struct {
+    drv_doip_vehicle_info_t vehicles[DOIP_MAX_DISCOVERED_ECUS];
+    uint8_t count;
+    uint8_t current_index;
+} doip_multi_ecu_cache_t;
+
 // Common utility functions
 void doip_utils_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length);
 bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_t *msg);
 bool doip_utils_validate_protocol(uint8_t protocol_version, uint8_t inverse_protocol_version);
 void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer);
 
+// Multi-ECU discovery utilities
+uint8_t doip_utils_parse_multi_ecu_discovery_response(const uint8_t *buffer, size_t buffer_len, 
+                                                     uint32_t source_ip, doip_multi_ecu_cache_t *cache);
+bool doip_utils_extract_vehicle_info(const doip_message_t *response_msg, uint32_t source_ip, 
+                                     drv_doip_vehicle_info_t *vehicle_info);
+bool doip_utils_handle_negative_ack(uint16_t payload_type, const uint8_t *payload, 
+                                    uint32_t payload_length, size_t *actual_len);
 
-
-
+// Alive check utilities
 void doip_utils_create_alive_check_request(uint8_t *buffer, uint16_t source_address);
 void doip_utils_create_alive_check_response(uint8_t *buffer, const uint8_t *request_payload);
 bool doip_utils_handle_alive_check_payload(const uint8_t *payload, uint32_t payload_length, uint16_t *source_address);

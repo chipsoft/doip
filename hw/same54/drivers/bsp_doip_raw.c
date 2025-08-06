@@ -45,10 +45,8 @@ typedef struct {
     // Discovery response tracking
     uint32_t discovered_ip_address;
     
-    // Multi-vehicle discovery cache
-    drv_doip_vehicle_info_t discovered_vehicles[8];
-    uint8_t discovered_vehicle_count;
-    uint8_t current_vehicle_index;
+    // Multi-ECU discovery cache
+    doip_multi_ecu_cache_t discovery_cache;
     
     // System monitoring data
     drv_doip_system_monitoring_t monitoring_data;
@@ -69,8 +67,6 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .send_sem = NULL,
     .discovery_sem = NULL,
     .discovered_ip_address = 0,
-    .discovered_vehicle_count = 0,
-    .current_vehicle_index = 0,
 };
 
 // Helper functions
@@ -417,17 +413,17 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     context->current_state = DRV_DOIP_STATE_DISCOVERING;
     
     // Reset discovery cache if starting fresh discovery
-    if (context->current_vehicle_index >= context->discovered_vehicle_count) {
-        context->current_vehicle_index = 0;
-        context->discovered_vehicle_count = 0;
+    if (context->discovery_cache.current_index >= context->discovery_cache.count) {
+        context->discovery_cache.current_index = 0;
+        context->discovery_cache.count = 0;
         printf("DOIP Client: Starting fresh discovery cycle\r\n");
     } else {
         // We have cached vehicles, return the next one without sending new discovery
         printf("DOIP Client: Using cached discovery results (%d vehicles, returning index %d)\r\n",
-               context->discovered_vehicle_count, context->current_vehicle_index);
+               context->discovery_cache.count, context->discovery_cache.current_index);
         
-        memcpy(vehicle_info, &context->discovered_vehicles[context->current_vehicle_index], sizeof(drv_doip_vehicle_info_t));
-        context->current_vehicle_index++;
+        memcpy(vehicle_info, &context->discovery_cache.vehicles[context->discovery_cache.current_index], sizeof(drv_doip_vehicle_info_t));
+        context->discovery_cache.current_index++;
         
         // Store vehicle info in context
         memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
@@ -555,91 +551,36 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     // (This maintains backward compatibility with existing single-vehicle API)
     
     // If this is the first discovery call, parse ALL vehicles from the buffer
-    if (context->current_vehicle_index == 0) {
-        context->discovered_vehicle_count = 0;
+    if (context->discovery_cache.current_index == 0) {
+        printf("DOIP Client: Parsing multi-ECU responses using common utility (%d bytes total)\r\n", total_received);
         
-        // Parse all DOIP messages in the buffer
-        size_t buffer_offset = 0;
+        // Use common utility to parse multi-ECU discovery response
+        uint8_t parsed_count = doip_utils_parse_multi_ecu_discovery_response(
+            buffer, total_received, context->discovered_ip_address, &context->discovery_cache);
         
-        printf("DOIP Client: Parsing multiple DOIP responses from buffer (%d bytes total)\r\n", total_received);
-        
-        while (buffer_offset < total_received && context->discovered_vehicle_count < 8) {
-            size_t remaining = total_received - buffer_offset;
-            
-            if (remaining < DOIP_HEADER_SIZE) {
-                printf("DOIP Client: Insufficient remaining data for DOIP header\r\n");
-                break;
-            }
-            
-            // Parse response header using utility
-            if (!doip_utils_parse_header(buffer + buffer_offset, remaining, &response_msg)) {
-                printf("DOIP Client: Invalid discovery response header at offset %d\r\n", buffer_offset);
-                // Try to find next DOIP header by looking for protocol version pattern
-                buffer_offset++;
-                continue;
-            }
-            
-            printf("DOIP Client: Found DOIP message - Type: 0x%04X, Length: %lu\r\n", 
-                   response_msg.payload_type, response_msg.payload_length);
-            
-            // Check if this is a vehicle identification response
-            if (response_msg.payload_type == DOIP_VEHICLE_IDENTIFICATION_RESPONSE && 
-                response_msg.payload_length >= 17 + 2 + 6) { // VIN + Logical Address + EID minimum
-                
-                // Extract vehicle information and store in cache
-                drv_doip_vehicle_info_t *cached_vehicle = &context->discovered_vehicles[context->discovered_vehicle_count];
-                
-                // Parse VIN (17 bytes)
-                memcpy(cached_vehicle->vin, response_msg.payload, 17);
-                cached_vehicle->vin[17] = '\0';
-                
-                // Parse Logical Address (2 bytes)
-                cached_vehicle->logical_address = (response_msg.payload[17] << 8) | response_msg.payload[18];
-                
-                // Parse Entity ID (6 bytes)  
-                memcpy(cached_vehicle->entity_id, &response_msg.payload[19], 6);
-                
-                // Parse Group ID (6 bytes)
-                if (response_msg.payload_length >= 17 + 2 + 6 + 6) {
-                    memcpy(cached_vehicle->group_id, &response_msg.payload[25], 2); // Only first 2 bytes
-                }
-                
-                // Set IP and port from discovery
-                cached_vehicle->ip_address = context->discovered_ip_address;
-                cached_vehicle->tcp_port = DOIP_TCP_DATA_PORT;
-                
-                context->discovered_vehicle_count++;
-                printf("DOIP Client: Cached vehicle %d - VIN=%s, LA=0x%04X\r\n",
-                       context->discovered_vehicle_count, cached_vehicle->vin, cached_vehicle->logical_address);
-            }
-            
-            // Move to next message
-            buffer_offset += DOIP_HEADER_SIZE + response_msg.payload_length;
-        }
-        
-        printf("DOIP Client: Parsed and cached %d vehicles from discovery response\r\n", context->discovered_vehicle_count);
+        printf("DOIP Client: Common utility parsed and cached %d vehicles from discovery response\r\n", parsed_count);
     }
     
-    if (context->discovered_vehicle_count == 0) {
+    if (context->discovery_cache.count == 0) {
         printf("DOIP Client: No valid vehicle identification responses found\r\n");
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
     // Return the next vehicle from cache
-    if (context->current_vehicle_index >= context->discovered_vehicle_count) {
+    if (context->discovery_cache.current_index >= context->discovery_cache.count) {
         // Reset for next discovery cycle
-        context->current_vehicle_index = 0;
+        context->discovery_cache.current_index = 0;
         printf("DOIP Client: No more vehicles in cache, resetting index\r\n");
         context->current_state = DRV_DOIP_STATE_IDLE;
         return DRV_DOIP_STATUS_NO_VEHICLE;
     }
     
     // Copy vehicle info from cache
-    memcpy(vehicle_info, &context->discovered_vehicles[context->current_vehicle_index], sizeof(drv_doip_vehicle_info_t));
-    context->current_vehicle_index++;
+    memcpy(vehicle_info, &context->discovery_cache.vehicles[context->discovery_cache.current_index], sizeof(drv_doip_vehicle_info_t));
+    context->discovery_cache.current_index++;
     
-    printf("DOIP Client: Returning cached vehicle %d/%d\r\n", context->current_vehicle_index, context->discovered_vehicle_count);
+    printf("DOIP Client: Returning cached vehicle %d/%d\r\n", context->discovery_cache.current_index, context->discovery_cache.count);
     
     // Store vehicle info in context
     memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
@@ -946,37 +887,54 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Check response type - handle both positive responses and negative ACKs
-    if (payload_type == DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK) {
-        printf("DOIP Client: Received negative ACK response (ECU does not support this request)\r\n");
-        if (payload_length >= 1) {
-            // Try to receive and parse the NACK code
-            uint8_t nack_payload;
-            size_t nack_received = xStreamBufferReceive(context->stream_buffer, 
-                                                       &nack_payload, 1, pdMS_TO_TICKS(1000));
-            if (nack_received == 1) {
-                printf("DOIP Client: NACK code: 0x%02X (Request out of range)\r\n", nack_payload);
-            }
-        }
-        *actual_len = 0;
-        // Return OK with 0 bytes to indicate "request not supported by this ECU"
-        // This allows the application to handle gracefully rather than treating as error
-        return DRV_DOIP_STATUS_OK;
-    } else if (payload_type != DOIP_DIAGNOSTIC_MESSAGE) {
+    // Check for negative ACK response first using common utility
+    uint8_t payload_buffer[32]; // Small buffer for NACK payload
+    size_t payload_received = 0;
+    if (payload_length > 0 && payload_length <= sizeof(payload_buffer)) {
+        payload_received = xStreamBufferReceive(context->stream_buffer, 
+                                               payload_buffer, payload_length, pdMS_TO_TICKS(1000));
+    }
+    
+    if (doip_utils_handle_negative_ack(payload_type, payload_buffer, payload_length, actual_len)) {
+        printf("DOIP Client: Request handled as negative ACK by ECU 0x%04X\r\n", 
+               context->current_vehicle.logical_address);
+        return DRV_DOIP_STATUS_OK; // Not an error - ECU doesn't support this request
+    }
+    
+    // Check response type
+    if (payload_type != DOIP_DIAGNOSTIC_MESSAGE) {
         printf("DOIP Client: Unexpected response type: 0x%04X\r\n", payload_type);
         *actual_len = 0;
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Receive payload if present
+    // Receive remaining payload if needed (we may have already received some for NACK check)
     if (payload_length > 0 && payload_length <= sizeof(buffer) - 8) {
-        size_t payload_received = xStreamBufferReceive(context->stream_buffer, 
-                                                      &buffer[8], payload_length, timeout_ticks);
-        if (payload_received != payload_length) {
-            printf("DOIP Client: Failed to receive complete payload (got %zu of %lu bytes)\r\n", 
-                   payload_received, payload_length);
-            *actual_len = 0;
-            return DRV_DOIP_STATUS_TIMEOUT;
+        if (payload_received > 0 && payload_received <= payload_length) {
+            // We already received some payload for NACK check, copy to buffer and get the rest
+            memcpy(&buffer[8], payload_buffer, payload_received);
+            
+            if (payload_received < payload_length) {
+                size_t remaining = payload_length - payload_received;
+                size_t remaining_received = xStreamBufferReceive(context->stream_buffer, 
+                                                               &buffer[8 + payload_received], remaining, timeout_ticks);
+                if (remaining_received != remaining) {
+                    printf("DOIP Client: Failed to receive remaining payload (got %zu of %zu bytes)\r\n", 
+                           remaining_received, remaining);
+                    *actual_len = 0;
+                    return DRV_DOIP_STATUS_TIMEOUT;
+                }
+            }
+        } else {
+            // No payload received yet, get the full payload
+            payload_received = xStreamBufferReceive(context->stream_buffer, 
+                                                  &buffer[8], payload_length, timeout_ticks);
+            if (payload_received != payload_length) {
+                printf("DOIP Client: Failed to receive complete payload (got %zu of %lu bytes)\r\n", 
+                       payload_received, payload_length);
+                *actual_len = 0;
+                return DRV_DOIP_STATUS_TIMEOUT;
+            }
         }
         
         // Debug: Print raw payload bytes
