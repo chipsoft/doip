@@ -261,6 +261,35 @@ static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
 
+// Stub implementations for raw packet functionality (not implemented in raw lwIP version)
+static drv_doip_status_t drv_doip_send_raw_message_stub(const void *hw_context, const drv_doip_raw_packet_t *packet)
+{
+    (void)hw_context; (void)packet;
+    printf("DOIP Raw lwIP: Raw message sending not implemented in raw lwIP version\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
+static drv_doip_status_t drv_doip_start_packet_listener_stub(const void *hw_context, const drv_doip_packet_listener_config_t *config)
+{
+    (void)hw_context; (void)config;
+    printf("DOIP Raw lwIP: Packet listener not implemented in raw lwIP version\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
+static drv_doip_status_t drv_doip_stop_packet_listener_stub(const void *hw_context)
+{
+    (void)hw_context;
+    printf("DOIP Raw lwIP: Packet listener not implemented in raw lwIP version\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
+static drv_doip_status_t drv_doip_register_packet_callback_stub(const void *hw_context, drv_doip_packet_callback_t callback)
+{
+    (void)hw_context; (void)callback;
+    printf("DOIP Raw lwIP: Packet callbacks not implemented in raw lwIP version\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
 // Global driver instance
 drv_doip_t doip_0 = {
     .is_init = false,
@@ -272,6 +301,12 @@ drv_doip_t doip_0 = {
     .connect_to_vehicle = drv_doip_connect_to_vehicle_impl,
     .disconnect = drv_doip_disconnect_impl,
     .send_diagnostic_request = drv_doip_send_diagnostic_request_impl,
+    
+    // Raw DOIP messaging functions (stubs for raw lwIP implementation)
+    .send_raw_message = drv_doip_send_raw_message_stub,
+    .start_packet_listener = drv_doip_start_packet_listener_stub,
+    .stop_packet_listener = drv_doip_stop_packet_listener_stub,
+    .register_packet_callback = drv_doip_register_packet_callback_stub,
 
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,

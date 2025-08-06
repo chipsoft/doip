@@ -107,6 +107,9 @@ static void network_init_task(void *pvParameters)
 	// Start DOIP client now that network is ready
 	task_doip_client_create(&doip_0);
 	
+	// Start diagnostic processor for raw DOIP packet analysis
+	task_diagnostic_processor_create(&doip_0);
+	
 	// This task is done, delete itself
 	printf("Network initialization complete, deleting init task\r\n");
 	vTaskDelete(NULL);

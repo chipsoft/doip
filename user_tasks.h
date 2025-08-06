@@ -65,5 +65,6 @@
 
 void task_led_create();
 void task_doip_client_create(drv_doip_t *doip_handle);
+void task_diagnostic_processor_create(drv_doip_t *doip_handle);
 
 #endif /* USER_TASKS_H_ */

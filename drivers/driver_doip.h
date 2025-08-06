@@ -108,9 +108,14 @@ typedef enum {
     DRV_DOIP_CB_CONNECTION_LOST = 2,
     DRV_DOIP_CB_DIAGNOSTIC_RESPONSE = 3,
     DRV_DOIP_CB_ERROR = 4,
+    DRV_DOIP_CB_RAW_PACKET_RECEIVED = 5,
+    DRV_DOIP_CB_PACKET_FRAGMENT = 6,
 } drv_doip_cb_type_t;
 
 typedef void (*drv_doip_callback_t)(drv_doip_cb_type_t type, const void *data, size_t data_len);
+
+// Raw packet callback types
+typedef void (*drv_doip_packet_callback_t)(const struct drv_doip_raw_packet *packet);
 
 // Vehicle information structure
 typedef struct {
@@ -155,6 +160,40 @@ typedef struct {
     char     application_sw_fingerprint[64];
 } drv_doip_system_monitoring_t;
 
+// Raw DOIP packet structure for universal packet handling
+typedef struct drv_doip_raw_packet {
+    // DOIP Header Information
+    uint8_t  protocol_version;
+    uint8_t  inverse_protocol_version;
+    uint16_t payload_type;
+    uint32_t payload_length;
+    
+    // Payload data
+    uint8_t  payload[DOIP_MAX_PAYLOAD_SIZE];
+    size_t   actual_payload_length;
+    
+    // Source information
+    uint32_t source_ip_address;
+    uint16_t source_port;
+    
+    // Fragment information (for large packets)
+    bool     is_fragmented;
+    uint16_t fragment_index;
+    uint16_t total_fragments;
+    uint32_t total_message_length;
+    
+    // Timing information
+    uint32_t timestamp_ms;
+} drv_doip_raw_packet_t;
+
+// Raw packet listener configuration
+typedef struct {
+    bool     is_enabled;
+    uint32_t timeout_ms;
+    uint32_t max_fragments;
+    drv_doip_packet_callback_t packet_callback;
+} drv_doip_packet_listener_config_t;
+
 // Driver structure with function pointers
 typedef struct {
     bool is_init;
@@ -174,7 +213,11 @@ typedef struct {
     drv_doip_status_t (*send_diagnostic_request)(const void *hw_context, uint8_t service_id, uint16_t data_id, 
                                                 uint8_t *response, size_t max_response_len, size_t *actual_len);
     
-
+    // Raw DOIP messaging
+    drv_doip_status_t (*send_raw_message)(const void *hw_context, const drv_doip_raw_packet_t *packet);
+    drv_doip_status_t (*start_packet_listener)(const void *hw_context, const drv_doip_packet_listener_config_t *config);
+    drv_doip_status_t (*stop_packet_listener)(const void *hw_context);
+    drv_doip_status_t (*register_packet_callback)(const void *hw_context, drv_doip_packet_callback_t callback);
     
     // Status and callback management
     drv_doip_state_t (*get_status)(const void *hw_context);
@@ -196,6 +239,12 @@ drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle);
 
 drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
                                                  uint8_t *response, size_t max_response_len, size_t *actual_len);
+
+// Raw DOIP messaging API
+drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, const drv_doip_raw_packet_t *packet);
+drv_doip_status_t hw_doip_start_packet_listener(drv_doip_t *handle, const drv_doip_packet_listener_config_t *config);
+drv_doip_status_t hw_doip_stop_packet_listener(drv_doip_t *handle);
+drv_doip_status_t hw_doip_register_packet_callback(drv_doip_t *handle, drv_doip_packet_callback_t callback);
 
 drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 

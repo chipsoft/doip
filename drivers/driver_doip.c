@@ -124,6 +124,89 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     return handle->register_callback(handle->hw_context, type, callback);
 }
 
+// Raw DOIP messaging API implementations
+
+drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, const drv_doip_raw_packet_t *packet)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->send_raw_message != NULL);
+    ASSERT(packet != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Validate packet structure
+    if (packet->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (!doip_utils_validate_protocol(packet->protocol_version, packet->inverse_protocol_version)) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->send_raw_message(handle->hw_context, packet);
+}
+
+drv_doip_status_t hw_doip_start_packet_listener(drv_doip_t *handle, const drv_doip_packet_listener_config_t *config)
+{
+    ASSERT(handle != NULL);
+    ASSERT(config != NULL);
+    
+    if (!handle->is_init) {
+        printf("DOIP: Driver not initialized for packet listener start\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (handle->start_packet_listener == NULL) {
+        printf("DOIP: start_packet_listener function not implemented\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Validate configuration
+    if (config->timeout_ms == 0 || config->timeout_ms > 60000) {
+        printf("DOIP: Invalid timeout_ms: %lu (must be 1-60000)\r\n", config->timeout_ms);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (config->max_fragments == 0 || config->max_fragments > 100) {
+        printf("DOIP: Invalid max_fragments: %lu (must be 1-100)\r\n", config->max_fragments);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->start_packet_listener(handle->hw_context, config);
+}
+
+drv_doip_status_t hw_doip_stop_packet_listener(drv_doip_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->stop_packet_listener != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_OK;
+    }
+    
+    return handle->stop_packet_listener(handle->hw_context);
+}
+
+drv_doip_status_t hw_doip_register_packet_callback(drv_doip_t *handle, drv_doip_packet_callback_t callback)
+{
+    ASSERT(handle != NULL);
+    ASSERT(callback != NULL);
+    
+    if (!handle->is_init) {
+        printf("DOIP: Driver not initialized for packet callback registration\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (handle->register_packet_callback == NULL) {
+        printf("DOIP: register_packet_callback function not implemented\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->register_packet_callback(handle->hw_context, callback);
+}
+
 // Common utility function implementations
 
 void doip_utils_create_header(doip_message_t *msg, uint16_t payload_type, uint32_t payload_length)

@@ -32,7 +32,17 @@ typedef struct {
     drv_doip_system_monitoring_t monitoring_data;
     
     // Callbacks
-    drv_doip_callback_t callbacks[5]; // Array for different callback types
+    drv_doip_callback_t callbacks[7]; // Extended for new callback types
+    
+    // Raw packet handling
+    TaskHandle_t packet_listener_task_handle;
+    drv_doip_packet_listener_config_t packet_listener_config;
+    drv_doip_packet_callback_t packet_callback;
+    bool packet_listener_active;
+    
+    // Packet fragmentation handling
+    drv_doip_raw_packet_t fragment_buffer[10]; // Buffer for assembling fragments
+    uint8_t fragment_count;
 } drv_doip_hw_context_t;
 
 // Static hardware context
@@ -40,6 +50,10 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .current_state = DRV_DOIP_STATE_IDLE,
     .client_task_handle = NULL,
     .tcp_socket = -1,
+    .packet_listener_task_handle = NULL,
+    .packet_callback = NULL,
+    .packet_listener_active = false,
+    .fragment_count = 0,
 };
 
 // Helper functions
@@ -59,6 +73,16 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, uint8_t *response, size_t max_response_len, size_t *actual_len);
 
+// Raw DOIP messaging implementation functions
+static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, const drv_doip_raw_packet_t *packet);
+static drv_doip_status_t drv_doip_start_packet_listener_impl(const void *hw_context, const drv_doip_packet_listener_config_t *config);
+static drv_doip_status_t drv_doip_stop_packet_listener_impl(const void *hw_context);
+static drv_doip_status_t drv_doip_register_packet_callback_impl(const void *hw_context, drv_doip_packet_callback_t callback);
+
+// Background packet listener task
+static void doip_packet_listener_task(void *pvParameters);
+static bool doip_convert_message_to_raw_packet(const doip_message_t *msg, uint32_t source_ip, uint16_t source_port, drv_doip_raw_packet_t *raw_packet);
+
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
@@ -74,6 +98,12 @@ drv_doip_t doip_0 = {
     .connect_to_vehicle = drv_doip_connect_to_vehicle_impl,
     .disconnect = drv_doip_disconnect_impl,
     .send_diagnostic_request = drv_doip_send_diagnostic_request_impl,
+    
+    // Raw DOIP messaging functions
+    .send_raw_message = drv_doip_send_raw_message_impl,
+    .start_packet_listener = drv_doip_start_packet_listener_impl,
+    .stop_packet_listener = drv_doip_stop_packet_listener_impl,
+    .register_packet_callback = drv_doip_register_packet_callback_impl,
 
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,
@@ -463,12 +493,119 @@ static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context,
     ASSERT(hw_context != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    if (type < 5) {
+    if (type < 7) {  // Updated for new callback types
         context->callbacks[type] = callback;
         return DRV_DOIP_STATUS_OK;
     }
     
     return DRV_DOIP_STATUS_ERROR;
+}
+
+// Raw DOIP messaging implementations
+
+static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, const drv_doip_raw_packet_t *packet)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(packet != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    if (context->current_state != DRV_DOIP_STATE_CONNECTED && 
+        context->current_state != DRV_DOIP_STATE_ACTIVATED) {
+        printf("DOIP Raw: Cannot send message - not connected (state: %d)\r\n", context->current_state);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (context->tcp_socket < 0) {
+        printf("DOIP Raw: Invalid TCP socket\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Convert raw packet to DOIP message format
+    doip_message_t msg;
+    msg.protocol_version = packet->protocol_version;
+    msg.inverse_protocol_version = packet->inverse_protocol_version;
+    msg.payload_type = packet->payload_type;
+    msg.payload_length = packet->payload_length;
+    
+    if (packet->payload_length > 0) {
+        memcpy(msg.payload, packet->payload, packet->payload_length);
+    }
+    
+    // Send the message
+    if (!doip_send_tcp_message_socket(context->tcp_socket, &msg)) {
+        printf("DOIP Raw: Failed to send raw message (type: 0x%04X)\r\n", packet->payload_type);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Raw: Sent raw message (type: 0x%04X, length: %lu)\r\n", 
+           packet->payload_type, packet->payload_length);
+    return DRV_DOIP_STATUS_OK;
+}
+
+static drv_doip_status_t drv_doip_start_packet_listener_impl(const void *hw_context, const drv_doip_packet_listener_config_t *config)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(config != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    if (context->packet_listener_active) {
+        printf("DOIP Raw: Packet listener already active\r\n");
+        return DRV_DOIP_STATUS_OK;
+    }
+    
+    // Store configuration
+    memcpy(&context->packet_listener_config, config, sizeof(drv_doip_packet_listener_config_t));
+    context->packet_callback = config->packet_callback;
+    
+    // Create packet listener task
+    BaseType_t result = xTaskCreate(
+        doip_packet_listener_task,
+        "DOIPPacketListener",
+        DOIP_CLIENT_TASK_STACK_SIZE,
+        context,
+        DOIP_CLIENT_TASK_PRIORITY,
+        &context->packet_listener_task_handle
+    );
+    
+    if (result != pdPASS) {
+        printf("DOIP Raw: Failed to create packet listener task\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    context->packet_listener_active = true;
+    printf("DOIP Raw: Packet listener started (timeout: %lu ms)\r\n", config->timeout_ms);
+    return DRV_DOIP_STATUS_OK;
+}
+
+static drv_doip_status_t drv_doip_stop_packet_listener_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    if (!context->packet_listener_active) {
+        return DRV_DOIP_STATUS_OK;
+    }
+    
+    context->packet_listener_active = false;
+    
+    if (context->packet_listener_task_handle != NULL) {
+        vTaskDelete(context->packet_listener_task_handle);
+        context->packet_listener_task_handle = NULL;
+    }
+    
+    printf("DOIP Raw: Packet listener stopped\r\n");
+    return DRV_DOIP_STATUS_OK;
+}
+
+static drv_doip_status_t drv_doip_register_packet_callback_impl(const void *hw_context, drv_doip_packet_callback_t callback)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(callback != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    context->packet_callback = callback;
+    printf("DOIP Raw: Packet callback registered\r\n");
+    return DRV_DOIP_STATUS_OK;
 }
 
 // Helper function implementations
@@ -619,5 +756,101 @@ static drv_doip_status_t doip_handle_alive_check_request_socket(drv_doip_hw_cont
     
     printf("DOIP Client: Alive check response sent (10 bytes)\r\n");
     return DRV_DOIP_STATUS_OK;
+}
+
+// Background packet listener task implementation
+static void doip_packet_listener_task(void *pvParameters)
+{
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)pvParameters;
+    doip_message_t received_msg;
+    drv_doip_raw_packet_t raw_packet;
+    
+    printf("DOIP Listener: Packet listener task started\r\n");
+    
+    while (context->packet_listener_active) {
+        // Wait for incoming DOIP packets
+        if (context->tcp_socket >= 0 && 
+            (context->current_state == DRV_DOIP_STATE_CONNECTED || 
+             context->current_state == DRV_DOIP_STATE_ACTIVATED)) {
+            
+            // Try to receive a message with timeout
+            if (doip_receive_tcp_message_socket(context->tcp_socket, &received_msg, 
+                                              context->packet_listener_config.timeout_ms)) {
+                
+                printf("DOIP Listener: Received packet (type: 0x%04X, length: %lu)\r\n", 
+                       received_msg.payload_type, received_msg.payload_length);
+                
+                // Convert to raw packet format
+                if (doip_convert_message_to_raw_packet(&received_msg, 
+                                                     context->current_vehicle.ip_address,
+                                                     context->current_vehicle.tcp_port,
+                                                     &raw_packet)) {
+                    
+                    // Add timing information
+                    raw_packet.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                    
+                    // Call packet callback if registered
+                    if (context->packet_callback != NULL) {
+                        context->packet_callback(&raw_packet);
+                    }
+                    
+                    // Also trigger generic callback if registered
+                    if (context->callbacks[DRV_DOIP_CB_RAW_PACKET_RECEIVED] != NULL) {
+                        context->callbacks[DRV_DOIP_CB_RAW_PACKET_RECEIVED](
+                            DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
+                            &raw_packet, 
+                            sizeof(drv_doip_raw_packet_t));
+                    }
+                }
+            }
+        } else {
+            // No active connection, wait a bit before retrying
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        
+        // Give other tasks a chance to run
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    printf("DOIP Listener: Packet listener task terminating\r\n");
+    context->packet_listener_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+// Convert DOIP message to raw packet structure
+static bool doip_convert_message_to_raw_packet(const doip_message_t *msg, uint32_t source_ip, uint16_t source_port, drv_doip_raw_packet_t *raw_packet)
+{
+    if (msg == NULL || raw_packet == NULL) {
+        return false;
+    }
+    
+    // Clear the raw packet structure
+    memset(raw_packet, 0, sizeof(drv_doip_raw_packet_t));
+    
+    // Copy header information
+    raw_packet->protocol_version = msg->protocol_version;
+    raw_packet->inverse_protocol_version = msg->inverse_protocol_version;
+    raw_packet->payload_type = msg->payload_type;
+    raw_packet->payload_length = msg->payload_length;
+    
+    // Copy payload data
+    if (msg->payload_length > 0 && msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) {
+        memcpy(raw_packet->payload, msg->payload, msg->payload_length);
+        raw_packet->actual_payload_length = msg->payload_length;
+    } else {
+        raw_packet->actual_payload_length = 0;
+    }
+    
+    // Set source information
+    raw_packet->source_ip_address = source_ip;
+    raw_packet->source_port = source_port;
+    
+    // For now, assume single packet (no fragmentation)
+    raw_packet->is_fragmented = false;
+    raw_packet->fragment_index = 0;
+    raw_packet->total_fragments = 1;
+    raw_packet->total_message_length = msg->payload_length;
+    
+    return true;
 }
 

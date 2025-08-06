@@ -563,3 +563,232 @@ void task_doip_client_create(drv_doip_t *doip_handle)
 	printf("DOIP Client: Task created successfully\r\n");
 }
 
+// Task handle for diagnostic processor
+static TaskHandle_t xDiagnostic_Processor_Task;
+
+// Diagnostic packet callback for raw packet processing
+static void diagnostic_packet_callback(const drv_doip_raw_packet_t *packet)
+{
+    if (packet == NULL) {
+        return;
+    }
+    
+    printf("Diagnostic: Raw packet received - Type: 0x%04X, Length: %lu, IP: 0x%08lX\r\n",
+           packet->payload_type, packet->payload_length, packet->source_ip_address);
+    
+    // Detailed packet analysis based on payload type
+    switch (packet->payload_type) {
+        case DOIP_VEHICLE_IDENTIFICATION_RESPONSE:
+            printf("Diagnostic: Vehicle identification response received\r\n");
+            if (packet->payload_length >= 17) {
+                printf("Diagnostic: VIN: %.17s\r\n", packet->payload);
+            }
+            break;
+            
+        case DOIP_ROUTING_ACTIVATION_RESPONSE:
+            printf("Diagnostic: Routing activation response received\r\n");
+            if (packet->payload_length >= 9) {
+                uint16_t source_addr = (packet->payload[0] << 8) | packet->payload[1];
+                uint16_t target_addr = (packet->payload[2] << 8) | packet->payload[3];
+                uint8_t response_code = packet->payload[4];
+                printf("Diagnostic: SA=0x%04X, TA=0x%04X, Code=0x%02X\r\n", 
+                       source_addr, target_addr, response_code);
+            }
+            break;
+            
+        case DOIP_DIAGNOSTIC_MESSAGE:
+            printf("Diagnostic: Diagnostic message received\r\n");
+            if (packet->payload_length >= 4) {
+                uint16_t source_addr = (packet->payload[0] << 8) | packet->payload[1];
+                uint16_t target_addr = (packet->payload[2] << 8) | packet->payload[3];
+                printf("Diagnostic: SA=0x%04X, TA=0x%04X\r\n", source_addr, target_addr);
+                
+                // Parse UDS data if available
+                if (packet->payload_length > 4) {
+                    printf("Diagnostic: UDS Data: ");
+                    for (uint32_t i = 4; i < packet->payload_length && i < 20; i++) {
+                        printf("0x%02X ", packet->payload[i]);
+                    }
+                    if (packet->payload_length > 20) {
+                        printf("... (truncated)");
+                    }
+                    printf("\r\n");
+                }
+            }
+            break;
+            
+        case DOIP_DIAGNOSTIC_MESSAGE_POSITIVE_ACK:
+            printf("Diagnostic: Positive ACK received\r\n");
+            break;
+            
+        case DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK:
+            printf("Diagnostic: Negative ACK received\r\n");
+            if (packet->payload_length >= 5) {
+                uint8_t nack_code = packet->payload[4];
+                printf("Diagnostic: NACK Code: 0x%02X\r\n", nack_code);
+            }
+            break;
+            
+        case DOIP_ALIVE_CHECK_REQUEST:
+            printf("Diagnostic: Alive check request received\r\n");
+            break;
+            
+        case DOIP_ALIVE_CHECK_RESPONSE:
+            printf("Diagnostic: Alive check response received\r\n");
+            break;
+            
+        default:
+            printf("Diagnostic: Unknown/Unsupported payload type: 0x%04X\r\n", packet->payload_type);
+            break;
+    }
+    
+    // Fragment handling information
+    if (packet->is_fragmented) {
+        printf("Diagnostic: Fragment %d/%d (total message: %lu bytes)\r\n",
+               packet->fragment_index + 1, packet->total_fragments, packet->total_message_length);
+    }
+    
+    printf("Diagnostic: Packet timestamp: %lu ms\r\n", packet->timestamp_ms);
+    printf("Diagnostic: ------- End of packet analysis -------\r\n\r\n");
+}
+
+// Main diagnostic processing task
+static void diagnostic_processor_task(void *pvParameters)
+{
+    drv_doip_t *doip_handle = (drv_doip_t *)pvParameters;
+    
+    printf("Diagnostic Processor: Task started\r\n");
+    
+    // Wait for system initialization
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    // Wait for DOIP driver to be initialized (with timeout)
+    printf("Diagnostic Processor: Waiting for DOIP driver initialization...\r\n");
+    uint32_t wait_count = 0;
+    const uint32_t max_wait_cycles = 20; // 10 seconds total wait time
+    while (!doip_handle->is_init && wait_count < max_wait_cycles) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        wait_count++;
+        if (wait_count % 4 == 0) {  // Print every 2 seconds
+            printf("Diagnostic Processor: Still waiting for DOIP driver init (%lu/10s)...\r\n", wait_count / 2);
+        }
+    }
+    
+    if (!doip_handle->is_init) {
+        printf("Diagnostic Processor: Timeout waiting for DOIP driver initialization\r\n");
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    printf("Diagnostic Processor: DOIP driver initialized, proceeding...\r\n");
+    
+    // Register packet callback for raw DOIP packet processing
+    drv_doip_status_t status = hw_doip_register_packet_callback(doip_handle, diagnostic_packet_callback);
+    if (status != DRV_DOIP_STATUS_OK) {
+        printf("Diagnostic Processor: Raw packet functionality not available (status: %d)\r\n", status);
+        printf("Diagnostic Processor: Running in traditional DOIP mode without raw packet analysis\r\n");
+        
+        // Continue running but in a simpler mode without raw packet analysis
+        while (1) {
+            printf("Diagnostic Processor: Traditional DOIP mode - monitoring connection state\r\n");
+            drv_doip_state_t current_state = hw_doip_get_status(doip_handle);
+            printf("Diagnostic Processor: Current DOIP state: %d\r\n", current_state);
+            vTaskDelay(pdMS_TO_TICKS(10000)); // Report every 10 seconds
+        }
+    }
+    
+    printf("Diagnostic Processor: Packet callback registered successfully\r\n");
+    
+    // Configure packet listener
+    drv_doip_packet_listener_config_t listener_config = {
+        .is_enabled = true,
+        .timeout_ms = 5000,         // 5 second timeout
+        .max_fragments = 50,        // Support up to 50 fragments for large messages
+        .packet_callback = diagnostic_packet_callback
+    };
+    
+    // Start packet listener after DOIP connection is established
+    printf("Diagnostic Processor: Waiting for DOIP connection...\r\n");
+    
+    while (1) {
+        drv_doip_state_t current_state = hw_doip_get_status(doip_handle);
+        
+        if (current_state == DRV_DOIP_STATE_CONNECTED || current_state == DRV_DOIP_STATE_ACTIVATED) {
+            // Start packet listener if not already active
+            status = hw_doip_start_packet_listener(doip_handle, &listener_config);
+            if (status == DRV_DOIP_STATUS_OK) {
+                printf("Diagnostic Processor: Packet listener started successfully\r\n");
+                break;
+            } else {
+                printf("Diagnostic Processor: Failed to start packet listener, retrying...\r\n");
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    
+    // Main processing loop
+    while (1) {
+        drv_doip_state_t current_state = hw_doip_get_status(doip_handle);
+        
+        if (current_state == DRV_DOIP_STATE_IDLE || current_state == DRV_DOIP_STATE_ERROR) {
+            printf("Diagnostic Processor: Connection lost, stopping packet listener\r\n");
+            hw_doip_stop_packet_listener(doip_handle);
+            
+            // Wait for reconnection
+            while (hw_doip_get_status(doip_handle) != DRV_DOIP_STATE_CONNECTED &&
+                   hw_doip_get_status(doip_handle) != DRV_DOIP_STATE_ACTIVATED) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            
+            // Restart packet listener
+            hw_doip_start_packet_listener(doip_handle, &listener_config);
+            printf("Diagnostic Processor: Packet listener restarted after reconnection\r\n");
+        }
+        
+        // Demonstrate raw message sending capability
+        static uint32_t demo_counter = 0;
+        if (demo_counter % 30 == 0) {  // Every 30 seconds
+            // Send a custom alive check request using raw messaging
+            drv_doip_raw_packet_t raw_packet = {0};
+            raw_packet.protocol_version = DOIP_PROTOCOL_VERSION;
+            raw_packet.inverse_protocol_version = DOIP_INVERSE_PROTOCOL_VERSION;
+            raw_packet.payload_type = DOIP_ALIVE_CHECK_REQUEST;
+            raw_packet.payload_length = 2;
+            raw_packet.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
+            raw_packet.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
+            
+            status = hw_doip_send_raw_message(doip_handle, &raw_packet);
+            if (status == DRV_DOIP_STATUS_OK) {
+                printf("Diagnostic Processor: Sent custom alive check request via raw messaging\r\n");
+            }
+        }
+        
+        demo_counter++;
+        vTaskDelay(pdMS_TO_TICKS(1000));  // 1 second interval
+    }
+}
+
+/**
+ * \brief Create diagnostic processor task for raw DOIP packet analysis
+ * \param doip_handle Pointer to the DOIP driver instance to use
+ */
+void task_diagnostic_processor_create(drv_doip_t *doip_handle)
+{
+    if (doip_handle == NULL) {
+        printf("Diagnostic Processor: Cannot create task with NULL driver handle\r\n");
+        return;
+    }
+    
+    /* Create task for diagnostic processing */
+    if (xTaskCreate(diagnostic_processor_task, "DiagProcessor", DOIP_CLIENT_TASK_STACK_SIZE, 
+                    (void *)doip_handle, DOIP_CLIENT_TASK_PRIORITY + 1, &xDiagnostic_Processor_Task) != pdPASS) {
+        printf("Diagnostic Processor: Failed to create diagnostic processor task\r\n");
+        while (1) {
+            ;
+        }
+    }
+    
+    printf("Diagnostic Processor: Task created successfully\r\n");
+}
+
