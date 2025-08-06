@@ -47,24 +47,152 @@
 #include "driver_doip.h"
 #include <string.h>
 
+// Multi-ECU support constants
+#define MAX_DISCOVERED_ECUS 8
+#define ECU_DISCOVERY_TIMEOUT_MS 10000
+
+// ECU Type definitions based on logical addresses
+typedef enum {
+    ECU_TYPE_UNKNOWN = 0,
+    ECU_TYPE_ENGINE = 1,      // Logical Address 0x0001
+    ECU_TYPE_TRANSMISSION = 2, // Logical Address 0x0002
+    ECU_TYPE_ABS = 3,         // Logical Address 0x0003
+    ECU_TYPE_BCM = 4,         // Logical Address 0x0004
+} ecu_type_t;
+
+// Multi-ECU discovery structure
+typedef struct {
+    drv_doip_vehicle_info_t vehicles[MAX_DISCOVERED_ECUS];
+    uint8_t count;
+    uint32_t discovery_timestamp;
+} multi_ecu_discovery_t;
+
+static multi_ecu_discovery_t discovered_ecus = {0};
+
 uint16_t led_blink_rate = BLINK_NORMAL;
 
 static TaskHandle_t xLed_Task;
 static TaskHandle_t xDoip_Client_Task;
 
 /**
- * \brief Read DID from DOIP server and display formatted result
+ * \brief Get ECU type from logical address
+ * \param logical_address ECU logical address
+ * \return ECU type enumeration
+ */
+static ecu_type_t get_ecu_type_from_address(uint16_t logical_address)
+{
+    switch (logical_address) {
+        case 0x0001: return ECU_TYPE_ENGINE;
+        case 0x0002: return ECU_TYPE_TRANSMISSION;
+        case 0x0003: return ECU_TYPE_ABS;
+        case 0x0004: return ECU_TYPE_BCM;
+        default:     return ECU_TYPE_UNKNOWN;
+    }
+}
+
+/**
+ * \brief Get ECU type name string
+ * \param ecu_type ECU type enumeration
+ * \return String representation of ECU type
+ */
+static const char* get_ecu_type_name(ecu_type_t ecu_type)
+{
+    switch (ecu_type) {
+        case ECU_TYPE_ENGINE:       return "ENGINE";
+        case ECU_TYPE_TRANSMISSION: return "TRANSMISSION";
+        case ECU_TYPE_ABS:          return "ABS";
+        case ECU_TYPE_BCM:          return "BCM";
+        default:                    return "UNKNOWN";
+    }
+}
+
+/**
+ * \brief Discover all available ECUs in the vehicle
  * \param handle DOIP driver handle
+ * \return Number of ECUs discovered
+ */
+static uint8_t doip_discover_all_ecus(drv_doip_t *handle)
+{
+    printf("DOIP Client: Starting multi-ECU discovery...\r\n");
+    
+    discovered_ecus.count = 0;
+    discovered_ecus.discovery_timestamp = xTaskGetTickCount();
+    
+    // Discover ECUs with extended timeout for multiple responses
+    drv_doip_vehicle_info_t temp_vehicle;
+    TickType_t discovery_start = xTaskGetTickCount();
+    
+    while (discovered_ecus.count < MAX_DISCOVERED_ECUS) {
+        drv_doip_status_t status = hw_doip_discover_vehicles(handle, &temp_vehicle);
+        
+        if (status == DRV_DOIP_STATUS_OK) {
+            // Check if this ECU is already discovered (avoid duplicates)
+            bool already_found = false;
+            for (uint8_t i = 0; i < discovered_ecus.count; i++) {
+                if (discovered_ecus.vehicles[i].logical_address == temp_vehicle.logical_address) {
+                    already_found = true;
+                    break;
+                }
+            }
+            
+            if (!already_found) {
+                // Add new ECU to discovery list
+                memcpy(&discovered_ecus.vehicles[discovered_ecus.count], &temp_vehicle, sizeof(drv_doip_vehicle_info_t));
+                discovered_ecus.count++;
+                
+                ecu_type_t ecu_type = get_ecu_type_from_address(temp_vehicle.logical_address);
+                printf("DOIP Client: Discovered ECU %d - %s (0x%04X): VIN=%s\r\n", 
+                       discovered_ecus.count, get_ecu_type_name(ecu_type), 
+                       temp_vehicle.logical_address, temp_vehicle.vin);
+            }
+        }
+        
+        // Check timeout for discovery process
+        if ((xTaskGetTickCount() - discovery_start) > pdMS_TO_TICKS(ECU_DISCOVERY_TIMEOUT_MS)) {
+            printf("DOIP Client: Discovery timeout reached\r\n");
+            break;
+        }
+        
+        // Small delay between discovery attempts
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    
+    printf("DOIP Client: Multi-ECU discovery completed - found %d ECUs\r\n", discovered_ecus.count);
+    
+    // Display summary of discovered ECUs
+    if (discovered_ecus.count > 0) {
+        printf("\r\n=== Discovered Vehicle ECUs ===\r\n");
+        for (uint8_t i = 0; i < discovered_ecus.count; i++) {
+            ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[i].logical_address);
+            printf("  ECU %d: %s (0x%04X) - VIN: %s\r\n", 
+                   i + 1, get_ecu_type_name(ecu_type), 
+                   discovered_ecus.vehicles[i].logical_address, 
+                   discovered_ecus.vehicles[i].vin);
+        }
+        printf("\r\n");
+    }
+    
+    return discovered_ecus.count;
+}
+
+/**
+ * \brief Read DID from specific ECU and display formatted result
+ * \param handle DOIP driver handle
+ * \param ecu_info Target ECU information
  * \param did Data Identifier to read
  * \param name Human-readable name for display
  * \param format Format string for data interpretation
  * \return Driver status
  */
-static drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t did, const char *name, const char *format)
+static drv_doip_status_t doip_read_did_from_ecu_and_display(drv_doip_t *handle, const drv_doip_vehicle_info_t *ecu_info, 
+                                                           uint16_t did, const char *name, const char *format)
 {
-    if (handle == NULL || name == NULL || format == NULL) {
+    if (handle == NULL || ecu_info == NULL || name == NULL || format == NULL) {
         return DRV_DOIP_STATUS_ERROR;
     }
+    
+    ecu_type_t ecu_type = get_ecu_type_from_address(ecu_info->logical_address);
+    const char *ecu_name = get_ecu_type_name(ecu_type);
     
     uint8_t response[256];
     size_t actual_len = 0;
@@ -73,30 +201,35 @@ static drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t 
                                                               did, response, sizeof(response), &actual_len);
     
     if (status != DRV_DOIP_STATUS_OK) {
-        printf("DOIP: Failed to read DID 0x%04X (%s): status %d\r\n", did, name, status);
+        printf("DOIP: [%s] Failed to read DID 0x%04X (%s): status %d\r\n", ecu_name, did, name, status);
         return status;
     }
     
+    if (actual_len == 0) {
+        printf("  [%s] %-20s: Not supported by this ECU\r\n", ecu_name, name);
+        return DRV_DOIP_STATUS_OK; // Not an error, just not supported
+    }
+    
     if (actual_len < 3) {
-        printf("DOIP: Invalid response length for DID 0x%04X (%s): %zu bytes\r\n", did, name, actual_len);
+        printf("DOIP: [%s] Invalid response length for DID 0x%04X (%s): %zu bytes\r\n", ecu_name, did, name, actual_len);
         return DRV_DOIP_STATUS_ERROR;
     }
     
     // Check positive response (service_id + 0x40)
     if (response[0] != (UDS_READ_DATA_BY_IDENTIFIER + UDS_POSITIVE_RESPONSE_MASK)) {
-        printf("DOIP: Negative response for DID 0x%04X (%s): 0x%02X\r\n", did, name, response[0]);
+        printf("DOIP: [%s] Negative response for DID 0x%04X (%s): 0x%02X\r\n", ecu_name, did, name, response[0]);
         return DRV_DOIP_STATUS_ERROR;
     }
     
     // Verify DID echo
     uint16_t response_did = (response[1] << 8) | response[2];
     if (response_did != did) {
-        printf("DOIP: DID mismatch for %s: requested 0x%04X, got 0x%04X\r\n", name, did, response_did);
+        printf("DOIP: [%s] DID mismatch for %s: requested 0x%04X, got 0x%04X\r\n", ecu_name, name, did, response_did);
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Display data based on format
-    printf("  %-25s: ", name);
+    // Display data based on format with ECU identification
+    printf("  [%s] %-20s: ", ecu_name, name);
     
     if (strcmp(format, "string") == 0) {
         // Display as ASCII string (null-terminated or truncated)
@@ -190,6 +323,66 @@ static drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t 
 }
 
 /**
+ * \brief Legacy wrapper function for backward compatibility
+ * \param handle DOIP driver handle
+ * \param did Data Identifier to read
+ * \param name Human-readable name for display
+ * \param format Format string for data interpretation
+ * \return Driver status
+ */
+static drv_doip_status_t doip_read_did_and_display(drv_doip_t *handle, uint16_t did, const char *name, const char *format)
+{
+    // Use first discovered ECU for legacy compatibility
+    if (discovered_ecus.count > 0) {
+        return doip_read_did_from_ecu_and_display(handle, &discovered_ecus.vehicles[0], did, name, format);
+    } else {
+        printf("DOIP: No ECUs discovered for legacy DID read\r\n");
+        return DRV_DOIP_STATUS_NO_VEHICLE;
+    }
+}
+
+/**
+ * \brief Test concurrent requests to multiple ECUs
+ * \param handle DOIP driver handle
+ */
+static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
+{
+    if (discovered_ecus.count < 2) {
+        printf("DOIP Client: Need at least 2 ECUs for concurrent testing (found %d)\r\n", discovered_ecus.count);
+        return;
+    }
+    
+    printf("\r\n=== Testing Concurrent ECU Requests ===\r\n");
+    
+    // Test reading same DID from multiple ECUs to show differentiation
+    uint16_t test_dids[] = {DID_VIN, DID_VEHICLE_SPEED_INFORMATION, DID_BATTERY_VOLTAGE_INFORMATION};
+    const char* test_names[] = {"VIN", "Vehicle Speed", "Battery Voltage"};
+    const char* test_formats[] = {"string", "uint16_kmh", "uint16_mv"};
+    
+    for (int did_idx = 0; did_idx < 3; did_idx++) {
+        printf("\r\n--- Reading %s from all ECUs ---\r\n", test_names[did_idx]);
+        
+        for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
+            // Connect to specific ECU
+            if (hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[ecu_idx]) == DRV_DOIP_STATUS_OK) {
+                // Read DID from this specific ECU
+                doip_read_did_from_ecu_and_display(handle, &discovered_ecus.vehicles[ecu_idx], 
+                                                   test_dids[did_idx], test_names[did_idx], test_formats[did_idx]);
+                
+                // Disconnect from this ECU
+                hw_doip_disconnect(handle);
+                
+                // Small delay between ECU connections
+                vTaskDelay(pdMS_TO_TICKS(100));
+            } else {
+                ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[ecu_idx].logical_address);
+                printf("  [%s] Connection failed\r\n", get_ecu_type_name(ecu_type));
+            }
+        }
+    }
+}
+
+/**
  * OS task that blinks LED
  */
 static void led_task(void *p)
@@ -207,7 +400,6 @@ static void led_task(void *p)
 static void doip_client_task(void *pvParameters)
 {
 	drv_doip_t *doip_handle = (drv_doip_t *)pvParameters;
-	drv_doip_vehicle_info_t vehicle_info;
 	
 	if (doip_handle == NULL) {
 		printf("DOIP Client: Invalid driver handle passed to task\r\n");
@@ -236,14 +428,18 @@ static void doip_client_task(void *pvParameters)
 	while (1) {
 		// Only proceed if we're in idle state (not connected)
 		if (hw_doip_get_status(doip_handle) == DRV_DOIP_STATE_IDLE) {
-			printf("DOIP Client: Starting vehicle discovery...\r\n");
+			// Discover all available ECUs
+			uint8_t ecu_count = doip_discover_all_ecus(doip_handle);
 			
-			// Discover vehicles
-			if (hw_doip_discover_vehicles(doip_handle, &vehicle_info) == DRV_DOIP_STATUS_OK) {
-				printf("DOIP Client: Vehicle discovered, attempting connection...\r\n");
+			if (ecu_count > 0) {
+				printf("DOIP Client: Found %d ECUs, testing multi-ECU communication...\r\n", ecu_count);
 				
-				// Connect to discovered vehicle
-				if (hw_doip_connect_to_vehicle(doip_handle, &vehicle_info) == DRV_DOIP_STATUS_OK) {
+				// Test concurrent ECU requests first
+				doip_test_concurrent_ecu_requests(doip_handle);
+				
+				// Connect to primary ECU (first discovered) for detailed analysis
+				printf("\r\n=== Connecting to Primary ECU for Detailed Analysis ===\r\n");
+				if (hw_doip_connect_to_vehicle(doip_handle, &discovered_ecus.vehicles[0]) == DRV_DOIP_STATUS_OK) {
 					printf("\r\n--- DOIP Communication Complete ---\r\n");
 					
 					// Read and display system information after successful connection
@@ -316,11 +512,11 @@ static void doip_client_task(void *pvParameters)
 					// Wait before next cycle
 					vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
 				} else {
-					printf("DOIP Client: Connection failed\r\n");
+					printf("DOIP Client: Primary ECU connection failed\r\n");
 					vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
 				}
 			} else {
-				printf("DOIP Client: No vehicles discovered\r\n");
+				printf("DOIP Client: No ECUs discovered in multi-ECU scan\r\n");
 				vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
 			}
 		} else {
