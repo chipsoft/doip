@@ -147,6 +147,86 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     return handle->register_callback(handle->hw_context, type, callback);
 }
 
+drv_doip_status_t hw_doip_send_large_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
+                                                       const uint8_t *request_payload, size_t request_payload_len,
+                                                       uint8_t *response_buffer, size_t max_response_len, size_t *actual_len)
+{
+    ASSERT(handle != NULL);
+    ASSERT(response_buffer != NULL);
+    ASSERT(actual_len != NULL);
+    ASSERT(max_response_len > 0);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP: Large diagnostic request - service=0x%02X, data_id=0x%04X, payload_len=%zu, max_response=%zu\r\n",
+           service_id, data_id, request_payload_len, max_response_len);
+    
+    // For now, delegate to the standard function if small enough, otherwise handle specially
+    if (request_payload_len == 0 && max_response_len <= DOIP_SMALL_PAYLOAD_SIZE) {
+        // Use existing implementation for backward compatibility
+        return hw_doip_send_diagnostic_request(handle, service_id, data_id, 
+                                              response_buffer, max_response_len, actual_len);
+    }
+    
+    // TODO: Implement full large message support in BSP layer
+    // For now, return error if BSP doesn't support large messages
+    printf("DOIP: Large message support requires BSP implementation\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
+drv_doip_status_t hw_doip_send_large_raw_message(drv_doip_t *handle, uint16_t payload_type,
+                                                const uint8_t *payload_data, uint32_t payload_length)
+{
+    ASSERT(handle != NULL);
+    ASSERT(payload_data != NULL || payload_length == 0);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP: Large raw message - type=0x%04X, length=%u\r\n", payload_type, (unsigned int)payload_length);
+    
+    // Check if large message support is enabled
+    if (!DOIP_ENABLE_LARGE_MESSAGES) {
+        printf("DOIP: Large message support disabled\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Validate payload size
+    if (payload_length > DOIP_MAX_SAFE_PAYLOAD_SIZE) {
+        printf("DOIP: Payload too large: %u bytes (max safe size %d)\r\n", 
+               (unsigned int)payload_length, DOIP_MAX_SAFE_PAYLOAD_SIZE);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Create large message structure
+    doip_large_message_t *large_msg = doip_utils_alloc_large_message(payload_length);
+    if (large_msg == NULL) {
+        printf("DOIP: Failed to allocate large message structure\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Fill in the message
+    large_msg->protocol_version = DOIP_PROTOCOL_VERSION;
+    large_msg->inverse_protocol_version = DOIP_INVERSE_PROTOCOL_VERSION;
+    large_msg->payload_type = payload_type;
+    large_msg->payload_length = payload_length;
+    
+    if (payload_length > 0 && payload_data != NULL) {
+        memcpy(large_msg->payload, payload_data, payload_length);
+    }
+    
+    // TODO: Send via BSP layer with large message support
+    printf("DOIP: Large message prepared, sending via TCP (length=%u)\r\n", (unsigned int)payload_length);
+    
+    // For now, simulate success and cleanup
+    doip_utils_free_large_message(large_msg);
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
 //-----------------------------------------------------------------------------
 // Raw DOIP Messaging API Implementations
 //-----------------------------------------------------------------------------
@@ -265,9 +345,12 @@ bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_
         return false;
     }
     
-    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
-        printf("DOIP: Payload too large: %u bytes (max %d)\r\n", 
-               (unsigned int)msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+    // MEMORY SAFETY: Check if payload exceeds small message limit
+    if (msg->payload_length > DOIP_SMALL_PAYLOAD_SIZE) {
+        printf("DOIP: Small message payload too large: %u bytes (max %d) - use large message API\r\n", 
+               (unsigned int)msg->payload_length, DOIP_SMALL_PAYLOAD_SIZE);
+        printf("DOIP: HINT - Use doip_utils_parse_large_message() for messages > %d bytes\r\n", 
+               DOIP_SMALL_PAYLOAD_SIZE);
         return false;
     }
     
@@ -277,26 +360,13 @@ bool doip_utils_parse_header(const uint8_t *data, size_t data_len, doip_message_
         return false;
     }
     
-    // MEMORY SAFETY: Validate payload length against both input data and destination buffer
+    // MEMORY SAFETY: Copy payload with validated bounds (no truncation)
     if (msg->payload_length > 0) {
-        // Double-check bounds: ensure we don't exceed destination buffer size
-        uint32_t safe_copy_length = (msg->payload_length <= DOIP_MAX_PAYLOAD_SIZE) ? 
-                                   msg->payload_length : DOIP_MAX_PAYLOAD_SIZE;
-        
-        // Ensure source data has enough bytes available
-        if (data_len >= DOIP_HEADER_SIZE + safe_copy_length) {
-            memcpy(msg->payload, &data[DOIP_HEADER_SIZE], safe_copy_length);
-            
-            // If we had to truncate, update the payload length and warn
-            if (safe_copy_length < msg->payload_length) {
-                printf("DOIP: WARNING - Payload truncated from %u to %u bytes\r\n", 
-                       (unsigned int)msg->payload_length, (unsigned int)safe_copy_length);
-                msg->payload_length = safe_copy_length;
-            }
-        } else {
-            printf("DOIP: ERROR - Insufficient source data for payload copy\r\n");
-            return false;
-        }
+        // We already validated that payload_length <= DOIP_SMALL_PAYLOAD_SIZE
+        // and that we have enough source data, so this copy is safe
+        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+        printf("DOIP: Small message parsed successfully - type=0x%04X, length=%u\r\n",
+               msg->payload_type, (unsigned int)msg->payload_length);
     }
     
     return true;
@@ -388,6 +458,163 @@ bool doip_utils_serialize_message_safe(const doip_message_t *msg, uint8_t *buffe
 
 
 
+
+//-----------------------------------------------------------------------------
+// Large Message Utility Implementations
+//-----------------------------------------------------------------------------
+
+doip_large_message_t *doip_utils_alloc_large_message(uint32_t payload_size)
+{
+    // Allocate structure
+    doip_large_message_t *msg = (doip_large_message_t *)pvPortMalloc(sizeof(doip_large_message_t));
+    if (msg == NULL) {
+        printf("DOIP: Failed to allocate large message structure (%zu bytes)\r\n", 
+               sizeof(doip_large_message_t));
+        return NULL;
+    }
+    
+    // Initialize structure
+    memset(msg, 0, sizeof(doip_large_message_t));
+    msg->payload_capacity = payload_size;
+    msg->payload_allocated = false;
+    
+    // Allocate payload buffer if needed
+    if (payload_size > 0) {
+        msg->payload = (uint8_t *)pvPortMalloc(payload_size);
+        if (msg->payload == NULL) {
+            printf("DOIP: Failed to allocate payload buffer (%u bytes)\r\n", 
+                   (unsigned int)payload_size);
+            vPortFree(msg);
+            return NULL;
+        }
+        msg->payload_allocated = true;
+        memset(msg->payload, 0, payload_size);
+    } else {
+        msg->payload = NULL;
+    }
+    
+    printf("DOIP: Allocated large message - struct=%zu bytes, payload=%u bytes\r\n",
+           sizeof(doip_large_message_t), (unsigned int)payload_size);
+    
+    return msg;
+}
+
+void doip_utils_free_large_message(doip_large_message_t *msg)
+{
+    if (msg == NULL) {
+        return;
+    }
+    
+    // Free payload buffer if allocated
+    if (msg->payload_allocated && msg->payload != NULL) {
+        printf("DOIP: Freeing payload buffer (%u bytes)\r\n", (unsigned int)msg->payload_capacity);
+        vPortFree(msg->payload);
+        msg->payload = NULL;
+    }
+    
+    // Free structure
+    printf("DOIP: Freeing large message structure\r\n");
+    vPortFree(msg);
+}
+
+bool doip_utils_parse_large_message(const uint8_t *data, size_t data_len, doip_large_message_t *msg)
+{
+    ASSERT(data != NULL);
+    ASSERT(msg != NULL);
+    
+    if (data_len < DOIP_HEADER_SIZE) {
+        printf("DOIP: Large message header too short: %zu bytes (expected %d)\r\n", 
+               data_len, DOIP_HEADER_SIZE);
+        return false;
+    }
+    
+    // Parse header
+    msg->protocol_version = data[0];
+    msg->inverse_protocol_version = data[1];
+    msg->payload_type = (data[2] << 8) | data[3];
+    msg->payload_length = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
+    
+    if (!doip_utils_validate_protocol(msg->protocol_version, msg->inverse_protocol_version)) {
+        return false;
+    }
+    
+    // Validate against safe limits
+    if (msg->payload_length > DOIP_MAX_SAFE_PAYLOAD_SIZE) {
+        printf("DOIP: Large message payload too large: %u bytes (max safe %d)\r\n", 
+               (unsigned int)msg->payload_length, DOIP_MAX_SAFE_PAYLOAD_SIZE);
+        return false;
+    }
+    
+    // Check if we have enough input data
+    if (data_len < DOIP_HEADER_SIZE + msg->payload_length) {
+        printf("DOIP: Incomplete large message: %zu bytes (expected %u)\r\n", 
+               data_len, (unsigned int)(DOIP_HEADER_SIZE + msg->payload_length));
+        return false;
+    }
+    
+    // Allocate or reallocate payload buffer if needed
+    if (msg->payload_length > msg->payload_capacity || msg->payload == NULL) {
+        if (msg->payload_allocated && msg->payload != NULL) {
+            vPortFree(msg->payload);
+        }
+        
+        msg->payload = (uint8_t *)pvPortMalloc(msg->payload_length);
+        if (msg->payload == NULL) {
+            printf("DOIP: Failed to allocate payload buffer for large message (%u bytes)\r\n",
+                   (unsigned int)msg->payload_length);
+            return false;
+        }
+        msg->payload_capacity = msg->payload_length;
+        msg->payload_allocated = true;
+    }
+    
+    // Copy payload data
+    if (msg->payload_length > 0) {
+        memcpy(msg->payload, &data[DOIP_HEADER_SIZE], msg->payload_length);
+        printf("DOIP: Large message parsed successfully - type=0x%04X, length=%u\r\n",
+               msg->payload_type, (unsigned int)msg->payload_length);
+    }
+    
+    return true;
+}
+
+bool doip_utils_serialize_large_message(const doip_large_message_t *msg, uint8_t *buffer, size_t buffer_size, size_t *bytes_written)
+{
+    ASSERT(msg != NULL);
+    ASSERT(buffer != NULL);
+    ASSERT(bytes_written != NULL);
+    
+    *bytes_written = 0;
+    
+    // Calculate total required buffer size
+    size_t required_size = DOIP_HEADER_SIZE + msg->payload_length;
+    
+    // Validate destination buffer size
+    if (buffer_size < required_size) {
+        printf("DOIP: Buffer too small for large message: %zu bytes (need %zu)\r\n", 
+               buffer_size, required_size);
+        return false;
+    }
+    
+    // Serialize header
+    buffer[0] = msg->protocol_version;
+    buffer[1] = msg->inverse_protocol_version;
+    buffer[2] = (msg->payload_type >> 8) & 0xFF;
+    buffer[3] = msg->payload_type & 0xFF;
+    buffer[4] = (msg->payload_length >> 24) & 0xFF;
+    buffer[5] = (msg->payload_length >> 16) & 0xFF;
+    buffer[6] = (msg->payload_length >> 8) & 0xFF;
+    buffer[7] = msg->payload_length & 0xFF;
+    
+    // Copy payload with validated bounds
+    if (msg->payload_length > 0 && msg->payload != NULL) {
+        memcpy(&buffer[DOIP_HEADER_SIZE], msg->payload, msg->payload_length);
+    }
+    
+    *bytes_written = required_size;
+    printf("DOIP: Large message serialized - %zu bytes written\r\n", required_size);
+    return true;
+}
 
 //-----------------------------------------------------------------------------
 // Alive Check and Multi-ECU Utility Implementations

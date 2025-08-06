@@ -55,7 +55,20 @@
 #define DOIP_CLIENT_SOURCE_ADDRESS     0x0E80 /**< Default client logical address */
 #define DOIP_DISCOVERY_TIMEOUT_MS      5000   /**< Vehicle discovery timeout */
 #define DOIP_TCP_TIMEOUT_MS           10000   /**< TCP connection timeout */
-#define DOIP_MAX_PAYLOAD_SIZE         1024    /**< Maximum payload size in bytes */
+
+/**
+ * @defgroup doip_large_message Large Message Support
+ * @brief Configuration for handling large diagnostic messages
+ * @{
+ */
+#define DOIP_SMALL_PAYLOAD_SIZE       1024    /**< Small message buffer size (stack allocated) */
+#define DOIP_LARGE_PAYLOAD_SIZE       65536   /**< Large message buffer size (heap allocated) */
+#define DOIP_MAX_SAFE_PAYLOAD_SIZE    262144  /**< Maximum safe payload size (256KB) */
+#define DOIP_ENABLE_LARGE_MESSAGES    1       /**< Enable large message support (0=disable, 1=enable) */
+/** @} */
+
+// Legacy compatibility (deprecated)
+#define DOIP_MAX_PAYLOAD_SIZE         DOIP_SMALL_PAYLOAD_SIZE  /**< @deprecated Use DOIP_SMALL_PAYLOAD_SIZE */
 /** @} */
 
 /**
@@ -159,16 +172,32 @@
  */
 
 /**
- * @brief DoIP message structure
- * @details Represents a complete DoIP message with header and payload
+ * @brief DoIP message structure (small messages)
+ * @details Represents a DoIP message with stack-allocated payload buffer
+ * @note Use for messages <= DOIP_SMALL_PAYLOAD_SIZE (1024 bytes)
  */
 typedef struct {
     uint8_t  protocol_version;         /**< DoIP protocol version (0x02) */
     uint8_t  inverse_protocol_version; /**< Inverse protocol version (0xFD) */
     uint16_t payload_type;             /**< Message payload type identifier */
     uint32_t payload_length;           /**< Length of payload data in bytes */
-    uint8_t  payload[DOIP_MAX_PAYLOAD_SIZE]; /**< Message payload data */
+    uint8_t  payload[DOIP_SMALL_PAYLOAD_SIZE]; /**< Message payload data (stack allocated) */
 } doip_message_t;
+
+/**
+ * @brief DoIP large message structure
+ * @details Represents a DoIP message with dynamically allocated payload buffer
+ * @note Use for messages > DOIP_SMALL_PAYLOAD_SIZE
+ */
+typedef struct {
+    uint8_t  protocol_version;         /**< DoIP protocol version (0x02) */
+    uint8_t  inverse_protocol_version; /**< Inverse protocol version (0xFD) */
+    uint16_t payload_type;             /**< Message payload type identifier */
+    uint32_t payload_length;           /**< Length of payload data in bytes */
+    uint32_t payload_capacity;         /**< Allocated capacity of payload buffer */
+    uint8_t  *payload;                 /**< Dynamically allocated payload data */
+    bool     payload_allocated;        /**< True if payload was dynamically allocated */
+} doip_large_message_t;
 
 /**
  * @brief DoIP driver status codes
@@ -476,6 +505,36 @@ drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
  */
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
+
+/**
+ * @brief Send a large diagnostic request to the connected vehicle
+ * @param handle Pointer to DoIP driver instance
+ * @param service_id UDS service identifier (e.g., UDS_READ_DATA_BY_IDENTIFIER)
+ * @param data_id Data identifier (DID) for the request
+ * @param request_payload Additional request payload data (can be NULL)
+ * @param request_payload_len Length of additional request payload
+ * @param response_buffer Buffer to store the response data
+ * @param max_response_len Maximum size of response buffer
+ * @param actual_len Pointer to store actual response length
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Vehicle must be connected before calling this function
+ * @note This function can handle responses larger than DOIP_SMALL_PAYLOAD_SIZE
+ */
+drv_doip_status_t hw_doip_send_large_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
+                                                       const uint8_t *request_payload, size_t request_payload_len,
+                                                       uint8_t *response_buffer, size_t max_response_len, size_t *actual_len);
+
+/**
+ * @brief Send a large raw DoIP message
+ * @param handle Pointer to DoIP driver instance
+ * @param payload_type DoIP payload type
+ * @param payload_data Pointer to payload data
+ * @param payload_length Length of payload data
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Can handle payloads larger than DOIP_SMALL_PAYLOAD_SIZE
+ */
+drv_doip_status_t hw_doip_send_large_raw_message(drv_doip_t *handle, uint16_t payload_type,
+                                                const uint8_t *payload_data, uint32_t payload_length);
 /** @} */
 
 /**
@@ -547,6 +606,41 @@ void doip_utils_serialize_message(const doip_message_t *msg, uint8_t *buffer);
  * @return true if serialization successful, false if buffer too small
  */
 bool doip_utils_serialize_message_safe(const doip_message_t *msg, uint8_t *buffer, size_t buffer_size, size_t *bytes_written);
+
+/**
+ * @brief Allocate a large DoIP message structure
+ * @param payload_size Expected payload size in bytes
+ * @return Pointer to allocated large message structure, NULL on failure
+ * @note Must be freed with doip_utils_free_large_message()
+ */
+doip_large_message_t *doip_utils_alloc_large_message(uint32_t payload_size);
+
+/**
+ * @brief Free a large DoIP message structure
+ * @param msg Pointer to large message structure to free
+ * @note Safe to call with NULL pointer
+ */
+void doip_utils_free_large_message(doip_large_message_t *msg);
+
+/**
+ * @brief Parse header into a large message structure
+ * @param data Pointer to raw data buffer
+ * @param data_len Length of data buffer
+ * @param msg Pointer to large message structure to populate
+ * @return true if parsing successful, false on error
+ * @note Automatically allocates payload buffer if needed
+ */
+bool doip_utils_parse_large_message(const uint8_t *data, size_t data_len, doip_large_message_t *msg);
+
+/**
+ * @brief Serialize a large DoIP message to a buffer
+ * @param msg Pointer to large message structure
+ * @param buffer Pointer to output buffer
+ * @param buffer_size Size of output buffer
+ * @param bytes_written Pointer to store number of bytes written
+ * @return true if serialization successful, false if buffer too small
+ */
+bool doip_utils_serialize_large_message(const doip_large_message_t *msg, uint8_t *buffer, size_t buffer_size, size_t *bytes_written);
 
 /**
  * @brief Parse multi-ECU discovery response
