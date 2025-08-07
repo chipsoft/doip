@@ -793,6 +793,8 @@ class DOIPVehicleEmulator:
                 print(f"{Colors.RED}❌ UDP server error: {e}{Colors.RESET}")
             return
             
+        # Main UDP server loop - now properly placed outside exception handling
+        try:
             while self.running:
                 try:
                     data, addr = self.udp_socket.recvfrom(1024)
@@ -910,6 +912,8 @@ class DOIPVehicleEmulator:
                 print(f"{Colors.RED}❌ TCP server error: {e}{Colors.RESET}")
             return
             
+        # Main TCP server loop - now properly placed outside exception handling
+        try:
             while self.running:
                 try:
                     client_socket, addr = self.tcp_socket.accept()
