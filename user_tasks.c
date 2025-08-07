@@ -499,8 +499,8 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
                 // Disconnect from this ECU
                 hw_doip_disconnect(handle);
                 
-                // Small delay between ECU connections
-                vTaskDelay(pdMS_TO_TICKS(100));
+                // Increased delay between ECU connections to allow proper cleanup
+                vTaskDelay(pdMS_TO_TICKS(500));
             } else {
                 ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[ecu_idx].logical_address);
                 printf("  [%s] Connection failed\r\n", get_ecu_type_name(ecu_type));
@@ -668,8 +668,14 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
                 skipped_tests++;
             }
             
-            // Small delay between tests to avoid overwhelming the network
-            vTaskDelay(pdMS_TO_TICKS(100));
+            // Increased delay between ECU tests to allow proper connection cleanup
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        
+        // Additional delay between different test sizes to allow network stabilization
+        if (size_idx < num_test_sizes - 1) { // Don't delay after the last test size
+            printf("--- Allowing network stabilization before next test size ---\r\n");
+            vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second between test sizes
         }
     }
     
