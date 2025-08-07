@@ -175,6 +175,133 @@ static uint8_t doip_discover_all_ecus(drv_doip_t *handle)
     return discovered_ecus.count;
 }
 
+// ==================== LARGE MESSAGE TEST SUPPORT ====================
+
+// Static buffer for large message testing - avoids heap fragmentation
+#define LARGE_MESSAGE_TEST_BUFFER_SIZE 8192  // 8KB static buffer
+static uint8_t large_message_test_buffer[LARGE_MESSAGE_TEST_BUFFER_SIZE];
+static bool large_message_buffer_in_use = false;
+
+/**
+ * \brief Generate test pattern data for large message testing
+ * \param buffer Pointer to buffer to fill with test pattern
+ * \param size Size of buffer in bytes
+ */
+static void generate_test_pattern(uint8_t *buffer, size_t size)
+{
+    if (buffer == NULL || size == 0) {
+        return;
+    }
+    
+    // Create a 256-byte repeating pattern (0x00 to 0xFF)
+    const size_t pattern_size = 256;
+    
+    // Fill buffer with repeating pattern
+    for (size_t i = 0; i < size; i++) {
+        buffer[i] = (uint8_t)(i % pattern_size);
+    }
+    
+    // Add unique signature at the end (last 4 bytes = message size as big-endian uint32)
+    if (size >= 4) {
+        uint32_t signature = (uint32_t)size;
+        buffer[size - 4] = (uint8_t)((signature >> 24) & 0xFF);
+        buffer[size - 3] = (uint8_t)((signature >> 16) & 0xFF);
+        buffer[size - 2] = (uint8_t)((signature >> 8) & 0xFF);
+        buffer[size - 1] = (uint8_t)(signature & 0xFF);
+    }
+}
+
+/**
+ * \brief Validate echo response from large message test
+ * \param sent_data Pointer to originally sent data
+ * \param sent_size Size of originally sent data
+ * \param response_data Pointer to received response data
+ * \param response_size Size of received response data
+ * \return true if validation passes, false otherwise
+ * \note Currently unused - for future implementation when BSP layer supports responses
+ */
+__attribute__((unused))
+static bool validate_echo_response(const uint8_t *sent_data, size_t sent_size,
+                                  const uint8_t *response_data, size_t response_size)
+{
+    if (sent_data == NULL || response_data == NULL) {
+        printf("DOIP Large Test: Invalid data pointers for validation\r\n");
+        return false;
+    }
+    
+    // Response format: Service Response (1) + Length (4) + Echo Data
+    if (response_size < 5) {
+        printf("DOIP Large Test: Response too short: %zu bytes (min 5)\r\n", response_size);
+        return false;
+    }
+    
+    // Check positive response
+    if (response_data[0] != (UDS_LARGE_MESSAGE_TEST + UDS_POSITIVE_RESPONSE_MASK)) {
+        printf("DOIP Large Test: Negative response: 0x%02X\r\n", response_data[0]);
+        return false;
+    }
+    
+    // Extract echoed length (big-endian)
+    uint32_t echoed_length = ((uint32_t)response_data[1] << 24) |
+                            ((uint32_t)response_data[2] << 16) |
+                            ((uint32_t)response_data[3] << 8) |
+                            ((uint32_t)response_data[4]);
+    
+    // Check length matches
+    if (echoed_length != sent_size) {
+        printf("DOIP Large Test: Length mismatch - sent %zu, echoed %u\r\n", 
+               sent_size, (unsigned int)echoed_length);
+        return false;
+    }
+    
+    // Check echoed data size
+    size_t expected_response_size = 5 + sent_size;  // 1 + 4 + data
+    if (response_size != expected_response_size) {
+        printf("DOIP Large Test: Response size mismatch - got %zu, expected %zu\r\n",
+               response_size, expected_response_size);
+        return false;
+    }
+    
+    // Verify echoed data matches sent data
+    const uint8_t *echoed_data = &response_data[5];
+    if (memcmp(sent_data, echoed_data, sent_size) != 0) {
+        printf("DOIP Large Test: Echoed data does not match sent data\r\n");
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * \brief Measure transfer performance and display results
+ * \param operation_name Name of the operation (e.g., "Send", "Receive")
+ * \param data_size Size of data transferred in bytes
+ * \param start_tick Start time in FreeRTOS ticks
+ * \param end_tick End time in FreeRTOS ticks
+ */
+static void measure_transfer_performance(const char *operation_name, size_t data_size,
+                                       TickType_t start_tick, TickType_t end_tick)
+{
+    if (operation_name == NULL) {
+        return;
+    }
+    
+    TickType_t duration_ticks = end_tick - start_tick;
+    uint32_t duration_ms = duration_ticks * 1000 / configTICK_RATE_HZ;
+    
+    if (duration_ms > 0) {
+        uint32_t transfer_rate_bps = (data_size * 1000) / duration_ms;  // bytes per second
+        uint32_t transfer_rate_kbps = transfer_rate_bps / 1024;         // KB per second
+        
+        printf("  %s: %zu bytes in %u ms (%.1f KB/s)\r\n",
+               operation_name, data_size, (unsigned int)duration_ms, 
+               (float)transfer_rate_kbps);
+    } else {
+        printf("  %s: %zu bytes in <1 ms (very fast)\r\n",
+               operation_name, data_size);
+    }
+}
+
 /**
  * \brief Read DID from specific ECU and display formatted result
  * \param handle DOIP driver handle
@@ -198,7 +325,7 @@ static drv_doip_status_t doip_read_did_from_ecu_and_display(drv_doip_t *handle, 
     size_t actual_len = 0;
     
     drv_doip_status_t status = hw_doip_send_diagnostic_request(handle, UDS_READ_DATA_BY_IDENTIFIER, 
-                                                              did, response, sizeof(response), &actual_len);
+                                                              did, NULL, 0, response, sizeof(response), &actual_len);
     
     if (status != DRV_DOIP_STATUS_OK) {
         printf("DOIP: [%s] Failed to read DID 0x%04X (%s): status %d\r\n", ecu_name, did, name, status);
@@ -382,6 +509,190 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
     }
 }
 
+// Test result enumeration
+typedef enum {
+    TEST_RESULT_PASSED = 0,
+    TEST_RESULT_FAILED = 1,
+    TEST_RESULT_SKIPPED = 2,
+} test_result_t;
+
+/**
+ * \brief Test large message capability with a single ECU (static buffer version)
+ * \param handle DOIP driver handle
+ * \param ecu_info Target ECU information
+ * \param test_size Size of test message in bytes
+ * \return test_result_t indicating test result
+ */
+static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle, 
+                                                       const drv_doip_vehicle_info_t *ecu_info,
+                                                       size_t test_size)
+{
+    if (handle == NULL || ecu_info == NULL || test_size == 0) {
+        return TEST_RESULT_FAILED;
+    }
+    
+    ecu_type_t ecu_type = get_ecu_type_from_address(ecu_info->logical_address);
+    const char *ecu_name = get_ecu_type_name(ecu_type);
+    
+    printf("  Testing %zu bytes with ECU %s (0x%04X)...\r\n", 
+           test_size, ecu_name, ecu_info->logical_address);
+    
+    // First, ensure we're connected to this ECU
+    printf("  Connecting to ECU %s...\r\n", ecu_name);
+    drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(handle, ecu_info);
+    if (connect_status != DRV_DOIP_STATUS_OK) {
+        printf("  ERROR: Failed to connect to ECU %s: status %d\r\n", ecu_name, connect_status);
+        if (connect_status == DRV_DOIP_STATUS_TIMEOUT) {
+            printf("  INFO: This is expected if no DOIP server is running\r\n");
+        }
+        return TEST_RESULT_FAILED;
+    }
+    printf("  Successfully connected to ECU %s\r\n", ecu_name);
+    
+    // Check if buffer is available
+    if (large_message_buffer_in_use) {
+        printf("  SKIP: Large message buffer is in use by another test\r\n");
+        return TEST_RESULT_SKIPPED;
+    }
+    
+    // Check if test size fits in static buffer (need space for service ID)
+    size_t buffer_size = 1 + test_size;  // Service ID + test data
+    if (buffer_size > LARGE_MESSAGE_TEST_BUFFER_SIZE) {
+        printf("  SKIP: Message too large - need %zu bytes, buffer is %d bytes\r\n", 
+               buffer_size, LARGE_MESSAGE_TEST_BUFFER_SIZE);
+        return TEST_RESULT_SKIPPED;
+    }
+    
+    // Mark buffer as in use
+    large_message_buffer_in_use = true;
+    
+    // Use static buffer - no allocation needed!
+    large_message_test_buffer[0] = UDS_LARGE_MESSAGE_TEST;
+    generate_test_pattern(&large_message_test_buffer[1], test_size);
+    
+    // Send large message test via raw message API
+    printf("  Sending %zu byte message (using static buffer)...\r\n", buffer_size);
+    TickType_t send_start = xTaskGetTickCount();
+    
+    drv_doip_status_t status = hw_doip_send_raw_message(
+        handle, 
+        DOIP_DIAGNOSTIC_MESSAGE,
+        large_message_test_buffer, 
+        buffer_size,
+        true  // use_static_buffer = true
+    );
+    
+    TickType_t send_end = xTaskGetTickCount();
+    
+    // Release buffer
+    large_message_buffer_in_use = false;
+    
+    if (status != DRV_DOIP_STATUS_OK) {
+        printf("  ERROR: Failed to send large message: status %d\r\n", status);
+        // Disconnect before returning error
+        printf("  Disconnecting from ECU %s after error...\r\n", ecu_name);
+        hw_doip_disconnect(handle);
+        return TEST_RESULT_FAILED;
+    }
+    
+    measure_transfer_performance("Send", buffer_size, send_start, send_end);
+    
+    printf("  ✅ Large message test with ECU %s: SUCCESS\r\n", ecu_name);
+    printf("  Successfully sent %zu byte large message via unified DoIP API\r\n", buffer_size);
+    
+    // Disconnect from ECU after successful test
+    printf("  Disconnecting from ECU %s...\r\n", ecu_name);
+    drv_doip_status_t disconnect_status = hw_doip_disconnect(handle);
+    if (disconnect_status != DRV_DOIP_STATUS_OK) {
+        printf("  WARNING: Failed to disconnect from ECU %s: status %d\r\n", ecu_name, disconnect_status);
+    }
+    
+    return TEST_RESULT_PASSED;
+}
+
+/**
+ * \brief Test large messages with all discovered ECUs
+ * \param handle DOIP driver handle
+ */
+static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
+{
+    if (handle == NULL || discovered_ecus.count == 0) {
+        printf("DOIP Large Test: No ECUs available for testing\r\n");
+        return;
+    }
+    
+    printf("\r\n=== DOIP Large Message Test Suite ===\r\n");
+    printf("Testing large message capabilities with %d ECUs\r\n", discovered_ecus.count);
+    printf("Using 8KB static buffer (no heap allocation)\r\n");
+    printf("Available heap: %zu bytes\r\n", xPortGetFreeHeapSize());
+    
+    // Test sizes - up to 8KB using static buffer
+    const size_t test_sizes[] = {
+        256,       // 256B - Small message
+        512,       // 512B - Medium message  
+        1024,      // 1KB - Basic functionality
+        1400,      // Close to MTU boundary  
+        1600,      // Above MTU - fragmentation test
+        2048,      // 2KB - Reasonable large message
+        3072,      // 3KB - Larger test
+        4096,      // 4KB - Large message test
+        5120,      // 5KB - Very large message
+        6144,      // 6KB - Extra large message
+        7168,      // 7KB - Near maximum message  
+        8191,      // 8KB-1 - Maximum size (leave 1 byte for service ID)
+    };
+    
+    const size_t num_test_sizes = sizeof(test_sizes) / sizeof(test_sizes[0]);
+    
+    uint16_t total_tests = 0;
+    uint16_t passed_tests = 0;
+    uint16_t skipped_tests = 0;
+    
+    // Test each size with each ECU
+    for (size_t size_idx = 0; size_idx < num_test_sizes; size_idx++) {
+        size_t test_size = test_sizes[size_idx];
+        
+        printf("\r\n--- Testing %zu bytes (%zu KB) ---\r\n", 
+               test_size, test_size / 1024);
+        
+        for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
+            total_tests++;
+            
+            test_result_t result = doip_test_large_message_single_ecu(handle, 
+                                                                    &discovered_ecus.vehicles[ecu_idx], 
+                                                                    test_size);
+            
+            if (result == TEST_RESULT_PASSED) {
+                passed_tests++;
+            } else if (result == TEST_RESULT_SKIPPED) {
+                skipped_tests++;
+            }
+            
+            // Small delay between tests to avoid overwhelming the network
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+    
+    // Display summary
+    uint16_t failed_tests = total_tests - passed_tests - skipped_tests;
+    
+    printf("\r\n=== Large Message Test Results ===\r\n");
+    printf("Total Tests: %d\r\n", total_tests);
+    printf("Passed: %d\r\n", passed_tests);
+    printf("Failed: %d\r\n", failed_tests);
+    printf("Skipped: %d (memory constraints)\r\n", skipped_tests);
+    if (total_tests > 0) {
+        printf("Success Rate: %.1f%% (%d/%d executed tests)\r\n", 
+               (float)passed_tests * 100.0f / (total_tests - skipped_tests),
+               passed_tests, total_tests - skipped_tests);
+    }
+    printf("Final heap: %zu bytes\r\n", xPortGetFreeHeapSize());
+    printf("======================================\r\n\r\n");
+    
+    // Add delay before continuing with other tests
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
 /**
  * OS task that blinks LED
  */
@@ -434,7 +745,10 @@ static void doip_client_task(void *pvParameters)
 			if (ecu_count > 0) {
 				printf("DOIP Client: Found %d ECUs, testing multi-ECU communication...\r\n", ecu_count);
 				
-				// Test concurrent ECU requests first
+				// Test large message capabilities with all ECUs
+				doip_test_large_messages_all_ecus(doip_handle);
+				
+				// Test concurrent ECU requests
 				doip_test_concurrent_ecu_requests(doip_handle);
 				
 				// Connect to primary ECU (first discovered) for detailed analysis
@@ -758,7 +1072,8 @@ static void diagnostic_processor_task(void *pvParameters)
             raw_packet.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
             raw_packet.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
             
-            status = hw_doip_send_raw_message(doip_handle, &raw_packet);
+            status = hw_doip_send_raw_message(doip_handle, raw_packet.payload_type, 
+                                             raw_packet.payload, raw_packet.payload_length, false);
             if (status == DRV_DOIP_STATUS_OK) {
                 printf("Diagnostic Processor: Sent custom alive check request via raw messaging\r\n");
             }

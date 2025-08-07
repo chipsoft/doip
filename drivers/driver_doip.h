@@ -93,6 +93,7 @@
  * @{
  */
 #define UDS_READ_DATA_BY_IDENTIFIER     0x22  /**< Read Data by Identifier service */
+#define UDS_LARGE_MESSAGE_TEST          0x3E  /**< Large message test service (custom) */
 #define UDS_POSITIVE_RESPONSE_MASK      0x40  /**< Positive response bit mask */
 /** @} */
 
@@ -372,12 +373,15 @@ typedef struct {
     drv_doip_status_t (*connect_to_vehicle)(const void *hw_context, const drv_doip_vehicle_info_t *vehicle_info);
     drv_doip_status_t (*disconnect)(const void *hw_context);
     
-    // Diagnostic communication
-    drv_doip_status_t (*send_diagnostic_request)(const void *hw_context, uint8_t service_id, uint16_t data_id, 
-                                                uint8_t *response, size_t max_response_len, size_t *actual_len);
+    // Diagnostic communication (unified for small and large messages)
+    drv_doip_status_t (*send_diagnostic_request)(const void *hw_context, uint8_t service_id, uint16_t data_id,
+                                                const uint8_t *request_payload, size_t request_payload_len,
+                                                uint8_t *response_buffer, size_t max_response_len, size_t *actual_len);
     
-    // Raw DOIP messaging
-    drv_doip_status_t (*send_raw_message)(const void *hw_context, const drv_doip_raw_packet_t *packet);
+    // Raw DOIP messaging (unified for small and large messages)
+    drv_doip_status_t (*send_raw_message)(const void *hw_context, uint16_t payload_type,
+                                         const uint8_t *payload_data, uint32_t payload_length,
+                                         bool use_static_buffer);
     drv_doip_status_t (*start_packet_listener)(const void *hw_context, const drv_doip_packet_listener_config_t *config);
     drv_doip_status_t (*stop_packet_listener)(const void *hw_context);
     drv_doip_status_t (*register_packet_callback)(const void *hw_context, drv_doip_packet_callback_t callback);
@@ -442,27 +446,39 @@ drv_doip_status_t hw_doip_connect_to_vehicle(drv_doip_t *handle, const drv_doip_
 drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle);
 
 /**
- * @brief Send a diagnostic request to the connected vehicle
+ * @brief Send a diagnostic request to the connected vehicle (unified for small and large messages)
  * @param handle Pointer to DoIP driver instance
  * @param service_id UDS service identifier (e.g., UDS_READ_DATA_BY_IDENTIFIER)
  * @param data_id Data identifier (DID) for the request
- * @param response Buffer to store the response data
+ * @param request_payload Additional request payload data (NULL for simple DID requests)
+ * @param request_payload_len Length of additional request payload (0 for simple DID requests)
+ * @param response_buffer Buffer to store the response data
  * @param max_response_len Maximum size of response buffer
  * @param actual_len Pointer to store actual response length
  * @return DRV_DOIP_STATUS_OK on success, error code otherwise
  * @note Vehicle must be connected before calling this function
+ * @note Automatically handles both small (≤1KB) and large (>1KB) messages
+ * @note For backward compatibility, pass NULL and 0 for request_payload parameters for simple DID requests
  */
-drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
-                                                 uint8_t *response, size_t max_response_len, size_t *actual_len);
+drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
+                                                 const uint8_t *request_payload, size_t request_payload_len,
+                                                 uint8_t *response_buffer, size_t max_response_len, size_t *actual_len);
 
 /**
- * @brief Send a raw DoIP message
+ * @brief Send a raw DoIP message (unified for small and large messages)
  * @param handle Pointer to DoIP driver instance
- * @param packet Pointer to raw DoIP packet structure
+ * @param payload_type DoIP payload type identifier
+ * @param payload_data Pointer to payload data
+ * @param payload_length Length of payload data in bytes
+ * @param use_static_buffer Use static allocation for memory efficiency (true) or heap allocation (false)
  * @return DRV_DOIP_STATUS_OK on success, error code otherwise
  * @note For advanced users requiring custom DoIP message handling
+ * @note Automatically handles both small (≤1KB) and large (>1KB) messages
+ * @note use_static_buffer=true avoids heap allocation but limits concurrent operations
  */
-drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, const drv_doip_raw_packet_t *packet);
+drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, uint16_t payload_type,
+                                          const uint8_t *payload_data, uint32_t payload_length, 
+                                          bool use_static_buffer);
 
 /**
  * @brief Start raw packet listener for monitoring DoIP traffic
@@ -506,35 +522,7 @@ drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
 
-/**
- * @brief Send a large diagnostic request to the connected vehicle
- * @param handle Pointer to DoIP driver instance
- * @param service_id UDS service identifier (e.g., UDS_READ_DATA_BY_IDENTIFIER)
- * @param data_id Data identifier (DID) for the request
- * @param request_payload Additional request payload data (can be NULL)
- * @param request_payload_len Length of additional request payload
- * @param response_buffer Buffer to store the response data
- * @param max_response_len Maximum size of response buffer
- * @param actual_len Pointer to store actual response length
- * @return DRV_DOIP_STATUS_OK on success, error code otherwise
- * @note Vehicle must be connected before calling this function
- * @note This function can handle responses larger than DOIP_SMALL_PAYLOAD_SIZE
- */
-drv_doip_status_t hw_doip_send_large_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
-                                                       const uint8_t *request_payload, size_t request_payload_len,
-                                                       uint8_t *response_buffer, size_t max_response_len, size_t *actual_len);
-
-/**
- * @brief Send a large raw DoIP message
- * @param handle Pointer to DoIP driver instance
- * @param payload_type DoIP payload type
- * @param payload_data Pointer to payload data
- * @param payload_length Length of payload data
- * @return DRV_DOIP_STATUS_OK on success, error code otherwise
- * @note Can handle payloads larger than DOIP_SMALL_PAYLOAD_SIZE
- */
-drv_doip_status_t hw_doip_send_large_raw_message(drv_doip_t *handle, uint16_t payload_type,
-                                                const uint8_t *payload_data, uint32_t payload_length);
+// Large message functions removed - functionality moved to unified functions above
 /** @} */
 
 /**
@@ -621,6 +609,21 @@ doip_large_message_t *doip_utils_alloc_large_message(uint32_t payload_size);
  * @note Safe to call with NULL pointer
  */
 void doip_utils_free_large_message(doip_large_message_t *msg);
+
+/**
+ * @brief Initialize static large message with external buffer (memory-efficient)
+ * @param payload_data Pointer to payload data buffer
+ * @param payload_size Size of payload data
+ * @return Pointer to static large message structure, NULL on failure
+ * @note Avoids heap allocation by using static structure
+ */
+doip_large_message_t *doip_utils_init_static_large_message(uint8_t *payload_data, uint32_t payload_size);
+
+/**
+ * @brief Release static large message structure
+ * @param msg Pointer to large message structure (should be static one)
+ */
+void doip_utils_release_static_large_message(doip_large_message_t *msg);
 
 /**
  * @brief Parse header into a large message structure

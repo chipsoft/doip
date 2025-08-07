@@ -13,6 +13,19 @@ import sys
 import math
 from typing import Optional, Tuple, Dict, List
 
+# ANSI color codes for enhanced output
+class Colors:
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = '\033[0m'  # Reset to default color
+
 # DOIP Protocol Constants
 DOIP_UDP_DISCOVERY_PORT = 13400
 DOIP_TCP_DATA_PORT = 13400
@@ -32,6 +45,8 @@ DOIP_DIAGNOSTIC_MESSAGE_NEGATIVE_ACK = 0x8003
 
 # UDS Service IDs
 UDS_READ_DATA_BY_IDENTIFIER = 0x22
+UDS_WRITE_DATA_BY_IDENTIFIER = 0x2E
+UDS_LARGE_MESSAGE_TEST = 0x3E  # Custom service for large message testing
 UDS_POSITIVE_RESPONSE_MASK = 0x40
 
 # Data Identifiers (DIDs) - AUTOSAR Standard
@@ -282,12 +297,48 @@ class VirtualECU:
         else:
             return None
 
+    def handle_large_message_test(self, test_data: bytes) -> Optional[bytes]:
+        """Handle large message test service - echo back data with length info"""
+        received_length = len(test_data)
+        
+        # Use colored output for large message test
+        if received_length < 1024:
+            size_display = f"{received_length} bytes"
+        elif received_length < 1400:
+            size_display = f"{Colors.YELLOW}{received_length} bytes ({received_length/1024:.1f} KB){Colors.RESET}"
+        elif received_length < 4096:
+            size_display = f"{Colors.MAGENTA}{Colors.BOLD}{received_length} bytes ({received_length/1024:.1f} KB){Colors.RESET}"
+        else:
+            size_display = f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {received_length} bytes ({received_length/1024:.1f} KB) ***{Colors.RESET}"
+            
+        print(f"ECU {Colors.BLUE}{self.ecu_type}{Colors.RESET}: {Colors.CYAN}{Colors.BOLD}🔧 LARGE MESSAGE TEST:{Colors.RESET} received {size_display}")
+        
+        # Create response with received length and echo back the data
+        # Format: Length (4 bytes) + Original Data  
+        response_data = struct.pack('>I', received_length) + test_data
+        
+        if len(response_data) < 1024:
+            response_size_display = f"{len(response_data)} bytes"
+        elif len(response_data) < 1400:
+            response_size_display = f"{Colors.YELLOW}{len(response_data)} bytes ({len(response_data)/1024:.1f} KB){Colors.RESET}"
+        elif len(response_data) < 4096:
+            response_size_display = f"{Colors.MAGENTA}{Colors.BOLD}{len(response_data)} bytes ({len(response_data)/1024:.1f} KB){Colors.RESET}"
+        else:
+            response_size_display = f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {len(response_data)} bytes ({len(response_data)/1024:.1f} KB) ***{Colors.RESET}"
+            
+        print(f"ECU {Colors.BLUE}{self.ecu_type}{Colors.RESET}: {Colors.CYAN}{Colors.BOLD}🔧 LARGE MESSAGE TEST:{Colors.RESET} echoing {response_size_display}")
+        
+        return response_data
+
 class DOIPVehicleEmulator:
     """Multi-ECU DOIP Vehicle Emulator"""
     
     def __init__(self, base_vin: str = "WBAVN31010AE1234"):
         self.base_vin = base_vin
         self.ecus: Dict[int, VirtualECU] = {}
+        
+        # Large message support constants
+        self.max_message_size = 256 * 1024  # 256KB maximum message size
         
         # Create multiple ECUs with different types and logical addresses
         self.ecus[0x0001] = VirtualECU("ENGINE", 0x0001, base_vin)
@@ -324,6 +375,63 @@ class DOIPVehicleEmulator:
             return None
             
         return version, payload_type, payload_length
+    
+    def format_message_size(self, size_bytes: int) -> str:
+        """Format message size with color coding based on size"""
+        if size_bytes < 1024:  # Less than 1KB
+            return f"{size_bytes} bytes"
+        elif size_bytes < 1400:  # Less than MTU
+            return f"{Colors.YELLOW}{size_bytes} bytes ({size_bytes/1024:.1f} KB){Colors.RESET}"
+        elif size_bytes < 4096:  # Large message (1.4KB - 4KB)
+            return f"{Colors.MAGENTA}{Colors.BOLD}{size_bytes} bytes ({size_bytes/1024:.1f} KB){Colors.RESET}"
+        else:  # Very large message (>4KB)
+            return f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {size_bytes} bytes ({size_bytes/1024:.1f} KB) ***{Colors.RESET}"
+    
+    def receive_complete_doip_message(self, client_socket) -> Optional[bytes]:
+        """Receive a complete DOIP message, handling TCP fragmentation"""
+        try:
+            # First, receive the 8-byte DOIP header
+            header_data = bytearray()
+            while len(header_data) < 8:
+                chunk = client_socket.recv(8 - len(header_data))
+                if not chunk:
+                    return None
+                header_data.extend(chunk)
+            
+            # Parse the header to get payload length
+            header_info = self.parse_doip_header(bytes(header_data))
+            if not header_info:
+                print("Invalid DOIP header received")
+                return None
+                
+            version, payload_type, payload_length = header_info
+            
+            # Check message size limit
+            total_message_size = 8 + payload_length
+            if total_message_size > self.max_message_size:
+                print(f"Message too large: {total_message_size} bytes (max: {self.max_message_size})")
+                return None
+            
+            # Receive the payload
+            payload_data = bytearray()
+            while len(payload_data) < payload_length:
+                chunk = client_socket.recv(payload_length - len(payload_data))
+                if not chunk:
+                    return None
+                payload_data.extend(chunk)
+            
+            complete_message = header_data + payload_data
+            total_size = len(complete_message)
+            
+            # Use colored output for message size
+            size_display = self.format_message_size(total_size)
+            print(f"Received complete DOIP message: {size_display} (header: 8, payload: {payload_length})")
+            
+            return bytes(complete_message)
+            
+        except Exception as e:
+            print(f"Error receiving DOIP message: {e}")
+            return None
     
     def handle_vehicle_identification_request(self, addr) -> List[bytes]:
         """Handle UDP vehicle identification request - return responses for all ECUs"""
@@ -415,6 +523,18 @@ class DOIPVehicleEmulator:
             else:
                 print(f"ECU {target_ecu.ecu_type} does not support DID 0x{did:04x}")
                 return self.create_negative_ack(0x31)  # Request out of range
+        elif service_id == UDS_LARGE_MESSAGE_TEST:
+            # Handle large message test service
+            response_data = target_ecu.handle_large_message_test(uds_data[1:])
+            
+            if response_data:
+                # Create positive response
+                uds_response = struct.pack('B', service_id + UDS_POSITIVE_RESPONSE_MASK) + response_data
+                payload = struct.pack('>HH', target_address, source_address) + uds_response
+                header = self.create_doip_header(DOIP_DIAGNOSTIC_MESSAGE, len(payload))
+                
+                print(f"ECU {target_ecu.ecu_type} sending large message test response: {len(response_data)} bytes")
+                return header + payload
         
         print(f"Unsupported service 0x{service_id:02x}")
         return self.create_negative_ack(0x11)  # Service not supported
@@ -486,11 +606,14 @@ class DOIPVehicleEmulator:
         
         try:
             while self.running:
-                data = client_socket.recv(1024)
+                # Use new method to receive complete DOIP messages
+                data = self.receive_complete_doip_message(client_socket)
                 if not data:
                     break
                 
-                print(f"TCP received {len(data)} bytes from {addr}: {data.hex()}")
+                # Use colored output for received message size
+                size_display = self.format_message_size(len(data))
+                print(f"TCP received complete message: {size_display} from {addr}")
                 
                 header_info = self.parse_doip_header(data)
                 if not header_info:
@@ -498,7 +621,8 @@ class DOIPVehicleEmulator:
                     continue
                 
                 _, payload_type, payload_length = header_info
-                print(f"TCP: Payload type 0x{payload_type:04x}, length {payload_length}")
+                payload_size_display = self.format_message_size(payload_length)
+                print(f"TCP: Payload type 0x{payload_type:04x}, payload {payload_size_display}")
                 
                 if payload_type == DOIP_ROUTING_ACTIVATION_REQUEST:
                     print(f"TCP: Handling routing activation request from {addr}")

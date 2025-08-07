@@ -255,18 +255,186 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context, drv_doip_vehicle_info_t *vehicle_info);
 static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context, const drv_doip_vehicle_info_t *vehicle_info);
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context);
-static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, uint8_t *response, size_t max_response_len, size_t *actual_len);
+static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, 
+                                                              const uint8_t *request_payload, size_t request_payload_len,
+                                                              uint8_t *response_buffer, size_t max_response_len, size_t *actual_len);
 
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
 
-// Stub implementations for raw packet functionality (not implemented in raw lwIP version)
-static drv_doip_status_t drv_doip_send_raw_message_stub(const void *hw_context, const drv_doip_raw_packet_t *packet)
+// Unified raw message implementation for raw lwIP version
+static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, uint16_t payload_type,
+                                                        const uint8_t *payload_data, uint32_t payload_length,
+                                                        bool use_static_buffer)
 {
-    (void)hw_context; (void)packet;
-    printf("DOIP Raw lwIP: Raw message sending not implemented in raw lwIP version\r\n");
-    return DRV_DOIP_STATUS_ERROR;
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    (void)use_static_buffer; // Not used in raw implementation yet
+    
+    // Check if we're in a connected state (either CONNECTED or ACTIVATED is OK for raw messages)
+    if (context->current_state != DRV_DOIP_STATE_CONNECTED && 
+        context->current_state != DRV_DOIP_STATE_ACTIVATED) {
+        printf("DOIP Raw lwIP: Not connected - cannot send raw message (state: %d)\r\n", context->current_state);
+        printf("DOIP Raw lwIP: Current state: %s\r\n", 
+               (context->current_state == DRV_DOIP_STATE_IDLE) ? "IDLE" :
+               (context->current_state == DRV_DOIP_STATE_DISCOVERING) ? "DISCOVERING" :
+               (context->current_state == DRV_DOIP_STATE_DISCOVERED) ? "DISCOVERED" :
+               (context->current_state == DRV_DOIP_STATE_CONNECTING) ? "CONNECTING" :
+               (context->current_state == DRV_DOIP_STATE_ERROR) ? "ERROR" : "UNKNOWN");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Raw lwIP: Unified raw message - type=0x%04X, length=%u bytes\r\n", 
+           payload_type, (unsigned int)payload_length);
+    
+    // Validate TCP connection
+    if (context->tcp_pcb == NULL) {
+        printf("DOIP Raw lwIP: No TCP connection available\r\n");
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // For large messages, we need to implement proper TCP transmission
+    if (payload_length > DOIP_SMALL_PAYLOAD_SIZE) {
+        printf("DOIP Raw lwIP: Large message transmission (%u bytes) - use_static_buffer=%s\r\n", 
+               (unsigned int)payload_length, use_static_buffer ? "true" : "false");
+        
+        // Calculate total message size: DOIP header (8 bytes) + payload
+        uint32_t total_message_size = DOIP_HEADER_SIZE + payload_length;
+        uint8_t *complete_message = NULL;
+        bool allocated_memory = false;
+        
+        if (use_static_buffer) {
+            // Use static buffer approach - send header and payload separately
+            printf("DOIP Raw lwIP: Using static buffer approach - sending header + payload separately\r\n");
+            
+            // Send DOIP header first
+            uint8_t header_buffer[DOIP_HEADER_SIZE];
+            header_buffer[0] = DOIP_PROTOCOL_VERSION;
+            header_buffer[1] = DOIP_INVERSE_PROTOCOL_VERSION;
+            header_buffer[2] = (payload_type >> 8) & 0xFF;
+            header_buffer[3] = payload_type & 0xFF;
+            header_buffer[4] = (payload_length >> 24) & 0xFF;
+            header_buffer[5] = (payload_length >> 16) & 0xFF;
+            header_buffer[6] = (payload_length >> 8) & 0xFF;
+            header_buffer[7] = payload_length & 0xFF;
+            
+            // Send header
+            err_t err = tcp_write(context->tcp_pcb, header_buffer, DOIP_HEADER_SIZE, TCP_WRITE_FLAG_COPY);
+            if (err != ERR_OK) {
+                printf("DOIP Raw lwIP: tcp_write failed for header - err=%d\r\n", err);
+                return DRV_DOIP_STATUS_ERROR;
+            }
+            
+            // Send payload directly (no additional copying)
+            if (payload_length > 0 && payload_data != NULL) {
+                err = tcp_write(context->tcp_pcb, payload_data, payload_length, TCP_WRITE_FLAG_COPY);
+                if (err != ERR_OK) {
+                    printf("DOIP Raw lwIP: tcp_write failed for payload - err=%d\r\n", err);
+                    return DRV_DOIP_STATUS_ERROR;
+                }
+            }
+            
+            // Flush both header and payload
+            err = tcp_output(context->tcp_pcb);
+            if (err != ERR_OK) {
+                printf("DOIP Raw lwIP: tcp_output failed for large message - err=%d\r\n", err);
+                return DRV_DOIP_STATUS_ERROR;
+            }
+            
+            printf("DOIP Raw lwIP: Successfully sent large message using static buffer approach (%u bytes total)\r\n", 
+                   (unsigned int)total_message_size);
+            return DRV_DOIP_STATUS_OK;
+            
+        } else {
+            // Use dynamic allocation approach
+            printf("DOIP Raw lwIP: Using dynamic allocation approach\r\n");
+            complete_message = (uint8_t*)pvPortMalloc(total_message_size);
+            if (complete_message == NULL) {
+                printf("DOIP Raw lwIP: Failed to allocate %u bytes for large message transmission\r\n", 
+                       (unsigned int)total_message_size);
+                printf("DOIP Raw lwIP: Available heap: %u bytes, requested: %u bytes\r\n",
+                       xPortGetFreeHeapSize(), (unsigned int)total_message_size);
+                return DRV_DOIP_STATUS_ERROR;
+            }
+            allocated_memory = true;
+        }
+        
+        // Build DOIP header
+        complete_message[0] = DOIP_PROTOCOL_VERSION;
+        complete_message[1] = DOIP_INVERSE_PROTOCOL_VERSION;
+        complete_message[2] = (payload_type >> 8) & 0xFF;
+        complete_message[3] = payload_type & 0xFF;
+        complete_message[4] = (payload_length >> 24) & 0xFF;
+        complete_message[5] = (payload_length >> 16) & 0xFF;
+        complete_message[6] = (payload_length >> 8) & 0xFF;
+        complete_message[7] = payload_length & 0xFF;
+        
+        // Copy payload data
+        if (payload_length > 0 && payload_data != NULL) {
+            memcpy(&complete_message[DOIP_HEADER_SIZE], payload_data, payload_length);
+        }
+        
+        // Send message in chunks using TCP
+        err_t err = tcp_write(context->tcp_pcb, complete_message, total_message_size, TCP_WRITE_FLAG_COPY);
+        if (err != ERR_OK) {
+            printf("DOIP Raw lwIP: tcp_write failed for large message - err=%d\r\n", err);
+            vPortFree(complete_message);
+            return DRV_DOIP_STATUS_ERROR;
+        }
+        
+        err = tcp_output(context->tcp_pcb);
+        if (err != ERR_OK) {
+            printf("DOIP Raw lwIP: tcp_output failed for large message - err=%d\r\n", err);
+            vPortFree(complete_message);
+            return DRV_DOIP_STATUS_ERROR;
+        }
+        
+        vPortFree(complete_message);
+        printf("DOIP Raw lwIP: Successfully sent large raw message (%u bytes total)\r\n", 
+               (unsigned int)total_message_size);
+        return DRV_DOIP_STATUS_OK;
+    }
+    
+    // Handle small messages using existing approach
+    printf("DOIP Raw lwIP: Small message - using standard transmission\r\n");
+    
+    // Calculate total message size: DOIP header (8 bytes) + payload
+    uint32_t total_message_size = DOIP_HEADER_SIZE + payload_length;
+    uint8_t message_buffer[DOIP_HEADER_SIZE + DOIP_SMALL_PAYLOAD_SIZE];
+    
+    // Build DOIP header
+    message_buffer[0] = DOIP_PROTOCOL_VERSION;
+    message_buffer[1] = DOIP_INVERSE_PROTOCOL_VERSION;
+    message_buffer[2] = (payload_type >> 8) & 0xFF;
+    message_buffer[3] = payload_type & 0xFF;
+    message_buffer[4] = (payload_length >> 24) & 0xFF;
+    message_buffer[5] = (payload_length >> 16) & 0xFF;
+    message_buffer[6] = (payload_length >> 8) & 0xFF;
+    message_buffer[7] = payload_length & 0xFF;
+    
+    // Copy payload data
+    if (payload_length > 0 && payload_data != NULL) {
+        memcpy(&message_buffer[DOIP_HEADER_SIZE], payload_data, payload_length);
+    }
+    
+    // Send message using TCP
+    err_t err = tcp_write(context->tcp_pcb, message_buffer, total_message_size, TCP_WRITE_FLAG_COPY);
+    if (err != ERR_OK) {
+        printf("DOIP Raw lwIP: tcp_write failed for small message - err=%d\r\n", err);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    err = tcp_output(context->tcp_pcb);
+    if (err != ERR_OK) {
+        printf("DOIP Raw lwIP: tcp_output failed for small message - err=%d\r\n", err);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Raw lwIP: Successfully sent small raw message (%u bytes total)\r\n", 
+           (unsigned int)total_message_size);
+    return DRV_DOIP_STATUS_OK;
 }
 
 static drv_doip_status_t drv_doip_start_packet_listener_stub(const void *hw_context, const drv_doip_packet_listener_config_t *config)
@@ -302,8 +470,8 @@ drv_doip_t doip_0 = {
     .disconnect = drv_doip_disconnect_impl,
     .send_diagnostic_request = drv_doip_send_diagnostic_request_impl,
     
-    // Raw DOIP messaging functions (stubs for raw lwIP implementation)
-    .send_raw_message = drv_doip_send_raw_message_stub,
+    // Raw DOIP messaging functions (unified implementation)
+    .send_raw_message = drv_doip_send_raw_message_impl,
     .start_packet_listener = drv_doip_start_packet_listener_stub,
     .stop_packet_listener = drv_doip_stop_packet_listener_stub,
     .register_packet_callback = drv_doip_register_packet_callback_stub,
@@ -868,11 +1036,15 @@ static drv_doip_status_t doip_send_diagnostic_message(drv_doip_hw_context_t *con
 }
 
 // Simplified implementations for the remaining functions
-static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, uint8_t *response, size_t max_response_len, size_t *actual_len)
+static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_context, uint8_t service_id, uint16_t data_id, 
+                                                              const uint8_t *request_payload, size_t request_payload_len,
+                                                              uint8_t *response_buffer, size_t max_response_len, size_t *actual_len)
 {
     ASSERT(hw_context != NULL);
-    ASSERT(response != NULL);
+    ASSERT(response_buffer != NULL);
     ASSERT(actual_len != NULL);
+    // request_payload can be NULL for simple DID requests
+    ASSERT(request_payload != NULL || request_payload_len == 0);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
     if (context->current_state != DRV_DOIP_STATE_ACTIVATED) {
@@ -885,14 +1057,27 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         xStreamBufferReset(context->stream_buffer);
     }
     
-    // Send diagnostic message
+    // Log unified diagnostic request details
+    size_t total_request_size = 3 + request_payload_len; // service_id(1) + data_id(2) + payload
+    printf("DOIP Client: Unified diagnostic request - service=0x%02X, data_id=0x%04X, payload_len=%zu, total_size=%zu\r\n",
+           service_id, data_id, request_payload_len, total_request_size);
+    
+    // For now, only support simple DID requests (no additional payload) in raw lwIP version
+    if (request_payload_len > 0) {
+        printf("DOIP Client: Raw lwIP version does not yet support diagnostic requests with additional payload\r\n");
+        printf("DOIP Client: Use socket version for large diagnostic requests\r\n");
+        *actual_len = 0;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Send diagnostic message (simple DID request)
     drv_doip_status_t status = doip_send_diagnostic_message(context, service_id, data_id);
     if (status != DRV_DOIP_STATUS_OK) {
         return status;
     }
     
-    // Wait for response in stream buffer
-    uint8_t buffer[256];
+    // Use larger buffer for responses (support up to 4KB responses)
+    uint8_t buffer[4096];
     size_t received = 0;
     TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS);
     
@@ -984,7 +1169,7 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
             size_t diag_payload_len = payload_length - 4;
             size_t copy_len = (diag_payload_len > max_response_len) ? max_response_len : diag_payload_len;
             
-            memcpy(response, &buffer[8 + 4], copy_len);  // Skip 8-byte header + 4-byte addressing
+            memcpy(response_buffer, &buffer[8 + 4], copy_len);  // Skip 8-byte header + 4-byte addressing
             *actual_len = copy_len;
             
             printf("DOIP Client: Diagnostic payload length: %zu bytes\r\n", diag_payload_len);

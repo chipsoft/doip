@@ -103,21 +103,30 @@ drv_doip_status_t hw_doip_disconnect(drv_doip_t *handle)
     return handle->disconnect(handle->hw_context);
 }
 
-drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id, 
-                                                 uint8_t *response, size_t max_response_len, size_t *actual_len)
+drv_doip_status_t hw_doip_send_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
+                                                 const uint8_t *request_payload, size_t request_payload_len,
+                                                 uint8_t *response_buffer, size_t max_response_len, size_t *actual_len)
 {
     ASSERT(handle != NULL);
     ASSERT(handle->send_diagnostic_request != NULL);
-    ASSERT(response != NULL);
+    ASSERT(response_buffer != NULL);
     ASSERT(actual_len != NULL);
     ASSERT(max_response_len > 0);
+    // request_payload can be NULL for simple DID requests
+    ASSERT(request_payload != NULL || request_payload_len == 0);
     
     if (!handle->is_init) {
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    return handle->send_diagnostic_request(handle->hw_context, service_id, data_id, 
-                                          response, max_response_len, actual_len);
+    // Calculate total request size for logging
+    size_t total_request_size = 3 + request_payload_len; // service_id(1) + data_id(2) + payload
+    printf("DOIP: Unified diagnostic request - service=0x%02X, data_id=0x%04X, payload_len=%zu, total_size=%zu\r\n",
+           service_id, data_id, request_payload_len, total_request_size);
+    
+    return handle->send_diagnostic_request(handle->hw_context, service_id, data_id,
+                                          request_payload, request_payload_len,
+                                          response_buffer, max_response_len, actual_len);
 }
 
 
@@ -147,110 +156,35 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     return handle->register_callback(handle->hw_context, type, callback);
 }
 
-drv_doip_status_t hw_doip_send_large_diagnostic_request(drv_doip_t *handle, uint8_t service_id, uint16_t data_id,
-                                                       const uint8_t *request_payload, size_t request_payload_len,
-                                                       uint8_t *response_buffer, size_t max_response_len, size_t *actual_len)
-{
-    ASSERT(handle != NULL);
-    ASSERT(response_buffer != NULL);
-    ASSERT(actual_len != NULL);
-    ASSERT(max_response_len > 0);
-    
-    if (!handle->is_init) {
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP: Large diagnostic request - service=0x%02X, data_id=0x%04X, payload_len=%zu, max_response=%zu\r\n",
-           service_id, data_id, request_payload_len, max_response_len);
-    
-    // For now, delegate to the standard function if small enough, otherwise handle specially
-    if (request_payload_len == 0 && max_response_len <= DOIP_SMALL_PAYLOAD_SIZE) {
-        // Use existing implementation for backward compatibility
-        return hw_doip_send_diagnostic_request(handle, service_id, data_id, 
-                                              response_buffer, max_response_len, actual_len);
-    }
-    
-    // TODO: Implement full large message support in BSP layer
-    // For now, return error if BSP doesn't support large messages
-    printf("DOIP: Large message support requires BSP implementation\r\n");
-    return DRV_DOIP_STATUS_ERROR;
-}
+// Large message functions removed - functionality moved to unified functions above
 
-drv_doip_status_t hw_doip_send_large_raw_message(drv_doip_t *handle, uint16_t payload_type,
-                                                const uint8_t *payload_data, uint32_t payload_length)
+//-----------------------------------------------------------------------------
+// Raw DOIP Messaging API Implementations
+//-----------------------------------------------------------------------------
+
+drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, uint16_t payload_type,
+                                          const uint8_t *payload_data, uint32_t payload_length, 
+                                          bool use_static_buffer)
 {
     ASSERT(handle != NULL);
+    ASSERT(handle->send_raw_message != NULL);
     ASSERT(payload_data != NULL || payload_length == 0);
     
     if (!handle->is_init) {
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP: Large raw message - type=0x%04X, length=%u\r\n", payload_type, (unsigned int)payload_length);
-    
-    // Check if large message support is enabled
-    if (!DOIP_ENABLE_LARGE_MESSAGES) {
-        printf("DOIP: Large message support disabled\r\n");
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    // Validate payload size
+    // Validate payload size against safe limits
     if (payload_length > DOIP_MAX_SAFE_PAYLOAD_SIZE) {
-        printf("DOIP: Payload too large: %u bytes (max safe size %d)\r\n", 
+        printf("DOIP: Unified raw message payload too large: %u bytes (max safe %d)\r\n", 
                (unsigned int)payload_length, DOIP_MAX_SAFE_PAYLOAD_SIZE);
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Create large message structure
-    doip_large_message_t *large_msg = doip_utils_alloc_large_message(payload_length);
-    if (large_msg == NULL) {
-        printf("DOIP: Failed to allocate large message structure\r\n");
-        return DRV_DOIP_STATUS_ERROR;
-    }
+    printf("DOIP: Unified raw message - type=0x%04X, length=%u, static_buffer=%s\r\n", 
+           payload_type, (unsigned int)payload_length, use_static_buffer ? "true" : "false");
     
-    // Fill in the message
-    large_msg->protocol_version = DOIP_PROTOCOL_VERSION;
-    large_msg->inverse_protocol_version = DOIP_INVERSE_PROTOCOL_VERSION;
-    large_msg->payload_type = payload_type;
-    large_msg->payload_length = payload_length;
-    
-    if (payload_length > 0 && payload_data != NULL) {
-        memcpy(large_msg->payload, payload_data, payload_length);
-    }
-    
-    // TODO: Send via BSP layer with large message support
-    printf("DOIP: Large message prepared, sending via TCP (length=%u)\r\n", (unsigned int)payload_length);
-    
-    // For now, simulate success and cleanup
-    doip_utils_free_large_message(large_msg);
-    
-    return DRV_DOIP_STATUS_OK;
-}
-
-//-----------------------------------------------------------------------------
-// Raw DOIP Messaging API Implementations
-//-----------------------------------------------------------------------------
-
-drv_doip_status_t hw_doip_send_raw_message(drv_doip_t *handle, const drv_doip_raw_packet_t *packet)
-{
-    ASSERT(handle != NULL);
-    ASSERT(handle->send_raw_message != NULL);
-    ASSERT(packet != NULL);
-    
-    if (!handle->is_init) {
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    // Validate packet structure
-    if (packet->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    if (!doip_utils_validate_protocol(packet->protocol_version, packet->inverse_protocol_version)) {
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    return handle->send_raw_message(handle->hw_context, packet);
+    return handle->send_raw_message(handle->hw_context, payload_type, payload_data, payload_length, use_static_buffer);
 }
 
 drv_doip_status_t hw_doip_start_packet_listener(drv_doip_t *handle, const drv_doip_packet_listener_config_t *config)
@@ -497,6 +431,58 @@ doip_large_message_t *doip_utils_alloc_large_message(uint32_t payload_size)
            sizeof(doip_large_message_t), (unsigned int)payload_size);
     
     return msg;
+}
+
+// Static large message structure for memory-constrained systems
+static doip_large_message_t static_large_message = {0};
+static bool static_large_message_in_use = false;
+
+/**
+ * @brief Initialize static large message with external buffer
+ * @param payload_data Pointer to payload data buffer
+ * @param payload_size Size of payload data
+ * @return Pointer to static large message structure, NULL on failure
+ * @note This avoids heap allocation by using static structure
+ */
+doip_large_message_t *doip_utils_init_static_large_message(uint8_t *payload_data, uint32_t payload_size)
+{
+    if (static_large_message_in_use) {
+        printf("DOIP: Static large message structure already in use\r\n");
+        return NULL;
+    }
+    
+    if (payload_data == NULL && payload_size > 0) {
+        printf("DOIP: Invalid parameters for static large message\r\n");
+        return NULL;
+    }
+    
+    // Mark as in use
+    static_large_message_in_use = true;
+    
+    // Initialize static structure
+    memset(&static_large_message, 0, sizeof(doip_large_message_t));
+    static_large_message.payload = payload_data;
+    static_large_message.payload_length = payload_size;
+    static_large_message.payload_capacity = payload_size;
+    static_large_message.payload_allocated = false;  // We're using external buffer
+    
+    printf("DOIP: Initialized static large message - struct=%zu bytes, payload=%u bytes (external buffer)\r\n",
+           sizeof(doip_large_message_t), (unsigned int)payload_size);
+    
+    return &static_large_message;
+}
+
+/**
+ * @brief Release static large message structure
+ * @param msg Pointer to large message structure (should be static one)
+ */
+void doip_utils_release_static_large_message(doip_large_message_t *msg)
+{
+    if (msg == &static_large_message) {
+        static_large_message_in_use = false;
+        memset(&static_large_message, 0, sizeof(doip_large_message_t));
+        printf("DOIP: Released static large message structure\r\n");
+    }
 }
 
 void doip_utils_free_large_message(doip_large_message_t *msg)
