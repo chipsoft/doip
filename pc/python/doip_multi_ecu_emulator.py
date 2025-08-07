@@ -349,10 +349,10 @@ class DOIPVehicleEmulator:
         
         # Connection reliability improvements
         self.connection_lock = threading.Lock()
-        self.max_concurrent_connections = 10
-        self.connection_rate_limit = 0.1  # Minimum 100ms between connections
+        self.max_concurrent_connections = 20  # Increased for rapid testing
+        self.connection_rate_limit = 0.01  # Reduced to 10ms between connections
         self.last_connection_time = 0
-        self.connection_retry_delay = 0.5  # 500ms delay between retries
+        self.connection_retry_delay = 0.1  # Reduced to 100ms delay between retries
         self.max_connection_retries = 3
         
         # Alive check functionality
@@ -889,6 +889,10 @@ class DOIPVehicleEmulator:
             print(f"{Colors.RED}❌ TCP client error from {addr}: {e}{Colors.RESET}")
             self.unregister_connection(client_socket, addr, str(e))
         finally:
+            try:
+                client_socket.shutdown(socket.SHUT_RDWR)
+            except:
+                pass
             client_socket.close()
             self.unregister_connection(client_socket, addr)
             print(f"{Colors.YELLOW}🔌 TCP client {addr} disconnected{Colors.RESET}")
@@ -925,9 +929,10 @@ class DOIPVehicleEmulator:
                         time.sleep(self.connection_retry_delay)
                         continue
                     
-                    # Set socket options for better reliability
+                    # Set socket options for better reliability and fast reuse
                     client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     
                     client_thread = threading.Thread(
                         target=self.handle_tcp_client,
