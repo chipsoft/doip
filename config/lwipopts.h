@@ -155,7 +155,7 @@
 // <i> Default: 5
 // <id> lwip_memp_num_tcp_pcb
 #ifndef MEMP_NUM_TCP_PCB
-#define MEMP_NUM_TCP_PCB 5
+#define MEMP_NUM_TCP_PCB 20  // Increased from 5 to support rapid DoIP testing
 #endif
 
 // <o> the number of listening TCP connections<0-1000>
@@ -171,7 +171,7 @@
 // <i> Default: 16
 // <id> lwip_memp_num_tcp_seg
 #ifndef MEMP_NUM_TCP_SEG
-#define MEMP_NUM_TCP_SEG 16
+#define MEMP_NUM_TCP_SEG 64  // Increased from 16 to support more concurrent TCP segments
 #endif
 
 // <o> Number of bytes added before the ethernet header CPU<0-100000>
@@ -302,7 +302,7 @@
 // <i> Default: 16
 // <id> lwip_pbuf_pool_size
 #ifndef PBUF_POOL_SIZE
-#define PBUF_POOL_SIZE 16
+#define PBUF_POOL_SIZE 64  // Increased from 16 to support more concurrent network operations
 #endif
 
 // <o> the number of bytes that should be allocated for a link level header<0-1000>
