@@ -301,32 +301,28 @@ class VirtualECU:
         """Handle large message test service - echo back data with length info"""
         received_length = len(test_data)
         
-        # Use colored output for large message test
-        if received_length < 1024:
-            size_display = f"{received_length} bytes"
-        elif received_length < 1400:
-            size_display = f"{Colors.YELLOW}{received_length} bytes ({received_length/1024:.1f} KB){Colors.RESET}"
-        elif received_length < 4096:
-            size_display = f"{Colors.MAGENTA}{Colors.BOLD}{received_length} bytes ({received_length/1024:.1f} KB){Colors.RESET}"
-        else:
-            size_display = f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {received_length} bytes ({received_length/1024:.1f} KB) ***{Colors.RESET}"
-            
-        print(f"ECU {Colors.BLUE}{self.ecu_type}{Colors.RESET}: {Colors.CYAN}{Colors.BOLD}🔧 LARGE MESSAGE TEST:{Colors.RESET} received {size_display}")
+        # Enhanced logging for large message test
+        print(f"ECU {Colors.BLUE}{self.ecu_type}{Colors.RESET}: {Colors.CYAN}{Colors.BOLD}🔧 LARGE MESSAGE TEST:{Colors.RESET}")
+        
+        # Use enhanced size formatting
+        size_display = self.format_message_size(received_length)
+        print(f"   📥 Received: {size_display}")
         
         # Create response with received length and echo back the data
         # Format: Length (4 bytes) + Original Data  
         response_data = struct.pack('>I', received_length) + test_data
         
-        if len(response_data) < 1024:
-            response_size_display = f"{len(response_data)} bytes"
-        elif len(response_data) < 1400:
-            response_size_display = f"{Colors.YELLOW}{len(response_data)} bytes ({len(response_data)/1024:.1f} KB){Colors.RESET}"
-        elif len(response_data) < 4096:
-            response_size_display = f"{Colors.MAGENTA}{Colors.BOLD}{len(response_data)} bytes ({len(response_data)/1024:.1f} KB){Colors.RESET}"
-        else:
-            response_size_display = f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {len(response_data)} bytes ({len(response_data)/1024:.1f} KB) ***{Colors.RESET}"
-            
-        print(f"ECU {Colors.BLUE}{self.ecu_type}{Colors.RESET}: {Colors.CYAN}{Colors.BOLD}🔧 LARGE MESSAGE TEST:{Colors.RESET} echoing {response_size_display}")
+        # Enhanced response logging
+        response_size_display = self.format_message_size(len(response_data))
+        print(f"   📤 Echoing: {response_size_display}")
+        
+        # Additional analysis for large messages
+        if received_length > 1400:
+            print(f"   ⚠️  Note: Message exceeds TCP MSS (1460 bytes) - chunking may be required")
+        if received_length > 4096:
+            print(f"   🔥 Note: Very large message - intensive processing")
+        if received_length > 8192:
+            print(f"   🚀 Note: Mega message - maximum processing required")
         
         return response_data
 
@@ -371,6 +367,18 @@ class DOIPVehicleEmulator:
             'active_connections': 0,
             'connection_errors': []
         }
+        
+        # Message processing statistics
+        self.message_stats = {
+            'total_messages': 0,
+            'small_messages': 0,      # < 1KB
+            'medium_messages': 0,     # 1KB - 1.4KB
+            'large_messages': 0,      # 1.4KB - 4KB
+            'very_large_messages': 0, # 4KB - 8KB
+            'mega_messages': 0,       # > 8KB
+            'total_bytes_processed': 0,
+            'largest_message': 0
+        }
     
     def can_accept_connection(self) -> bool:
         """Check if we can accept a new connection based on rate limiting and capacity"""
@@ -410,6 +418,41 @@ class DOIPVehicleEmulator:
                 self.connection_stats['connection_errors'].append(f"{addr}: {error}")
         
         print(f"{Colors.YELLOW}🔌 Connection closed from {addr} (Active: {len(self.active_connections)}){Colors.RESET}")
+    
+    def update_message_stats(self, message_size: int):
+        """Update message processing statistics"""
+        self.message_stats['total_messages'] += 1
+        self.message_stats['total_bytes_processed'] += message_size
+        
+        if message_size > self.message_stats['largest_message']:
+            self.message_stats['largest_message'] = message_size
+        
+        category = self.get_message_size_category(message_size)
+        if category == "SMALL":
+            self.message_stats['small_messages'] += 1
+        elif category == "MEDIUM":
+            self.message_stats['medium_messages'] += 1
+        elif category == "LARGE":
+            self.message_stats['large_messages'] += 1
+        elif category == "VERY_LARGE":
+            self.message_stats['very_large_messages'] += 1
+        elif category == "MEGA":
+            self.message_stats['mega_messages'] += 1
+    
+    def print_message_stats(self):
+        """Print current message processing statistics"""
+        stats = self.message_stats.copy()
+        
+        print(f"\n{Colors.CYAN}📊 Message Processing Statistics:{Colors.RESET}")
+        print(f"  Total Messages: {stats['total_messages']}")
+        print(f"  Total Bytes Processed: {stats['total_bytes_processed']:,} bytes ({stats['total_bytes_processed']/1024:.1f} KB)")
+        print(f"  Largest Message: {stats['largest_message']} bytes ({stats['largest_message']/1024:.1f} KB)")
+        print(f"  Message Size Distribution:")
+        print(f"    📄 Small (<1KB): {stats['small_messages']}")
+        print(f"    📋 Medium (1-1.4KB): {stats['medium_messages']}")
+        print(f"    📦 Large (1.4-4KB): {stats['large_messages']}")
+        print(f"    📦🔥 Very Large (4-8KB): {stats['very_large_messages']}")
+        print(f"    📦💥🚀 Mega (>8KB): {stats['mega_messages']}")
     
     def print_connection_stats(self):
         """Print current connection statistics"""
@@ -456,8 +499,60 @@ class DOIPVehicleEmulator:
             return f"{Colors.YELLOW}{size_bytes} bytes ({size_bytes/1024:.1f} KB){Colors.RESET}"
         elif size_bytes < 4096:  # Large message (1.4KB - 4KB)
             return f"{Colors.MAGENTA}{Colors.BOLD}{size_bytes} bytes ({size_bytes/1024:.1f} KB){Colors.RESET}"
-        else:  # Very large message (>4KB)
+        elif size_bytes < 8192:  # Very large message (4KB - 8KB)
             return f"{Colors.RED}{Colors.BOLD}*** LARGE MESSAGE: {size_bytes} bytes ({size_bytes/1024:.1f} KB) ***{Colors.RESET}"
+        else:  # Extremely large message (>8KB)
+            return f"{Colors.RED}{Colors.BOLD}{Colors.UNDERLINE}*** MEGA MESSAGE: {size_bytes} bytes ({size_bytes/1024:.1f} KB) ***{Colors.RESET}"
+    
+    def get_message_size_category(self, size_bytes: int) -> str:
+        """Get message size category for enhanced logging"""
+        if size_bytes < 1024:
+            return "SMALL"
+        elif size_bytes < 1400:
+            return "MEDIUM"
+        elif size_bytes < 4096:
+            return "LARGE"
+        elif size_bytes < 8192:
+            return "VERY_LARGE"
+        else:
+            return "MEGA"
+    
+    def log_message_received(self, size_bytes: int, source_addr: str, message_type: str = "DOIP"):
+        """Enhanced logging for received messages with size categorization"""
+        size_display = self.format_message_size(size_bytes)
+        category = self.get_message_size_category(size_bytes)
+        
+        # Different emoji and color based on size
+        if category == "SMALL":
+            emoji = "📄"
+            color = Colors.WHITE
+        elif category == "MEDIUM":
+            emoji = "📋"
+            color = Colors.YELLOW
+        elif category == "LARGE":
+            emoji = "📦"
+            color = Colors.MAGENTA
+        elif category == "VERY_LARGE":
+            emoji = "📦🔥"
+            color = Colors.RED
+        else:  # MEGA
+            emoji = "📦💥🚀"
+            color = Colors.RED + Colors.BOLD + Colors.UNDERLINE
+        
+        print(f"{color}{emoji} {message_type} MESSAGE RECEIVED: {size_display} from {source_addr}{Colors.RESET}")
+        
+        # Update message statistics
+        self.update_message_stats(size_bytes)
+        
+        # Additional info for large messages
+        if category in ["LARGE", "VERY_LARGE", "MEGA"]:
+            print(f"{color}   📊 Size Analysis: {size_bytes} bytes = {size_bytes/1024:.2f} KB = {size_bytes/1024/1024:.3f} MB{Colors.RESET}")
+            if size_bytes > 1400:
+                print(f"{color}   ⚠️  Note: Message exceeds typical TCP MSS (1460 bytes){Colors.RESET}")
+            if size_bytes > 4096:
+                print(f"{color}   🔥  Note: Very large message - chunking likely required{Colors.RESET}")
+            if size_bytes > 8192:
+                print(f"{color}   🚀  Note: Mega message - intensive processing required{Colors.RESET}")
     
     def receive_complete_doip_message(self, client_socket) -> Optional[bytes]:
         """Receive a complete DOIP message, handling TCP fragmentation"""
@@ -495,9 +590,9 @@ class DOIPVehicleEmulator:
             complete_message = header_data + payload_data
             total_size = len(complete_message)
             
-            # Use colored output for message size
-            size_display = self.format_message_size(total_size)
-            print(f"Received complete DOIP message: {size_display} (header: 8, payload: {payload_length})")
+            # Use enhanced logging for message size
+            self.log_message_received(total_size, "client", "DOIP")
+            print(f"   📋 Message Details: Header (8 bytes) + Payload ({payload_length} bytes) = {total_size} bytes total")
             
             return bytes(complete_message)
             
@@ -567,12 +662,21 @@ class DOIPVehicleEmulator:
         target_address = struct.unpack('>H', data[10:12])[0]
         uds_data = data[12:]
         
-        print(f"Diagnostic message: SA=0x{source_address:04x}, TA=0x{target_address:04x}, Data={uds_data.hex()}")
+        # Enhanced logging for diagnostic messages
+        uds_data_size = len(uds_data)
+        print(f"{Colors.CYAN}🔧 Diagnostic message: SA=0x{source_address:04x}, TA=0x{target_address:04x}{Colors.RESET}")
+        
+        # Log large diagnostic messages with enhanced details
+        if uds_data_size > 1024:
+            self.log_message_received(uds_data_size, f"SA=0x{source_address:04x}", "DIAGNOSTIC")
+            print(f"   🔍 UDS Data: {uds_data[:32].hex()}... (showing first 32 bytes)")
+        else:
+            print(f"   🔍 UDS Data: {uds_data.hex()}")
         
         # Find the target ECU
         target_ecu = self.ecus.get(target_address)
         if not target_ecu:
-            print(f"No ECU found for target address 0x{target_address:04x}")
+            print(f"{Colors.RED}❌ No ECU found for target address 0x{target_address:04x}{Colors.RESET}")
             return self.create_negative_ack(0x03)
         
         if len(uds_data) == 0:
@@ -687,9 +791,8 @@ class DOIPVehicleEmulator:
                     print(f"{Colors.YELLOW}📭 No data received from {addr}, closing connection{Colors.RESET}")
                     break
                 
-                # Use colored output for received message size
-                size_display = self.format_message_size(len(data))
-                print(f"{Colors.CYAN}📥 TCP received complete message: {size_display} from {addr}{Colors.RESET}")
+                # Use enhanced logging for received message size
+                self.log_message_received(len(data), str(addr), "TCP")
                 
                 header_info = self.parse_doip_header(data)
                 if not header_info:
@@ -820,11 +923,12 @@ class DOIPVehicleEmulator:
             self.stop()
     
     def _monitor_stats(self):
-        """Monitor and display connection statistics periodically"""
+        """Monitor and display connection and message statistics periodically"""
         while self.running:
             time.sleep(30)  # Print stats every 30 seconds
             if self.running:
                 self.print_connection_stats()
+                self.print_message_stats()
     
     def stop(self):
         """Stop the multi-ECU vehicle emulator with final statistics"""
@@ -846,8 +950,9 @@ class DOIPVehicleEmulator:
             self.tcp_socket.close()
         
         # Print final statistics
-        print(f"\n{Colors.CYAN}📊 Final Connection Statistics:{Colors.RESET}")
+        print(f"\n{Colors.CYAN}📊 Final Statistics:{Colors.RESET}")
         self.print_connection_stats()
+        self.print_message_stats()
         print(f"{Colors.GREEN}✅ Multi-ECU DOIP vehicle emulator stopped successfully{Colors.RESET}")
 
 if __name__ == "__main__":
