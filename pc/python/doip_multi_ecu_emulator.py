@@ -349,8 +349,8 @@ class DOIPVehicleEmulator:
         
         # Connection reliability improvements
         self.connection_lock = threading.Lock()
-        self.max_concurrent_connections = 20  # Increased for rapid testing
-        self.connection_rate_limit = 0.01  # Reduced to 10ms between connections
+        self.max_concurrent_connections = 25  # Further increased for rapid testing
+        self.connection_rate_limit = 0.005  # Reduced to 5ms between connections
         self.last_connection_time = 0
         self.connection_retry_delay = 0.1  # Reduced to 100ms delay between retries
         self.max_connection_retries = 3
@@ -890,10 +890,16 @@ class DOIPVehicleEmulator:
             self.unregister_connection(client_socket, addr, str(e))
         finally:
             try:
+                # Proper socket shutdown sequence
                 client_socket.shutdown(socket.SHUT_RDWR)
+                # Brief delay to allow proper shutdown
+                time.sleep(0.01)  # 10ms delay for graceful shutdown
             except:
                 pass
-            client_socket.close()
+            try:
+                client_socket.close()
+            except:
+                pass
             self.unregister_connection(client_socket, addr)
             print(f"{Colors.YELLOW}🔌 TCP client {addr} disconnected{Colors.RESET}")
     
@@ -901,6 +907,8 @@ class DOIPVehicleEmulator:
         """TCP diagnostic server thread with improved connection management"""
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)  # Enable port reuse
+        self.tcp_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Disable Nagle
         self.tcp_socket.settimeout(1.0)
         
         try:
