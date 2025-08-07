@@ -380,6 +380,48 @@ class DOIPVehicleEmulator:
             'largest_message': 0
         }
     
+    def check_port_availability(self, port: int, protocol: str = "TCP") -> bool:
+        """Check if a port is available for binding"""
+        try:
+            if protocol.upper() == "TCP":
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            else:
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            test_socket.bind(('0.0.0.0', port))
+            test_socket.close()
+            return True
+        except OSError:
+            return False
+    
+    def check_required_ports(self) -> bool:
+        """Check if all required ports are available"""
+        print(f"{Colors.CYAN}🔍 Checking port availability...{Colors.RESET}")
+        
+        udp_available = self.check_port_availability(DOIP_UDP_DISCOVERY_PORT, "UDP")
+        tcp_available = self.check_port_availability(DOIP_TCP_DATA_PORT, "TCP")
+        
+        if udp_available:
+            print(f"{Colors.GREEN}✅ UDP Port {DOIP_UDP_DISCOVERY_PORT} is available{Colors.RESET}")
+        else:
+            print(f"{Colors.RED}❌ UDP Port {DOIP_UDP_DISCOVERY_PORT} is already in use{Colors.RESET}")
+        
+        if tcp_available:
+            print(f"{Colors.GREEN}✅ TCP Port {DOIP_TCP_DATA_PORT} is available{Colors.RESET}")
+        else:
+            print(f"{Colors.RED}❌ TCP Port {DOIP_TCP_DATA_PORT} is already in use{Colors.RESET}")
+        
+        if not udp_available or not tcp_available:
+            print(f"\n{Colors.YELLOW}💡 Troubleshooting tips:{Colors.RESET}")
+            print(f"   • Check for existing emulator processes: ps aux | grep doip")
+            print(f"   • Check port usage: lsof -i :{DOIP_UDP_DISCOVERY_PORT} && lsof -i :{DOIP_TCP_DATA_PORT}")
+            print(f"   • Kill existing processes: pkill -f doip_multi_ecu_emulator")
+            print(f"   • Or use different ports by modifying the script")
+            return False
+        
+        return True
+    
     def can_accept_connection(self) -> bool:
         """Check if we can accept a new connection based on rate limiting and capacity"""
         current_time = time.time()
@@ -741,7 +783,15 @@ class DOIPVehicleEmulator:
         
         try:
             self.udp_socket.bind(('0.0.0.0', DOIP_UDP_DISCOVERY_PORT))
-            print(f"UDP discovery server listening on all interfaces:{DOIP_UDP_DISCOVERY_PORT}")
+            print(f"{Colors.GREEN}📡 UDP discovery server listening on all interfaces:{DOIP_UDP_DISCOVERY_PORT}{Colors.RESET}")
+        except OSError as e:
+            if e.errno == 48:  # Address already in use
+                print(f"{Colors.RED}❌ UDP Port {DOIP_UDP_DISCOVERY_PORT} is already in use!{Colors.RESET}")
+                print(f"{Colors.YELLOW}💡 Try: lsof -i :{DOIP_UDP_DISCOVERY_PORT} to see what's using the port{Colors.RESET}")
+                print(f"{Colors.YELLOW}💡 Or kill the existing process and try again{Colors.RESET}")
+            else:
+                print(f"{Colors.RED}❌ UDP server error: {e}{Colors.RESET}")
+            return
             
             while self.running:
                 try:
@@ -851,6 +901,14 @@ class DOIPVehicleEmulator:
             self.tcp_socket.bind(('0.0.0.0', DOIP_TCP_DATA_PORT))
             self.tcp_socket.listen(10)  # Increased backlog for better connection handling
             print(f"{Colors.GREEN}🚀 TCP diagnostic server listening on all interfaces:{DOIP_TCP_DATA_PORT}{Colors.RESET}")
+        except OSError as e:
+            if e.errno == 48:  # Address already in use
+                print(f"{Colors.RED}❌ TCP Port {DOIP_TCP_DATA_PORT} is already in use!{Colors.RESET}")
+                print(f"{Colors.YELLOW}💡 Try: lsof -i :{DOIP_TCP_DATA_PORT} to see what's using the port{Colors.RESET}")
+                print(f"{Colors.YELLOW}💡 Or kill the existing process and try again{Colors.RESET}")
+            else:
+                print(f"{Colors.RED}❌ TCP server error: {e}{Colors.RESET}")
+            return
             
             while self.running:
                 try:
@@ -901,6 +959,13 @@ class DOIPVehicleEmulator:
         print(f"  {Colors.GREEN}✅{Colors.RESET} Dynamic data simulation per ECU type")
         print(f"  {Colors.GREEN}✅{Colors.RESET} Large message support (up to {self.max_message_size/1024:.0f}KB)")
         print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.RESET}")
+        
+        # Check port availability before starting
+        if not self.check_required_ports():
+            print(f"\n{Colors.RED}❌ Cannot start emulator - required ports are not available{Colors.RESET}")
+            return
+        
+        print(f"\n{Colors.GREEN}✅ All ports available - starting emulator...{Colors.RESET}")
         
         self.running = True
         
