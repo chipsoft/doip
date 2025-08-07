@@ -328,7 +328,16 @@ static drv_doip_status_t doip_read_did_from_ecu_and_display(drv_doip_t *handle, 
                                                               did, NULL, 0, response, sizeof(response), &actual_len);
     
     if (status != DRV_DOIP_STATUS_OK) {
-        printf("DOIP: [%s] Failed to read DID 0x%04X (%s): status %d\r\n", ecu_name, did, name, status);
+        // RED FLAG ERROR ALERT
+        printf("\r\n");
+        printf("🚩🚩🚩 RED FLAG ERROR DETECTED 🚩🚩🚩\r\n");
+        printf("======================================\r\n");
+        printf("❌ DIAGNOSTIC READ FAILURE ❌\r\n");
+        printf("ECU: %s\r\n", ecu_name);
+        printf("DID: 0x%04X (%s)\r\n", did, name);
+        printf("Status Code: %d\r\n", status);
+        printf("======================================\r\n");
+        printf("\r\n");
         return status;
     }
     
@@ -541,10 +550,18 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
     printf("  Connecting to ECU %s...\r\n", ecu_name);
     drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(handle, ecu_info);
     if (connect_status != DRV_DOIP_STATUS_OK) {
-        printf("  ERROR: Failed to connect to ECU %s: status %d\r\n", ecu_name, connect_status);
+        // RED FLAG ERROR ALERT
+        printf("\r\n");
+        printf("  🚩🚩🚩 RED FLAG ERROR DETECTED 🚩🚩🚩\r\n");
+        printf("  ======================================\r\n");
+        printf("  ❌ DOIP CONNECTION FAILURE ❌\r\n");
+        printf("  ECU: %s\r\n", ecu_name);
+        printf("  Status Code: %d\r\n", connect_status);
+        printf("  ======================================\r\n");
         if (connect_status == DRV_DOIP_STATUS_TIMEOUT) {
             printf("  INFO: This is expected if no DOIP server is running\r\n");
         }
+        printf("\r\n");
         return TEST_RESULT_FAILED;
     }
     printf("  Successfully connected to ECU %s\r\n", ecu_name);
@@ -588,7 +605,16 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
     large_message_buffer_in_use = false;
     
     if (status != DRV_DOIP_STATUS_OK) {
-        printf("  ERROR: Failed to send large message: status %d\r\n", status);
+        // RED FLAG ERROR ALERT
+        printf("\r\n");
+        printf("  🚩🚩🚩 RED FLAG ERROR DETECTED 🚩🚩🚩\r\n");
+        printf("  ======================================\r\n");
+        printf("  ❌ LARGE MESSAGE SEND FAILURE ❌\r\n");
+        printf("  ECU: %s\r\n", ecu_name);
+        printf("  Status Code: %d\r\n", status);
+        printf("  Message Size: %zu bytes\r\n", buffer_size);
+        printf("  ======================================\r\n");
+        printf("\r\n");
         // Disconnect before returning error
         printf("  Disconnecting from ECU %s after error...\r\n", ecu_name);
         hw_doip_disconnect(handle);
@@ -685,12 +711,40 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
     printf("\r\n=== Large Message Test Results ===\r\n");
     printf("Total Tests: %d\r\n", total_tests);
     printf("Passed: %d\r\n", passed_tests);
-    printf("Failed: %d\r\n", failed_tests);
+    
+    // RED FLAG ALERT FOR FAILED TESTS
+    if (failed_tests > 0) {
+        printf("\r\n");
+        printf("🚩🚩🚩 RED FLAG: %d TESTS FAILED 🚩🚩🚩\r\n", failed_tests);
+        printf("============================================\r\n");
+        printf("❌ FAILED TESTS: %d\r\n", failed_tests);
+        if (failed_tests > 10) {
+            printf("⚠️  WARNING: HIGH FAILURE RATE DETECTED\r\n");
+        } else if (failed_tests > 5) {
+            printf("⚠️  WARNING: MODERATE FAILURE RATE\r\n");
+        }
+        printf("============================================\r\n");
+        printf("\r\n");
+    } else {
+        printf("✅ Failed: %d (Perfect!)\r\n", failed_tests);
+    }
+    
     printf("Skipped: %d (memory constraints)\r\n", skipped_tests);
     if (total_tests > 0) {
-        printf("Success Rate: %.1f%% (%d/%d executed tests)\r\n", 
-               (float)passed_tests * 100.0f / (total_tests - skipped_tests),
-               passed_tests, total_tests - skipped_tests);
+        float success_rate = (float)passed_tests * 100.0f / (total_tests - skipped_tests);
+        printf("Success Rate: %.1f%% (%d/%d executed tests)", 
+               success_rate, passed_tests, total_tests - skipped_tests);
+        
+        // Success rate color coding
+        if (success_rate >= 95.0f) {
+            printf(" ✅ EXCELLENT\r\n");
+        } else if (success_rate >= 85.0f) {
+            printf(" ⚠️  GOOD\r\n");
+        } else if (success_rate >= 70.0f) {
+            printf(" ⚠️  NEEDS IMPROVEMENT\r\n");
+        } else {
+            printf(" 🚩 POOR PERFORMANCE\r\n");
+        }
     }
     printf("Final heap: %zu bytes\r\n", xPortGetFreeHeapSize());
     printf("======================================\r\n\r\n");
@@ -874,7 +928,16 @@ void task_doip_client_create(drv_doip_t *doip_handle)
 	/* Create task for DOIP client operations */
 	if (xTaskCreate(doip_client_task, "DOIPClient", DOIP_CLIENT_TASK_STACK_SIZE, 
 	                (void *)doip_handle, DOIP_CLIENT_TASK_PRIORITY, &xDoip_Client_Task) != pdPASS) {
-		printf("DOIP Client: Failed to create DOIP client task\r\n");
+		// CRITICAL RED FLAG ERROR
+		printf("\r\n");
+		printf("🚩🚩🚩 CRITICAL RED FLAG ERROR 🚩🚩🚩\r\n");
+		printf("=========================================\r\n");
+		printf("💥 FATAL: DOIP TASK CREATION FAILED 💥\r\n");
+		printf("Task: DOIPClient\r\n");
+		printf("Stack Size: %d bytes\r\n", DOIP_CLIENT_TASK_STACK_SIZE);
+		printf("SYSTEM HALTED - RECOVERY REQUIRED\r\n");
+		printf("=========================================\r\n");
+		printf("\r\n");
 		while (1) {
 			;
 		}
@@ -1104,7 +1167,16 @@ void task_diagnostic_processor_create(drv_doip_t *doip_handle)
     /* Create task for diagnostic processing */
     if (xTaskCreate(diagnostic_processor_task, "DiagProcessor", DOIP_CLIENT_TASK_STACK_SIZE, 
                     (void *)doip_handle, DOIP_CLIENT_TASK_PRIORITY + 1, &xDiagnostic_Processor_Task) != pdPASS) {
-        printf("Diagnostic Processor: Failed to create diagnostic processor task\r\n");
+        // CRITICAL RED FLAG ERROR
+        printf("\r\n");
+        printf("🚩🚩🚩 CRITICAL RED FLAG ERROR 🚩🚩🚩\r\n");
+        printf("=========================================\r\n");
+        printf("💥 FATAL: DIAGNOSTIC TASK CREATION FAILED 💥\r\n");
+        printf("Task: DiagProcessor\r\n");
+        printf("Stack Size: %d bytes\r\n", DOIP_CLIENT_TASK_STACK_SIZE);
+        printf("SYSTEM HALTED - RECOVERY REQUIRED\r\n");
+        printf("=========================================\r\n");
+        printf("\r\n");
         while (1) {
             ;
         }
