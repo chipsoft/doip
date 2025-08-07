@@ -24,9 +24,47 @@
 #define DOIP_STREAM_TRIGGER_LEVEL       (1)
 
 // Add chunking constants at the top of the file
-#define DOIP_TCP_CHUNK_SIZE          1400    /**< TCP chunk size (slightly less than MSS for safety) */
 #define DOIP_CHUNK_RETRY_MAX         3       /**< Maximum retry attempts for chunk transmission */
 #define DOIP_CHUNK_TIMEOUT_MS        5000    /**< Timeout for chunk transmission in milliseconds */
+
+// Universal chunk size calculation based on lwIP parameters
+#define DOIP_TCP_CHUNK_SIZE          (TCP_MSS - 60)  /**< Dynamic chunk size based on TCP_MSS with safety margin */
+#define DOIP_CHUNK_SIZE_MIN          512     /**< Minimum chunk size for very small TCP_MSS values */
+#define DOIP_CHUNK_SIZE_MAX          2048    /**< Maximum chunk size to prevent memory issues */
+
+// Helper function to get optimal chunk size based on lwIP configuration
+static inline uint32_t doip_get_optimal_chunk_size(void)
+{
+    uint32_t calculated_size = TCP_MSS - 60;  // Safety margin of 60 bytes
+    
+    // Ensure chunk size is within reasonable bounds
+    if (calculated_size < DOIP_CHUNK_SIZE_MIN) {
+        calculated_size = DOIP_CHUNK_SIZE_MIN;
+        printf("DOIP Raw lwIP: Warning - TCP_MSS too small (%d), using minimum chunk size (%d)\r\n", 
+               TCP_MSS, DOIP_CHUNK_SIZE_MIN);
+    } else if (calculated_size > DOIP_CHUNK_SIZE_MAX) {
+        calculated_size = DOIP_CHUNK_SIZE_MAX;
+        printf("DOIP Raw lwIP: Warning - TCP_MSS too large (%d), using maximum chunk size (%d)\r\n", 
+               TCP_MSS, DOIP_CHUNK_SIZE_MAX);
+    }
+    
+    printf("DOIP Raw lwIP: Calculated optimal chunk size: %u bytes (TCP_MSS: %d, safety margin: 60)\r\n", 
+           calculated_size, TCP_MSS);
+    
+    return calculated_size;
+}
+
+// Helper function to get TCP buffer information for debugging
+static inline void doip_print_tcp_buffer_info(struct tcp_pcb *pcb)
+{
+    if (pcb == NULL) {
+        printf("DOIP Raw lwIP: TCP PCB is NULL\r\n");
+        return;
+    }
+    
+    printf("DOIP Raw lwIP: TCP Buffer Info - Send Buffer: %u bytes, Window: %u bytes, MSS: %u bytes\r\n",
+           tcp_sndbuf(pcb), pcb->snd_wnd, pcb->mss);
+}
 
 // Hardware context structure
 typedef struct {
@@ -264,9 +302,13 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
     
     printf("DOIP Raw lwIP: Starting chunked transmission of %u bytes\r\n", (unsigned int)payload_length);
     
+    // Print TCP buffer information for debugging
+    doip_print_tcp_buffer_info(context->tcp_pcb);
+    
     while (remaining_bytes > 0) {
-        // Calculate chunk size (don't exceed TCP send buffer)
-        uint32_t chunk_size = (remaining_bytes > DOIP_TCP_CHUNK_SIZE) ? DOIP_TCP_CHUNK_SIZE : remaining_bytes;
+        // Calculate optimal chunk size based on lwIP configuration
+        uint32_t optimal_chunk_size = doip_get_optimal_chunk_size();
+        uint32_t chunk_size = (remaining_bytes > optimal_chunk_size) ? optimal_chunk_size : remaining_bytes;
         
         // Check TCP send buffer space
         uint16_t available_space = tcp_sndbuf(context->tcp_pcb);
