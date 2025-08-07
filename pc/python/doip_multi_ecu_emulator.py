@@ -349,10 +349,10 @@ class DOIPVehicleEmulator:
         
         # Connection reliability improvements
         self.connection_lock = threading.Lock()
-        self.max_concurrent_connections = 25  # Further increased for rapid testing
-        self.connection_rate_limit = 0.005  # Reduced to 5ms between connections
+        self.max_concurrent_connections = 50  # Increased for rapid testing
+        self.connection_rate_limit = 0.001  # Reduced to 1ms between connections
         self.last_connection_time = 0
-        self.connection_retry_delay = 0.1  # Reduced to 100ms delay between retries
+        self.connection_retry_delay = 0.05  # Reduced to 50ms delay between retries
         self.max_connection_retries = 3
         
         # Alive check functionality
@@ -396,8 +396,14 @@ class DOIPVehicleEmulator:
             return False
     
     def check_required_ports(self) -> bool:
-        """Check if all required ports are available"""
+        """Check if all required ports are available with enhanced diagnostics"""
         print(f"{Colors.CYAN}🔍 Checking port availability...{Colors.RESET}")
+        
+        # Show network interface information
+        import socket as sock_info
+        hostname = sock_info.gethostname()
+        local_ip = sock_info.gethostbyname(hostname)
+        print(f"{Colors.CYAN}🌐 Network Info: Hostname={hostname}, Local IP={local_ip}{Colors.RESET}")
         
         udp_available = self.check_port_availability(DOIP_UDP_DISCOVERY_PORT, "UDP")
         tcp_available = self.check_port_availability(DOIP_TCP_DATA_PORT, "TCP")
@@ -599,38 +605,54 @@ class DOIPVehicleEmulator:
     def receive_complete_doip_message(self, client_socket) -> Optional[bytes]:
         """Receive a complete DOIP message, handling TCP fragmentation"""
         try:
+            print(f"{Colors.CYAN}📥 Starting to receive DOIP message...{Colors.RESET}")
+            
             # First, receive the 8-byte DOIP header
             header_data = bytearray()
             while len(header_data) < 8:
                 chunk = client_socket.recv(8 - len(header_data))
                 if not chunk:
+                    print(f"{Colors.RED}❌ No data received while reading header (received {len(header_data)}/8 bytes){Colors.RESET}")
                     return None
                 header_data.extend(chunk)
+                print(f"{Colors.CYAN}📋 Received header chunk: {len(chunk)} bytes (total: {len(header_data)}/8){Colors.RESET}")
+            
+            print(f"{Colors.GREEN}✅ Complete DOIP header received: {header_data.hex()}{Colors.RESET}")
             
             # Parse the header to get payload length
             header_info = self.parse_doip_header(bytes(header_data))
             if not header_info:
-                print("Invalid DOIP header received")
+                print(f"{Colors.RED}❌ Invalid DOIP header received{Colors.RESET}")
                 return None
                 
             version, payload_type, payload_length = header_info
+            print(f"{Colors.CYAN}📋 Parsed header: version=0x{version:02x}, type=0x{payload_type:04x}, length={payload_length}{Colors.RESET}")
             
             # Check message size limit
             total_message_size = 8 + payload_length
             if total_message_size > self.max_message_size:
-                print(f"Message too large: {total_message_size} bytes (max: {self.max_message_size})")
+                print(f"{Colors.RED}❌ Message too large: {total_message_size} bytes (max: {self.max_message_size}){Colors.RESET}")
                 return None
             
             # Receive the payload
+            print(f"{Colors.CYAN}📥 Starting to receive payload ({payload_length} bytes)...{Colors.RESET}")
             payload_data = bytearray()
+            chunks_received = 0
             while len(payload_data) < payload_length:
-                chunk = client_socket.recv(payload_length - len(payload_data))
+                remaining = payload_length - len(payload_data)
+                chunk_size = min(remaining, 4096)  # Read in 4KB chunks max
+                chunk = client_socket.recv(chunk_size)
                 if not chunk:
+                    print(f"{Colors.RED}❌ No data received while reading payload (received {len(payload_data)}/{payload_length} bytes){Colors.RESET}")
                     return None
                 payload_data.extend(chunk)
+                chunks_received += 1
+                print(f"{Colors.CYAN}📋 Received payload chunk #{chunks_received}: {len(chunk)} bytes (total: {len(payload_data)}/{payload_length}){Colors.RESET}")
             
             complete_message = header_data + payload_data
             total_size = len(complete_message)
+            
+            print(f"{Colors.GREEN}✅ Complete DOIP message received: {total_size} bytes total{Colors.RESET}")
             
             # Use enhanced logging for message size
             self.log_message_received(total_size, "client", "DOIP")
@@ -638,8 +660,11 @@ class DOIPVehicleEmulator:
             
             return bytes(complete_message)
             
+        except socket.timeout as e:
+            print(f"{Colors.RED}⏰ Timeout receiving DOIP message: {e}{Colors.RESET}")
+            return None
         except Exception as e:
-            print(f"Error receiving DOIP message: {e}")
+            print(f"{Colors.RED}❌ Error receiving DOIP message: {e}{Colors.RESET}")
             return None
     
     def handle_vehicle_identification_request(self, addr) -> List[bytes]:
@@ -742,6 +767,7 @@ class DOIPVehicleEmulator:
                 print(f"ECU {target_ecu.ecu_type} does not support DID 0x{did:04x}")
                 return self.create_negative_ack(0x31)  # Request out of range
         elif service_id == UDS_LARGE_MESSAGE_TEST:
+            print(f"{Colors.MAGENTA}🔧 Handling large message test service (received {len(uds_data)} bytes){Colors.RESET}")
             # Handle large message test service
             response_data = target_ecu.handle_large_message_test(uds_data[1:])
             
@@ -750,11 +776,16 @@ class DOIPVehicleEmulator:
                 uds_response = struct.pack('B', service_id + UDS_POSITIVE_RESPONSE_MASK) + response_data
                 payload = struct.pack('>HH', target_address, source_address) + uds_response
                 header = self.create_doip_header(DOIP_DIAGNOSTIC_MESSAGE, len(payload))
+                full_response = header + payload
                 
-                print(f"ECU {target_ecu.ecu_type} sending large message test response: {len(response_data)} bytes")
-                return header + payload
+                print(f"{Colors.MAGENTA}ECU {target_ecu.ecu_type} sending large message test response: {len(response_data)} bytes response data{Colors.RESET}")
+                print(f"{Colors.MAGENTA}   📦 Full DOIP response: {len(full_response)} bytes (header: 8, payload: {len(payload)}){Colors.RESET}")
+                return full_response
+            else:
+                print(f"{Colors.RED}❌ Large message test failed - no response data generated{Colors.RESET}")
         
-        print(f"Unsupported service 0x{service_id:02x}")
+        print(f"{Colors.YELLOW}⚠️ Unsupported service 0x{service_id:02x} for ECU {target_ecu.ecu_type}{Colors.RESET}")
+        print(f"{Colors.YELLOW}   Available services: 0x{UDS_READ_DATA_BY_IDENTIFIER:02x} (Read DID), 0x{UDS_LARGE_MESSAGE_TEST:02x} (Large Message Test){Colors.RESET}")
         return self.create_negative_ack(0x11)  # Service not supported
     
     def create_negative_ack(self, nack_code: int) -> bytes:
@@ -830,7 +861,8 @@ class DOIPVehicleEmulator:
     
     def handle_tcp_client(self, client_socket, addr):
         """Handle individual TCP client connection with improved reliability"""
-        print(f"{Colors.BLUE}🔗 TCP client connected from {addr}{Colors.RESET}")
+        print(f"{Colors.BLUE}🔗 TCP client handler started for {addr}{Colors.RESET}")
+        print(f"{Colors.BLUE}🔍 Client socket info: {client_socket.getsockname()} -> {client_socket.getpeername()}{Colors.RESET}")
         
         # Register the connection
         self.register_connection(client_socket, addr)
@@ -859,16 +891,23 @@ class DOIPVehicleEmulator:
                     if payload_type == DOIP_ROUTING_ACTIVATION_REQUEST:
                         print(f"{Colors.GREEN}🔄 TCP: Handling routing activation request from {addr}{Colors.RESET}")
                         response = self.handle_routing_activation_request(data, addr)
+                        print(f"{Colors.CYAN}📤 Sending routing activation response ({len(response)} bytes)...{Colors.RESET}")
                         client_socket.send(response)
                         print(f"{Colors.GREEN}✅ Routing activation successful for {addr}{Colors.RESET}")
                     elif payload_type == DOIP_DIAGNOSTIC_MESSAGE:
-                        print(f"{Colors.GREEN}🔧 TCP: Handling diagnostic message from {addr}{Colors.RESET}")
+                        print(f"{Colors.GREEN}🔧 TCP: Handling diagnostic message from {addr} ({len(data)} bytes){Colors.RESET}")
                         response = self.handle_diagnostic_message(data)
-                        client_socket.send(response)
-                        print(f"{Colors.GREEN}✅ Diagnostic response sent to {addr}{Colors.RESET}")
+                        response_size = len(response) if response else 0
+                        print(f"{Colors.CYAN}📤 Sending diagnostic response ({response_size} bytes)...{Colors.RESET}")
+                        if response:
+                            bytes_sent = client_socket.send(response)
+                            print(f"{Colors.GREEN}✅ Diagnostic response sent to {addr} ({bytes_sent}/{response_size} bytes){Colors.RESET}")
+                        else:
+                            print(f"{Colors.RED}❌ No diagnostic response generated{Colors.RESET}")
                     elif payload_type == DOIP_ALIVE_CHECK_REQUEST:
                         print(f"{Colors.GREEN}💓 TCP: Handling alive check request from {addr}{Colors.RESET}")
                         response = self.handle_alive_check_request(data, addr)
+                        print(f"{Colors.CYAN}📤 Sending alive check response ({len(response)} bytes)...{Colors.RESET}")
                         client_socket.send(response)
                         print(f"{Colors.GREEN}✅ Alive check response sent to {addr}{Colors.RESET}")
                     elif payload_type == DOIP_ALIVE_CHECK_RESPONSE:
@@ -905,34 +944,57 @@ class DOIPVehicleEmulator:
     
     def tcp_server(self):
         """TCP diagnostic server thread with improved connection management"""
+        print(f"{Colors.CYAN}🔧 Initializing TCP server...{Colors.RESET}")
+        
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        # Improved socket configuration - remove problematic SO_REUSEPORT
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)  # Enable port reuse
+        # Removed SO_REUSEPORT as it can cause binding issues on some systems
         self.tcp_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Disable Nagle
-        self.tcp_socket.settimeout(1.0)
+        self.tcp_socket.settimeout(5.0)  # Increased timeout for better reliability
         
         try:
+            print(f"{Colors.CYAN}🔗 Binding TCP server to 0.0.0.0:{DOIP_TCP_DATA_PORT}...{Colors.RESET}")
             self.tcp_socket.bind(('0.0.0.0', DOIP_TCP_DATA_PORT))
-            self.tcp_socket.listen(10)  # Increased backlog for better connection handling
-            print(f"{Colors.GREEN}🚀 TCP diagnostic server listening on all interfaces:{DOIP_TCP_DATA_PORT}{Colors.RESET}")
+            
+            print(f"{Colors.CYAN}👂 Setting TCP server to listen mode (backlog: 20)...{Colors.RESET}")
+            self.tcp_socket.listen(20)  # Increased backlog for better connection handling
+            
+            # Get actual bound address for confirmation
+            bound_addr = self.tcp_socket.getsockname()
+            print(f"{Colors.GREEN}🚀 TCP diagnostic server SUCCESSFULLY listening on {bound_addr[0]}:{bound_addr[1]}{Colors.RESET}")
+            print(f"{Colors.GREEN}✅ TCP server ready to accept connections{Colors.RESET}")
+            
         except OSError as e:
-            if e.errno == 48:  # Address already in use
-                print(f"{Colors.RED}❌ TCP Port {DOIP_TCP_DATA_PORT} is already in use!{Colors.RESET}")
+            error_msg = f"TCP server bind/listen error: {e}"
+            if e.errno == 48 or e.errno == 98:  # Address already in use (macOS/Linux)
+                print(f"{Colors.RED}❌ TCP Port {DOIP_TCP_DATA_PORT} is already in use! (errno: {e.errno}){Colors.RESET}")
                 print(f"{Colors.YELLOW}💡 Try: lsof -i :{DOIP_TCP_DATA_PORT} to see what's using the port{Colors.RESET}")
-                print(f"{Colors.YELLOW}💡 Or kill the existing process and try again{Colors.RESET}")
+                print(f"{Colors.YELLOW}💡 Or kill the existing process: sudo kill -9 $(lsof -t -i:{DOIP_TCP_DATA_PORT}){Colors.RESET}")
+            elif e.errno == 13:  # Permission denied
+                print(f"{Colors.RED}❌ Permission denied - may need root privileges for port {DOIP_TCP_DATA_PORT}{Colors.RESET}")
             else:
-                print(f"{Colors.RED}❌ TCP server error: {e}{Colors.RESET}")
+                print(f"{Colors.RED}❌ TCP server error (errno: {e.errno}): {e}{Colors.RESET}")
+            print(f"{Colors.RED}🚫 TCP server failed to start: {error_msg}{Colors.RESET}")
             return
             
         # Main TCP server loop - now properly placed outside exception handling
+        print(f"{Colors.CYAN}🔄 Starting TCP server main loop...{Colors.RESET}")
+        connection_count = 0
+        
         try:
             while self.running:
                 try:
+                    print(f"{Colors.CYAN}👂 TCP server waiting for connections (total handled: {connection_count})...{Colors.RESET}")
                     client_socket, addr = self.tcp_socket.accept()
+                    connection_count += 1
+                    
+                    print(f"{Colors.GREEN}🔗 New TCP connection #{connection_count} from {addr}{Colors.RESET}")
                     
                     # Check if we can accept this connection
                     if not self.can_accept_connection():
-                        print(f"{Colors.RED}⏸️ Connection rate limited or capacity full, rejecting {addr}{Colors.RESET}")
+                        print(f"{Colors.RED}⏸️ Connection rate limited or capacity full, rejecting {addr} (#{connection_count}){Colors.RESET}")
                         client_socket.close()
                         time.sleep(self.connection_retry_delay)
                         continue
@@ -942,22 +1004,37 @@ class DOIPVehicleEmulator:
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     
+                    # Set receive timeout for client sockets
+                    client_socket.settimeout(30.0)  # 30 second timeout for client operations
+                    
                     client_thread = threading.Thread(
                         target=self.handle_tcp_client,
                         args=(client_socket, addr),
-                        daemon=True
+                        daemon=True,
+                        name=f"DoIP-Client-{addr[0]}:{addr[1]}"
                     )
                     client_thread.start()
+                    print(f"{Colors.GREEN}✅ Started handler thread for connection {addr} (#{connection_count}){Colors.RESET}")
                     
                 except socket.timeout:
+                    # Timeout is expected - just continue listening
                     continue
                 except Exception as e:
                     if self.running:
-                        print(f"{Colors.RED}❌ TCP server error: {e}{Colors.RESET}")
+                        print(f"{Colors.RED}❌ TCP server accept error (connection #{connection_count}): {e}{Colors.RESET}")
+                        print(f"{Colors.YELLOW}🔄 TCP server continuing to listen...{Colors.RESET}")
+                        time.sleep(0.1)  # Brief pause before retry
                         
+        except Exception as e:
+            print(f"{Colors.RED}💥 TCP server main loop error: {e}{Colors.RESET}")
         finally:
+            print(f"{Colors.YELLOW}🛑 TCP server shutting down (handled {connection_count} connections total)...{Colors.RESET}")
             if self.tcp_socket:
-                self.tcp_socket.close()
+                try:
+                    self.tcp_socket.close()
+                    print(f"{Colors.GREEN}✅ TCP server socket closed successfully{Colors.RESET}")
+                except Exception as e:
+                    print(f"{Colors.RED}❌ Error closing TCP server socket: {e}{Colors.RESET}")
     
     def start(self):
         """Start the multi-ECU DOIP vehicle emulator with improved reliability"""
@@ -968,11 +1045,12 @@ class DOIPVehicleEmulator:
             print(f"  {Colors.GREEN}✅ {ecu.ecu_type}:{Colors.RESET} Logical Address 0x{logical_addr:04x}, VIN {ecu.vin}")
         
         print(f"")
-        print(f"{Colors.CYAN}Supported DOIP Features:{Colors.RESET}")
+        print(f"{Colors.CYAN}Emulator Configuration:{Colors.RESET}")
         print(f"  {Colors.GREEN}✅{Colors.RESET} Multi-ECU vehicle identification")
         print(f"  {Colors.GREEN}✅{Colors.RESET} ECU-specific diagnostic routing")
         print(f"  {Colors.GREEN}✅{Colors.RESET} Concurrent client connections (max: {self.max_concurrent_connections})")
-        print(f"  {Colors.GREEN}✅{Colors.RESET} Connection rate limiting ({self.connection_rate_limit*1000:.0f}ms min interval)")
+        print(f"  {Colors.GREEN}✅{Colors.RESET} Connection rate limiting ({self.connection_rate_limit*1000:.1f}ms min interval)")
+        print(f"  {Colors.GREEN}✅{Colors.RESET} Connection retry delay ({self.connection_retry_delay*1000:.0f}ms)")
         print(f"  {Colors.GREEN}✅{Colors.RESET} Dynamic data simulation per ECU type")
         print(f"  {Colors.GREEN}✅{Colors.RESET} Large message support (up to {self.max_message_size/1024:.0f}KB)")
         print(f"{Colors.YELLOW}Press Ctrl+C to stop{Colors.RESET}")
@@ -982,20 +1060,42 @@ class DOIPVehicleEmulator:
             print(f"\n{Colors.RED}❌ Cannot start emulator - required ports are not available{Colors.RESET}")
             return
         
-        print(f"\n{Colors.GREEN}✅ All ports available - starting emulator...{Colors.RESET}")
+        print(f"\n{Colors.GREEN}✅ All ports available - starting emulator services...{Colors.RESET}")
         
         self.running = True
         
-        # Start UDP and TCP servers
-        udp_thread = threading.Thread(target=self.udp_server, daemon=True)
-        tcp_thread = threading.Thread(target=self.tcp_server, daemon=True)
-        
+        # Start UDP and TCP servers with improved thread naming and error handling
+        print(f"{Colors.CYAN}🚀 Starting UDP discovery server thread...{Colors.RESET}")
+        udp_thread = threading.Thread(target=self.udp_server, daemon=True, name="DoIP-UDP-Server")
         udp_thread.start()
+        
+        print(f"{Colors.CYAN}🚀 Starting TCP diagnostic server thread...{Colors.RESET}")
+        tcp_thread = threading.Thread(target=self.tcp_server, daemon=True, name="DoIP-TCP-Server")
         tcp_thread.start()
         
+        # Give servers time to initialize
+        print(f"{Colors.CYAN}⏳ Waiting for servers to initialize...{Colors.RESET}")
+        time.sleep(0.5)
+        
+        # Check if threads are running
+        if udp_thread.is_alive():
+            print(f"{Colors.GREEN}✅ UDP server thread is running{Colors.RESET}")
+        else:
+            print(f"{Colors.RED}❌ UDP server thread failed to start{Colors.RESET}")
+            
+        if tcp_thread.is_alive():
+            print(f"{Colors.GREEN}✅ TCP server thread is running{Colors.RESET}")
+        else:
+            print(f"{Colors.RED}❌ TCP server thread failed to start{Colors.RESET}")
+        
         # Start statistics monitoring thread
-        stats_thread = threading.Thread(target=self._monitor_stats, daemon=True)
+        print(f"{Colors.CYAN}📊 Starting statistics monitoring thread...{Colors.RESET}")
+        stats_thread = threading.Thread(target=self._monitor_stats, daemon=True, name="DoIP-Stats-Monitor")
         stats_thread.start()
+        
+        print(f"\n{Colors.GREEN}🎉 Multi-ECU DOIP Vehicle Emulator is now running!{Colors.RESET}")
+        print(f"{Colors.GREEN}📡 Listening for UDP discovery on port {DOIP_UDP_DISCOVERY_PORT}{Colors.RESET}")
+        print(f"{Colors.GREEN}🔗 Listening for TCP connections on port {DOIP_TCP_DATA_PORT}{Colors.RESET}")
         
         try:
             while True:

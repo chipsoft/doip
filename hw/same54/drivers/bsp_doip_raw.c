@@ -279,15 +279,39 @@ static void doip_tcp_err(void *arg, err_t err)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)arg;
     
-    printf("DOIP Client: Raw TCP error callback - err=%d\r\n", err);
+    // Enhanced error reporting with error code explanation
+    const char* err_str = "UNKNOWN";
+    switch(err) {
+        case ERR_ABRT: err_str = "Connection aborted (ERR_ABRT)"; break;
+        case ERR_RST: err_str = "Connection reset (ERR_RST)"; break;
+        case ERR_CONN: err_str = "Not connected (ERR_CONN)"; break;
+        case ERR_TIMEOUT: err_str = "Timeout (ERR_TIMEOUT)"; break;
+        case ERR_MEM: err_str = "Out of memory (ERR_MEM)"; break;
+        default: break;
+    }
+    
+    printf("DOIP Client: Raw TCP error callback - err=%d (%s)\r\n", err, err_str);
     
     context->tcp_pcb = NULL; // PCB is already freed by lwIP
-    context->current_state = DRV_DOIP_STATE_ERROR;
+    
+    // Handle different error types appropriately
+    if (err == ERR_ABRT) {
+        printf("DOIP Client: Connection was aborted - this may be normal during disconnect\r\n");
+        context->current_state = DRV_DOIP_STATE_IDLE;  // Don't mark as error if it's just an abort
+    } else {
+        printf("DOIP Client: Unexpected TCP error - marking connection as failed\r\n");
+        context->current_state = DRV_DOIP_STATE_ERROR;
+    }
     
     if (context->connected_sem != NULL) {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
         xSemaphoreGiveFromISR(context->connected_sem, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+    
+    // Clear stream buffer on any error (safe to call from ISR context)
+    if (context->stream_buffer != NULL) {
+        xStreamBufferReset(context->stream_buffer);
     }
 }
 
@@ -931,6 +955,20 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     tcp_sent(context->tcp_pcb, doip_tcp_sent);
     tcp_err(context->tcp_pcb, doip_tcp_err);
     
+    // Ensure we're starting from a clean state
+    if (context->current_state == DRV_DOIP_STATE_ERROR) {
+        printf("DOIP Client: Resetting error state before new connection\r\n");
+        context->current_state = DRV_DOIP_STATE_IDLE;
+        
+        // Clear any lingering stream buffer data
+        if (context->stream_buffer != NULL) {
+            xStreamBufferReset(context->stream_buffer);
+        }
+        
+        // Small delay to ensure TCP stack is ready
+        vTaskDelay(pdMS_TO_TICKS(200)); // 200ms delay
+    }
+    
     // Connect to server
     context->current_state = DRV_DOIP_STATE_CONNECTING;
     err = tcp_connect(context->tcp_pcb, &server_addr, server_port, doip_tcp_connected);
@@ -1033,8 +1071,31 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
     printf("DOIP Client: Raw TCP disconnecting\r\n");
     
     if (context->tcp_pcb != NULL) {
-        tcp_close(context->tcp_pcb);
-        context->tcp_pcb = NULL;
+        printf("DOIP Client: Shutting down TCP connection gracefully\r\n");
+        
+        // Remove callbacks to prevent issues during shutdown
+        tcp_err(context->tcp_pcb, NULL);
+        tcp_recv(context->tcp_pcb, NULL);
+        tcp_sent(context->tcp_pcb, NULL);
+        
+        // Attempt graceful shutdown first
+        err_t close_err = tcp_shutdown(context->tcp_pcb, 1, 1); // Shutdown both RX and TX
+        if (close_err != ERR_OK) {
+            printf("DOIP Client: TCP shutdown failed (err=%d), forcing abort\r\n", close_err);
+            tcp_abort(context->tcp_pcb);
+            context->tcp_pcb = NULL;  // tcp_abort frees the PCB
+        } else {
+            printf("DOIP Client: TCP shutdown successful, closing connection\r\n");
+            close_err = tcp_close(context->tcp_pcb);
+            if (close_err != ERR_OK) {
+                printf("DOIP Client: TCP close failed (err=%d), aborting\r\n", close_err);
+                tcp_abort(context->tcp_pcb);
+            }
+            context->tcp_pcb = NULL;
+        }
+        
+        // Add a small delay to allow TCP stack to process the disconnect
+        vTaskDelay(pdMS_TO_TICKS(100)); // 100ms delay
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
@@ -1044,6 +1105,7 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
         xStreamBufferReset(context->stream_buffer);
     }
     
+    printf("DOIP Client: Disconnect completed\r\n");
     return DRV_DOIP_STATUS_OK;
 }
 

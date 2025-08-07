@@ -139,6 +139,17 @@ int main(void)
 			
 	/* Initialize SEGGER RTT for debug output */
 	rtt_printf_init();
+	
+	/* DoIP configuration validation */
+	printf("\r\n=== DoIP Configuration Status ===\r\n");
+	printf("DOIP Small Buffer Size: %d bytes\r\n", DOIP_SMALL_PAYLOAD_SIZE);
+	printf("DOIP Static Send Buffer: %d bytes\r\n", DOIP_LARGE_SEND_BUFFER_SIZE);
+	printf("DOIP Task Stack Size: %d bytes\r\n", DOIP_CLIENT_TASK_STACK_SIZE);
+	printf("FreeRTOS Heap Size: %d bytes\r\n", configTOTAL_HEAP_SIZE);
+	printf("Max send payload: %d bytes (static)\r\n", DOIP_LARGE_SEND_BUFFER_SIZE);
+	printf("Max receive payload: %d bytes (stored)\r\n", DOIP_SMALL_PAYLOAD_SIZE);
+	printf("Large message support: %s\r\n", DOIP_ENABLE_LARGE_MESSAGES ? "ENABLED" : "DISABLED");
+	printf("==================================\r\n\r\n");
 
 
 	/* Create application tasks */

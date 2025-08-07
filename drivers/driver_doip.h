@@ -62,13 +62,14 @@
  * @{
  */
 #define DOIP_SMALL_PAYLOAD_SIZE       1024    /**< Small message buffer size (stack allocated) */
+#define DOIP_MEDIUM_PAYLOAD_SIZE      8192    /**< Medium message buffer size for testing */
 #define DOIP_LARGE_PAYLOAD_SIZE       65536   /**< Large message buffer size (heap allocated) */
 #define DOIP_MAX_SAFE_PAYLOAD_SIZE    262144  /**< Maximum safe payload size (256KB) */
 #define DOIP_ENABLE_LARGE_MESSAGES    1       /**< Enable large message support (0=disable, 1=enable) */
 /** @} */
 
-// Legacy compatibility (deprecated)
-#define DOIP_MAX_PAYLOAD_SIZE         DOIP_SMALL_PAYLOAD_SIZE  /**< @deprecated Use DOIP_SMALL_PAYLOAD_SIZE */
+// Legacy compatibility (deprecated) - Updated for medium size support
+#define DOIP_MAX_PAYLOAD_SIZE         DOIP_MEDIUM_PAYLOAD_SIZE  /**< @deprecated Use DOIP_MEDIUM_PAYLOAD_SIZE for testing */
 /** @} */
 
 /**
@@ -163,7 +164,15 @@
  * @{
  */
 #define DOIP_CLIENT_TASK_PRIORITY       (tskIDLE_PRIORITY + 3)  /**< DoIP client task priority */
-#define DOIP_CLIENT_TASK_STACK_SIZE     (2048)                  /**< Task stack size in bytes */
+#define DOIP_CLIENT_TASK_STACK_SIZE     (2560)                  /**< Task stack size in bytes (2.5KB - optimized for static send buffer) */
+/** @} */
+
+/**
+ * @defgroup doip_static_send_buffer Static Send Buffer Configuration
+ * @brief Configuration for static buffer used only for sending large messages
+ * @{
+ */
+#define DOIP_LARGE_SEND_BUFFER_SIZE     8192   /**< Static send buffer size (8KB) */
 /** @} */
 
 /**
@@ -176,6 +185,7 @@
  * @brief DoIP message structure (small messages)
  * @details Represents a DoIP message with stack-allocated payload buffer
  * @note Use for messages <= DOIP_SMALL_PAYLOAD_SIZE (1024 bytes)
+ * @note Large messages use separate static buffer for sending only
  */
 typedef struct {
     uint8_t  protocol_version;         /**< DoIP protocol version (0x02) */
@@ -333,7 +343,7 @@ typedef struct drv_doip_raw_packet {
     uint32_t payload_length;
     
     // Payload data
-    uint8_t  payload[DOIP_MAX_PAYLOAD_SIZE];
+    uint8_t  payload[DOIP_SMALL_PAYLOAD_SIZE];
     size_t   actual_payload_length;
     
     // Source information
@@ -699,6 +709,7 @@ void doip_utils_create_alive_check_response(uint8_t *buffer, const uint8_t *requ
  * @return true if payload valid, false otherwise
  */
 bool doip_utils_handle_alive_check_payload(const uint8_t *payload, uint32_t payload_length, uint16_t *source_address);
+
 
 /** @} */
 

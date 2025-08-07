@@ -201,9 +201,9 @@ void assert_triggered(const char *file, uint32_t line);
 #define configSUPPORT_DYNAMIC_ALLOCATION             1
 #endif
 
-/* configTOTAL_HEAP_SIZE sets the total size of the FreeRTOS heap - preserve 42KB */
+/* configTOTAL_HEAP_SIZE sets the total size of the FreeRTOS heap - optimized for static buffers */
 #ifndef configTOTAL_HEAP_SIZE
-#define configTOTAL_HEAP_SIZE                        42000
+#define configTOTAL_HEAP_SIZE                        45000  /* 45KB with static buffer optimization */
 #endif
 
 /* Set configAPPLICATION_ALLOCATED_HEAP to 0 to have the linker allocate heap */

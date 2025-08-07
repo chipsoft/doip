@@ -725,17 +725,45 @@ static drv_doip_status_t drv_doip_register_packet_callback_impl(const void *hw_c
 
 // Helper function implementations
 
+// Static buffer for sending large messages (8KB) - used only when needed
+static uint8_t large_send_buffer[DOIP_HEADER_SIZE + DOIP_LARGE_SEND_BUFFER_SIZE];
+
 static bool doip_send_tcp_message_socket(int socket, const doip_message_t *msg)
 {
-    uint8_t buffer[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
     uint32_t total_length = DOIP_HEADER_SIZE + msg->payload_length;
+    uint8_t *send_buffer;
+    
+    // Choose buffer based on message size
+    if (msg->payload_length <= DOIP_SMALL_PAYLOAD_SIZE) {
+        // Use small stack buffer for normal messages
+        uint8_t small_buffer[DOIP_HEADER_SIZE + DOIP_SMALL_PAYLOAD_SIZE];
+        send_buffer = small_buffer;
+        printf("DOIP Client: Using small stack buffer for %lu byte payload\r\n", msg->payload_length);
+    } else if (msg->payload_length <= DOIP_LARGE_SEND_BUFFER_SIZE) {
+        // Use static buffer for large messages
+        send_buffer = large_send_buffer;
+        printf("DOIP Client: Using static large buffer for %lu byte payload\r\n", msg->payload_length);
+    } else {
+        printf("DOIP Client: Message too large (%lu bytes, max: %d)\r\n", 
+               msg->payload_length, DOIP_LARGE_SEND_BUFFER_SIZE);
+        return false;
+    }
     
     // Serialize message using utility function
-    doip_utils_serialize_message(msg, buffer);
+    doip_utils_serialize_message(msg, send_buffer);
+    
+    printf("DOIP Client: Sending TCP message (%lu bytes payload, %lu total)\r\n", 
+           msg->payload_length, total_length);
     
     // Send message
-    int result = send(socket, buffer, total_length, 0);
-    return (result == (int)total_length);
+    int result = send(socket, send_buffer, total_length, 0);
+    if (result != (int)total_length) {
+        printf("DOIP Client: TCP send failed - sent %d/%lu bytes\r\n", result, total_length);
+        return false;
+    }
+    
+    printf("DOIP Client: TCP message sent successfully (%d bytes)\r\n", result);
+    return true;
 }
 
 static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uint32_t timeout_ms)
@@ -775,10 +803,17 @@ static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uin
         return false;
     }
     
-    if (msg->payload_length > DOIP_MAX_PAYLOAD_SIZE) {
+    // Size check - we can receive larger messages but only store up to small buffer size
+    if (msg->payload_length > DOIP_LARGE_SEND_BUFFER_SIZE) {
         printf("DOIP Client: Payload too large: %lu bytes (max %d)\r\n", 
-               msg->payload_length, DOIP_MAX_PAYLOAD_SIZE);
+               msg->payload_length, DOIP_LARGE_SEND_BUFFER_SIZE);
         return false;
+    }
+    
+    // For large messages, we'll need to handle them differently
+    if (msg->payload_length > DOIP_SMALL_PAYLOAD_SIZE) {
+        printf("DOIP Client: Large message received (%lu bytes) - will discard excess data\r\n", 
+               msg->payload_length);
     }
     
     printf("DOIP Client: Received DOIP header - Type: 0x%04X, Length: %lu\r\n", 
@@ -787,24 +822,59 @@ static bool doip_receive_tcp_message_socket(int socket, doip_message_t *msg, uin
     // Receive payload if present
     if (msg->payload_length > 0) {
         size_t payload_received = 0;
+        size_t payload_to_store = (msg->payload_length > DOIP_SMALL_PAYLOAD_SIZE) ? DOIP_SMALL_PAYLOAD_SIZE : msg->payload_length;
+        uint32_t receive_chunks = 0;
+        uint8_t discard_buffer[512]; // Small buffer for discarding excess data
+        
+        printf("DOIP Client: Starting to receive payload (%lu bytes, storing %zu bytes)\r\n", 
+               msg->payload_length, payload_to_store);
         
         while (payload_received < msg->payload_length) {
             if ((xTaskGetTickCount() - start_time) >= timeout_ticks) {
-                printf("DOIP Client: TCP receive timeout during payload\r\n");
+                printf("DOIP Client: TCP receive timeout during payload (received %zu/%lu bytes)\r\n",
+                       payload_received, msg->payload_length);
                 return false;
             }
             
-            bytes_received = recv(socket, msg->payload + payload_received, msg->payload_length - payload_received, 0);
+            size_t bytes_to_receive;
+            uint8_t *receive_buffer;
+            
+            if (payload_received < payload_to_store) {
+                // Still receiving data that we want to store
+                bytes_to_receive = payload_to_store - payload_received;
+                receive_buffer = msg->payload + payload_received;
+            } else {
+                // Receiving excess data that we need to discard
+                bytes_to_receive = msg->payload_length - payload_received;
+                if (bytes_to_receive > sizeof(discard_buffer)) {
+                    bytes_to_receive = sizeof(discard_buffer);
+                }
+                receive_buffer = discard_buffer;
+            }
+            
+            bytes_received = recv(socket, receive_buffer, bytes_to_receive, 0);
             if (bytes_received > 0) {
                 payload_received += bytes_received;
+                receive_chunks++;
+                if (receive_chunks % 10 == 0 || msg->payload_length > 1024) {
+                    printf("DOIP Client: Payload progress: %zu/%lu bytes (chunk #%lu)\r\n", 
+                           payload_received, msg->payload_length, receive_chunks);
+                }
             } else if (bytes_received == 0) {
-                printf("DOIP Client: TCP connection closed during payload receive\r\n");
+                printf("DOIP Client: TCP connection closed during payload receive (received %zu/%lu bytes)\r\n",
+                       payload_received, msg->payload_length);
                 return false;
             } else {
                 // No data available yet, wait a bit and try again
                 vTaskDelay(pdMS_TO_TICKS(10)); // 10ms delay
             }
         }
+        
+        // Update payload length to reflect what we actually stored
+        msg->payload_length = payload_to_store;
+        
+        printf("DOIP Client: Payload reception completed (%zu bytes stored in %lu chunks)\r\n", 
+               payload_to_store, receive_chunks);
     }
     
     printf("DOIP Client: Successfully received DOIP message (%zu total bytes)\r\n", 
