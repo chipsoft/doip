@@ -23,6 +23,10 @@
 #define DOIP_STREAM_BUFFER_SIZE         (4096)
 #define DOIP_STREAM_TRIGGER_LEVEL       (1)
 
+// Add chunking constants at the top of the file
+#define DOIP_TCP_CHUNK_SIZE          1400    /**< TCP chunk size (slightly less than MSS for safety) */
+#define DOIP_CHUNK_RETRY_MAX         3       /**< Maximum retry attempts for chunk transmission */
+#define DOIP_CHUNK_TIMEOUT_MS        5000    /**< Timeout for chunk transmission in milliseconds */
 
 // Hardware context structure
 typedef struct {
@@ -249,6 +253,72 @@ static void doip_tcp_err(void *arg, err_t err)
     }
 }
 
+// Add chunking helper function
+static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *context, 
+                                                   const uint8_t *payload_data, 
+                                                   uint32_t payload_length)
+{
+    uint32_t remaining_bytes = payload_length;
+    uint32_t offset = 0;
+    uint8_t retry_count = 0;
+    
+    printf("DOIP Raw lwIP: Starting chunked transmission of %u bytes\r\n", (unsigned int)payload_length);
+    
+    while (remaining_bytes > 0) {
+        // Calculate chunk size (don't exceed TCP send buffer)
+        uint32_t chunk_size = (remaining_bytes > DOIP_TCP_CHUNK_SIZE) ? DOIP_TCP_CHUNK_SIZE : remaining_bytes;
+        
+        // Check TCP send buffer space
+        uint16_t available_space = tcp_sndbuf(context->tcp_pcb);
+        if (available_space < chunk_size) {
+            printf("DOIP Raw lwIP: TCP send buffer full (%u available, need %u), waiting...\r\n", 
+                   available_space, chunk_size);
+            
+            // Wait for some space to become available
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        
+        // Send chunk
+        err_t err = tcp_write(context->tcp_pcb, &payload_data[offset], chunk_size, TCP_WRITE_FLAG_COPY);
+        if (err != ERR_OK) {
+            printf("DOIP Raw lwIP: tcp_write failed for chunk at offset %u (size %u) - err=%d\r\n", 
+                   offset, chunk_size, err);
+            
+            retry_count++;
+            if (retry_count >= DOIP_CHUNK_RETRY_MAX) {
+                printf("DOIP Raw lwIP: Max retries exceeded for chunk transmission\r\n");
+                return DRV_DOIP_STATUS_ERROR;
+            }
+            
+            // Wait before retry
+            vTaskDelay(pdMS_TO_TICKS(100 * retry_count));
+            continue;
+        }
+        
+        // Force output for this chunk
+        err = tcp_output(context->tcp_pcb);
+        if (err != ERR_OK) {
+            printf("DOIP Raw lwIP: tcp_output failed for chunk - err=%d\r\n", err);
+            return DRV_DOIP_STATUS_ERROR;
+        }
+        
+        printf("DOIP Raw lwIP: Sent chunk %u bytes (offset %u, remaining %u)\r\n", 
+               chunk_size, offset, remaining_bytes - chunk_size);
+        
+        // Update progress
+        offset += chunk_size;
+        remaining_bytes -= chunk_size;
+        retry_count = 0; // Reset retry count on success
+        
+        // Small delay to allow TCP processing
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    
+    printf("DOIP Raw lwIP: Chunked transmission completed successfully\r\n");
+    return DRV_DOIP_STATUS_OK;
+}
+
 // Forward declarations of implementation functions
 static drv_doip_status_t drv_doip_init_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context);
@@ -295,105 +365,47 @@ static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, 
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // For large messages, we need to implement proper TCP transmission
+    // For large messages, use chunking approach
     if (payload_length > DOIP_SMALL_PAYLOAD_SIZE) {
-        printf("DOIP Raw lwIP: Large message transmission (%u bytes) - use_static_buffer=%s\r\n", 
-               (unsigned int)payload_length, use_static_buffer ? "true" : "false");
+        printf("DOIP Raw lwIP: Large message transmission (%u bytes) - using chunking approach\r\n", 
+               (unsigned int)payload_length);
         
-        // Calculate total message size: DOIP header (8 bytes) + payload
-        uint32_t total_message_size = DOIP_HEADER_SIZE + payload_length;
-        uint8_t *complete_message = NULL;
-        bool allocated_memory = false;
+        // Send DOIP header first
+        uint8_t header_buffer[DOIP_HEADER_SIZE];
+        header_buffer[0] = DOIP_PROTOCOL_VERSION;
+        header_buffer[1] = DOIP_INVERSE_PROTOCOL_VERSION;
+        header_buffer[2] = (payload_type >> 8) & 0xFF;
+        header_buffer[3] = payload_type & 0xFF;
+        header_buffer[4] = (payload_length >> 24) & 0xFF;
+        header_buffer[5] = (payload_length >> 16) & 0xFF;
+        header_buffer[6] = (payload_length >> 8) & 0xFF;
+        header_buffer[7] = payload_length & 0xFF;
         
-        if (use_static_buffer) {
-            // Use static buffer approach - send header and payload separately
-            printf("DOIP Raw lwIP: Using static buffer approach - sending header + payload separately\r\n");
-            
-            // Send DOIP header first
-            uint8_t header_buffer[DOIP_HEADER_SIZE];
-            header_buffer[0] = DOIP_PROTOCOL_VERSION;
-            header_buffer[1] = DOIP_INVERSE_PROTOCOL_VERSION;
-            header_buffer[2] = (payload_type >> 8) & 0xFF;
-            header_buffer[3] = payload_type & 0xFF;
-            header_buffer[4] = (payload_length >> 24) & 0xFF;
-            header_buffer[5] = (payload_length >> 16) & 0xFF;
-            header_buffer[6] = (payload_length >> 8) & 0xFF;
-            header_buffer[7] = payload_length & 0xFF;
-            
-            // Send header
-            err_t err = tcp_write(context->tcp_pcb, header_buffer, DOIP_HEADER_SIZE, TCP_WRITE_FLAG_COPY);
-            if (err != ERR_OK) {
-                printf("DOIP Raw lwIP: tcp_write failed for header - err=%d\r\n", err);
-                return DRV_DOIP_STATUS_ERROR;
-            }
-            
-            // Send payload directly (no additional copying)
-            if (payload_length > 0 && payload_data != NULL) {
-                err = tcp_write(context->tcp_pcb, payload_data, payload_length, TCP_WRITE_FLAG_COPY);
-                if (err != ERR_OK) {
-                    printf("DOIP Raw lwIP: tcp_write failed for payload - err=%d\r\n", err);
-                    return DRV_DOIP_STATUS_ERROR;
-                }
-            }
-            
-            // Flush both header and payload
-            err = tcp_output(context->tcp_pcb);
-            if (err != ERR_OK) {
-                printf("DOIP Raw lwIP: tcp_output failed for large message - err=%d\r\n", err);
-                return DRV_DOIP_STATUS_ERROR;
-            }
-            
-            printf("DOIP Raw lwIP: Successfully sent large message using static buffer approach (%u bytes total)\r\n", 
-                   (unsigned int)total_message_size);
-            return DRV_DOIP_STATUS_OK;
-            
-        } else {
-            // Use dynamic allocation approach
-            printf("DOIP Raw lwIP: Using dynamic allocation approach\r\n");
-            complete_message = (uint8_t*)pvPortMalloc(total_message_size);
-            if (complete_message == NULL) {
-                printf("DOIP Raw lwIP: Failed to allocate %u bytes for large message transmission\r\n", 
-                       (unsigned int)total_message_size);
-                printf("DOIP Raw lwIP: Available heap: %u bytes, requested: %u bytes\r\n",
-                       xPortGetFreeHeapSize(), (unsigned int)total_message_size);
-                return DRV_DOIP_STATUS_ERROR;
-            }
-            allocated_memory = true;
-        }
-        
-        // Build DOIP header
-        complete_message[0] = DOIP_PROTOCOL_VERSION;
-        complete_message[1] = DOIP_INVERSE_PROTOCOL_VERSION;
-        complete_message[2] = (payload_type >> 8) & 0xFF;
-        complete_message[3] = payload_type & 0xFF;
-        complete_message[4] = (payload_length >> 24) & 0xFF;
-        complete_message[5] = (payload_length >> 16) & 0xFF;
-        complete_message[6] = (payload_length >> 8) & 0xFF;
-        complete_message[7] = payload_length & 0xFF;
-        
-        // Copy payload data
-        if (payload_length > 0 && payload_data != NULL) {
-            memcpy(&complete_message[DOIP_HEADER_SIZE], payload_data, payload_length);
-        }
-        
-        // Send message in chunks using TCP
-        err_t err = tcp_write(context->tcp_pcb, complete_message, total_message_size, TCP_WRITE_FLAG_COPY);
+        // Send header
+        err_t err = tcp_write(context->tcp_pcb, header_buffer, DOIP_HEADER_SIZE, TCP_WRITE_FLAG_COPY);
         if (err != ERR_OK) {
-            printf("DOIP Raw lwIP: tcp_write failed for large message - err=%d\r\n", err);
-            vPortFree(complete_message);
+            printf("DOIP Raw lwIP: tcp_write failed for header - err=%d\r\n", err);
             return DRV_DOIP_STATUS_ERROR;
         }
         
+        // Force output for header
         err = tcp_output(context->tcp_pcb);
         if (err != ERR_OK) {
-            printf("DOIP Raw lwIP: tcp_output failed for large message - err=%d\r\n", err);
-            vPortFree(complete_message);
+            printf("DOIP Raw lwIP: tcp_output failed for header - err=%d\r\n", err);
             return DRV_DOIP_STATUS_ERROR;
         }
         
-        vPortFree(complete_message);
-        printf("DOIP Raw lwIP: Successfully sent large raw message (%u bytes total)\r\n", 
-               (unsigned int)total_message_size);
+        printf("DOIP Raw lwIP: Header sent successfully, starting payload chunking\r\n");
+        
+        // Send payload using chunking
+        drv_doip_status_t chunk_result = doip_send_chunked_payload(context, payload_data, payload_length);
+        if (chunk_result != DRV_DOIP_STATUS_OK) {
+            printf("DOIP Raw lwIP: Chunked payload transmission failed\r\n");
+            return chunk_result;
+        }
+        
+        printf("DOIP Raw lwIP: Successfully sent large message using chunking (%u bytes total)\r\n", 
+               (unsigned int)(DOIP_HEADER_SIZE + payload_length));
         return DRV_DOIP_STATUS_OK;
     }
     
