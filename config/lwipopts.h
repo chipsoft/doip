@@ -149,10 +149,10 @@
 
 // <o> TCP sender buffer space (bytes)<0-100000>
 // <i> multiple of TCP_MSS
-// <i> Default: 2
+// <i> Default: 2, Increased for DoIP large message support
 // <id> lwip_tcp_snd_buf_mul
 #ifndef TCP_SND_BUF_MUL
-#define TCP_SND_BUF_MUL 2
+#define TCP_SND_BUF_MUL 4   // Increased from 2 to 4 for DoIP large message support
 #endif
 
 #ifndef TCP_SND_BUF
@@ -164,7 +164,7 @@
 // <i> Default: 5
 // <id> lwip_memp_num_tcp_pcb
 #ifndef MEMP_NUM_TCP_PCB
-#define MEMP_NUM_TCP_PCB 16   // Increased for sequential multi-ECU testing - prevents pool exhaustion
+#define MEMP_NUM_TCP_PCB 20   // Increased for sequential multi-ECU testing and recovery from failed connections
 #endif
 
 // <o> the number of listening TCP connections<0-1000>

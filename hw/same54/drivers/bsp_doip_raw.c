@@ -20,8 +20,8 @@
 #define DOIP_DISCOVERY_TIMEOUT_MS    5000    /**< Discovery timeout */
 #define DOIP_TCP_CONNECT_TIMEOUT_MS  10000   /**< TCP connection timeout */
 
-// Large message chunking configuration
-#define DOIP_BRIDGE_CHUNK_SIZE       800     /**< Chunk size for large messages (fits in 1KB buffer) */
+// Large message chunking configuration - optimized for TCP buffer size
+#define DOIP_BRIDGE_CHUNK_SIZE       720     /**< Chunk size for large messages (optimized for TCP_SND_BUF availability) */
 #define DOIP_BRIDGE_DIRECT_SEND_LIMIT 1000   /**< Messages <= this size use direct send for performance */
 
 
@@ -649,11 +649,13 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
              (server_ip >> 16) & 0xFF,
              (server_ip >> 24) & 0xFF);
     
-    // Clean up existing connection
+    // Clean up existing connection with proper state verification
     if (context->tcp_pcb != NULL) {
-        tcp_close(context->tcp_pcb);
+        printf("DOIP Bridge: Cleaning up existing TCP PCB (state=%d)\r\n", context->tcp_pcb->state);
+        tcp_abort(context->tcp_pcb);  // Force close to free resources immediately
         context->tcp_pcb = NULL;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        context->current_state = DRV_DOIP_STATE_IDLE;
+        vTaskDelay(pdMS_TO_TICKS(500)); // Longer delay for proper resource cleanup
     }
     
     // Create TCP PCB
@@ -681,16 +683,26 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Simple timeout wait for connection
+    // Improved connection waiting with shorter timeout and better cleanup
     printf("DOIP Bridge: Waiting for connection...\r\n");
-    vTaskDelay(pdMS_TO_TICKS(DOIP_TCP_CONNECT_TIMEOUT_MS));
+    uint32_t timeout_start = xTaskGetTickCount();
+    uint32_t timeout_ticks = pdMS_TO_TICKS(2000); // Reduced from 10s to 2s for faster failure detection
+    
+    while ((context->current_state == DRV_DOIP_STATE_CONNECTING) && 
+           ((xTaskGetTickCount() - timeout_start) < timeout_ticks)) {
+        vTaskDelay(pdMS_TO_TICKS(50)); // Check every 50ms
+    }
     
     if (context->current_state != DRV_DOIP_STATE_CONNECTED) {
-        printf("DOIP Bridge: Connection failed\r\n");
+        printf("DOIP Bridge: Connection failed (state=%d after %lums)\r\n", 
+               context->current_state, 
+               (xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS);
+        
         if (context->tcp_pcb != NULL) {
-            tcp_close(context->tcp_pcb);
+            tcp_abort(context->tcp_pcb); // Force close for immediate resource recovery
             context->tcp_pcb = NULL;
         }
+        context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -714,8 +726,18 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
     printf("DOIP Bridge: Simple disconnect\r\n");
     
     if (context->tcp_pcb != NULL) {
-        tcp_close(context->tcp_pcb);
+        printf("DOIP Bridge: Closing TCP PCB (state=%d)\r\n", context->tcp_pcb->state);
+        
+        // Use graceful close if connected, abort if not
+        if (context->tcp_pcb->state == ESTABLISHED) {
+            tcp_close(context->tcp_pcb);
+        } else {
+            tcp_abort(context->tcp_pcb); // Force close for faster resource recovery
+        }
         context->tcp_pcb = NULL;
+        
+        // Allow time for proper cleanup
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
