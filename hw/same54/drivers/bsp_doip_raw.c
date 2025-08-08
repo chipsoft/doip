@@ -590,11 +590,24 @@ static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *cont
     while (remaining > 0) {
         uint32_t chunk_size = (remaining > DOIP_BRIDGE_CHUNK_SIZE) ? DOIP_BRIDGE_CHUNK_SIZE : remaining;
         
-        // Check TCP send buffer space
+        // Intelligent TCP send buffer space checking
         uint16_t available = tcp_sndbuf(context->tcp_pcb);
         if (available < chunk_size) {
-            printf("DOIP Bridge: Waiting for TCP buffer space (%u needed, %u available)\r\n", chunk_size, available);
-            vTaskDelay(pdMS_TO_TICKS(10));  // Small delay to allow TCP to send
+            // Calculate buffer utilization for smarter delays
+            uint16_t total_buffer = TCP_SND_BUF;  // From lwipopts.h
+            uint8_t utilization_percent = ((total_buffer - available) * 100) / total_buffer;
+            
+            printf("DOIP Bridge: Waiting for TCP buffer space (%u needed, %u available, %u%% used)\r\n", 
+                   chunk_size, available, utilization_percent);
+            
+            // Dynamic delay based on buffer pressure
+            if (utilization_percent > 90) {
+                vTaskDelay(pdMS_TO_TICKS(5));  // High pressure: 5ms delay
+            } else if (utilization_percent > 75) {
+                vTaskDelay(pdMS_TO_TICKS(2));  // Medium pressure: 2ms delay  
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(1));  // Low pressure: 1ms delay
+            }
             continue;
         }
         
