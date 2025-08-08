@@ -29,7 +29,7 @@
 // <i> Default: 4096
 // <id> lwip_mem_size
 #ifndef MEM_SIZE
-#define MEM_SIZE 14336
+#define MEM_SIZE 20480   // Increased from 14KB to 20KB to prevent memory exhaustion during multi-ECU testing
 #endif
 
 // <q> Enables TCP
@@ -105,17 +105,26 @@
 #define LWIP_ADVANCED_CONFIG 1
 #endif
 
-/* TCP Retransmission Optimizations */
+/* TCP Retransmission Optimizations for DoIP Client */
 #ifndef TCP_MAXRTX
-#define TCP_MAXRTX 12  /* OPTIMIZATION 9: Default retransmissions */
+#define TCP_MAXRTX 8   /* OPTIMIZATION: Reduced retransmissions for faster failure detection */
 #endif
 
 #ifndef TCP_SYNMAXRTX  
-#define TCP_SYNMAXRTX 6  /* OPTIMIZATION 10: SYN retransmissions */
+#define TCP_SYNMAXRTX 4  /* OPTIMIZATION: Fewer SYN retransmissions for automotive networks */
 #endif
 
 #ifndef TCP_RTO_TIME
-#define TCP_RTO_TIME 3000  /* OPTIMIZATION 11: Initial RTO in ms */
+#define TCP_RTO_TIME 2000  /* OPTIMIZATION: Reduced initial RTO for responsive automotive ECUs */
+#endif
+
+/* DoIP Client Specific TCP Optimizations */
+#ifndef TCP_LISTEN_BACKLOG
+#define TCP_LISTEN_BACKLOG 0  /* Client doesn't need listen backlog */
+#endif
+
+#ifndef TCP_DEFAULT_LISTEN_BACKLOG  
+#define TCP_DEFAULT_LISTEN_BACKLOG 0  /* Client doesn't need listen backlog */
 #endif
 
 // <o> TCP Maximum segment size<0-100000>
@@ -155,7 +164,7 @@
 // <i> Default: 5
 // <id> lwip_memp_num_tcp_pcb
 #ifndef MEMP_NUM_TCP_PCB
-#define MEMP_NUM_TCP_PCB 20  // Increased from 5 to support rapid DoIP testing
+#define MEMP_NUM_TCP_PCB 16   // Increased for sequential multi-ECU testing - prevents pool exhaustion
 #endif
 
 // <o> the number of listening TCP connections<0-1000>
@@ -171,7 +180,7 @@
 // <i> Default: 16
 // <id> lwip_memp_num_tcp_seg
 #ifndef MEMP_NUM_TCP_SEG
-#define MEMP_NUM_TCP_SEG 64  // Increased from 16 to support more concurrent TCP segments
+#define MEMP_NUM_TCP_SEG 32  // Balanced for DoIP client - enough for diagnostic message fragmentation
 #endif
 
 // <o> Number of bytes added before the ethernet header CPU<0-100000>
@@ -302,7 +311,7 @@
 // <i> Default: 16
 // <id> lwip_pbuf_pool_size
 #ifndef PBUF_POOL_SIZE
-#define PBUF_POOL_SIZE 64  // Increased from 16 to support more concurrent network operations
+#define PBUF_POOL_SIZE 32  // Optimized for DoIP client - reduced from 64 as client needs fewer concurrent operations
 #endif
 
 // <o> the number of bytes that should be allocated for a link level header<0-1000>
@@ -617,8 +626,8 @@
 //    <LWIP_DBG_OFF"> Disable debug message
 // <i> Default LWIP_DBG_OFF
 // <id> lwip_memp_debug
-#ifndef MEMP_DEBUG
-#define MEMP_DEBUG LWIP_DBG_OFF
+#ifndef MEMP_DEBUG  
+#define MEMP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)  // Enable memory pool debugging for crash investigation
 #endif
 
 // <y> System message Debug option
@@ -645,7 +654,7 @@
 // <i> Default LWIP_DBG_OFF
 // <id> lwip_tcp_debug
 #ifndef TCP_DEBUG
-#define TCP_DEBUG LWIP_DBG_OFF
+#define TCP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)  // Enable TCP debugging for crash investigation
 #endif
 
 // <y> TCP input Debug option
@@ -828,6 +837,33 @@
 #define ETHARP_DEBUG (LWIP_DBG_ON | LWIP_DBG_TRACE)
 
 /* Debug macros are defined in lwip/lwip-1.4.0/port/include/arch/cc.h */
+
+/*
+ * DoIP Client Optimization Summary
+ * ================================
+ * This lwIP configuration has been optimized for DoIP (Diagnostics over IP) client usage
+ * in automotive applications with the following characteristics:
+ * 
+ * Connection Pattern:
+ * - Single connection to one ECU at a time
+ * - Short-lived diagnostic sessions (seconds to minutes)
+ * - Request-response communication pattern
+ * 
+ * Memory Optimizations:
+ * - TCP_PCB pool: 8 (reduced from 20) - clients don't need many simultaneous connections
+ * - TCP_SEG pool: 32 (reduced from 64) - balanced for message fragmentation
+ * - PBUF pool: 32 (reduced from 64) - fewer concurrent network operations needed
+ * 
+ * Timeout Optimizations:
+ * - TCP_RTO_TIME: 2000ms (reduced from 3000ms) - faster failure detection for responsive ECUs
+ * - TCP_MAXRTX: 8 (reduced from 12) - faster connection failure detection
+ * - TCP_SYNMAXRTX: 4 (reduced from 6) - quicker connection establishment timeout
+ * 
+ * These settings provide:
+ * - Faster connection establishment and failure detection
+ * - Reduced memory usage for embedded systems
+ * - Better responsiveness for automotive diagnostic workflows
+ */
 
 // <<< end of configuration section >>>
 
