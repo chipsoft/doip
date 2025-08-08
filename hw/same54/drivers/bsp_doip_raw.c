@@ -83,6 +83,9 @@ typedef struct {
     drv_doip_callback_t callbacks[5]; // Array for different callback types
 } drv_doip_hw_context_t;
 
+// Static message buffer for discovery request to avoid pbuf heap allocation
+static uint8_t static_discovery_message_buffer[32]; // Discovery message is only 8 bytes, but allow extra space
+
 // Static hardware context
 static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .current_state = DRV_DOIP_STATE_IDLE,
@@ -688,7 +691,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     ASSERT(vehicle_info != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    doip_message_t request_msg, response_msg;
+    doip_message_t request_msg;
     uint8_t buffer[2048];  // Increased for multi-ECU responses
     err_t err;
     ip_addr_t broadcast_addr;
@@ -727,7 +730,15 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         return DRV_DOIP_STATUS_OK;
     }
     
-    // Create UDP PCB
+    // Use udp_new() but manage allocation better by reusing existing PCB when possible
+    if (context->udp_pcb != NULL) {
+        // Remove existing PCB before creating new one
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
+        printf("DOIP Client: Reusing UDP PCB by removing existing one\r\n");
+    }
+    
+    // Create UDP PCB (simplified approach)
     context->udp_pcb = udp_new();
     if (context->udp_pcb == NULL) {
         printf("DOIP Client: Failed to create UDP PCB\r\n");
@@ -759,12 +770,12 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     // Create vehicle identification request using utility
     doip_utils_create_header(&request_msg, DOIP_VEHICLE_IDENTIFICATION_REQUEST, 0);
     
-    // Convert message to buffer
-    doip_utils_serialize_message(&request_msg, buffer);
+    // Convert message to static buffer to avoid heap allocation
+    doip_utils_serialize_message(&request_msg, static_discovery_message_buffer);
     uint32_t message_len = DOIP_HEADER_SIZE + request_msg.payload_length;
     
-    // Create pbuf for sending
-    p = pbuf_alloc(PBUF_TRANSPORT, message_len, PBUF_RAM);
+    // Create pbuf using PBUF_ROM to reference static buffer (no heap allocation)
+    p = pbuf_alloc(PBUF_TRANSPORT, message_len, PBUF_ROM);
     if (p == NULL) {
         printf("DOIP Client: Failed to allocate pbuf for discovery\r\n");
         udp_remove(context->udp_pcb);
@@ -773,8 +784,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Copy data to pbuf
-    memcpy(p->payload, buffer, message_len);
+    // Set payload to point to static buffer (PBUF_ROM approach)
+    p->payload = static_discovery_message_buffer;
     
     // Send broadcast request
     err = udp_sendto(context->udp_pcb, p, &broadcast_addr, DOIP_UDP_DISCOVERY_PORT);
@@ -946,12 +957,23 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
              (server_ip >> 16) & 0xFF,
              (server_ip >> 24) & 0xFF);
     
-    // Create new TCP PCB
+    // Use tcp_new() but manage allocation better by reusing existing PCB when possible
+    if (context->tcp_pcb != NULL) {
+        // Close existing connection before creating new one
+        tcp_close(context->tcp_pcb);
+        context->tcp_pcb = NULL;
+        printf("DOIP Client: Reusing TCP PCB by closing existing connection\r\n");
+        vTaskDelay(pdMS_TO_TICKS(100)); // Allow cleanup
+    }
+    
+    // Create new TCP PCB (simplified approach - keep some heap allocation but minimize)
     context->tcp_pcb = tcp_new();
     if (context->tcp_pcb == NULL) {
         printf("DOIP Client: Failed to create TCP PCB\r\n");
         return DRV_DOIP_STATUS_ERROR;
     }
+    
+    printf("DOIP Client: TCP PCB created\r\n");
     
     // Set up callbacks
     tcp_arg(context->tcp_pcb, context);
@@ -1082,21 +1104,10 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
         tcp_recv(context->tcp_pcb, NULL);
         tcp_sent(context->tcp_pcb, NULL);
         
-        // Attempt graceful shutdown first
-        err_t close_err = tcp_shutdown(context->tcp_pcb, 1, 1); // Shutdown both RX and TX
-        if (close_err != ERR_OK) {
-            printf("DOIP Client: TCP shutdown failed (err=%d), forcing abort\r\n", close_err);
-            tcp_abort(context->tcp_pcb);
-            context->tcp_pcb = NULL;  // tcp_abort frees the PCB
-        } else {
-            printf("DOIP Client: TCP shutdown successful, closing connection\r\n");
-            close_err = tcp_close(context->tcp_pcb);
-            if (close_err != ERR_OK) {
-                printf("DOIP Client: TCP close failed (err=%d), aborting\r\n", close_err);
-                tcp_abort(context->tcp_pcb);
-            }
-            context->tcp_pcb = NULL;
-        }
+        // Gracefully close TCP connection
+        printf("DOIP Client: Closing TCP PCB\r\n");
+        tcp_close(context->tcp_pcb);
+        context->tcp_pcb = NULL;
         
         // Add a small delay to allow TCP stack to process the disconnect
         vTaskDelay(pdMS_TO_TICKS(100)); // 100ms delay
