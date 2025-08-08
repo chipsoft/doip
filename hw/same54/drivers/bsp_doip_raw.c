@@ -6,7 +6,6 @@
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
 #include "lwip/ip4_addr.h"
-#include "lwip/ip4_frag.h"
 #include "lwip/ip4.h"
 #include "eth_ipstack_main.h"
 #include "utils_assert.h"
@@ -16,11 +15,10 @@
 #include "stream_buffer.h"
 #include "semphr.h"
 #include <string.h>
-#include <stdlib.h>
 
 
-// Raw lwIP configuration
-#define DOIP_STREAM_BUFFER_SIZE         (4096)
+// Raw lwIP configuration - optimized buffer sizes
+#define DOIP_STREAM_BUFFER_SIZE         (2048)  // Reduced from 4096 to 2048
 #define DOIP_STREAM_TRIGGER_LEVEL       (1)
 
 // Add chunking constants at the top of the file
@@ -48,23 +46,11 @@ static inline uint32_t doip_get_optimal_chunk_size(void)
                TCP_MSS, DOIP_CHUNK_SIZE_MAX);
     }
     
-    printf("DOIP Raw lwIP: Calculated optimal chunk size: %u bytes (TCP_MSS: %d, safety margin: 60)\r\n", 
-           calculated_size, TCP_MSS);
+    // Calculated optimal chunk size based on TCP_MSS with safety margin
     
     return calculated_size;
 }
 
-// Helper function to get TCP buffer information for debugging
-static inline void doip_print_tcp_buffer_info(struct tcp_pcb *pcb)
-{
-    if (pcb == NULL) {
-        printf("DOIP Raw lwIP: TCP PCB is NULL\r\n");
-        return;
-    }
-    
-    printf("DOIP Raw lwIP: TCP Buffer Info - Send Buffer: %u bytes, Window: %u bytes, MSS: %u bytes\r\n",
-           tcp_sndbuf(pcb), pcb->snd_wnd, pcb->mss);
-}
 
 // Hardware context structure
 typedef struct {
@@ -111,14 +97,11 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .discovered_ip_address = 0,
 };
 
-// Helper functions
+// Forward declarations for helper functions
 static drv_doip_status_t doip_send_routing_activation_request(drv_doip_hw_context_t *context);
 static drv_doip_status_t doip_send_diagnostic_message(drv_doip_hw_context_t *context, uint8_t service_id, uint16_t data_id);
+static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *context, const uint8_t *payload_data, uint32_t payload_length);
 
-// Alive check functions
-static drv_doip_status_t __attribute__((unused)) doip_send_alive_check_request(drv_doip_hw_context_t *context);
-static drv_doip_status_t __attribute__((unused)) doip_handle_alive_check_response(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
-static drv_doip_status_t __attribute__((unused)) doip_handle_alive_check_request(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length);
 
 // Raw lwIP UDP callback functions
 static void doip_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
@@ -279,15 +262,15 @@ static void doip_tcp_err(void *arg, err_t err)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)arg;
     
-    // Enhanced error reporting with error code explanation
+    // Standardized error code mapping for lwIP errors
     const char* err_str = "UNKNOWN";
     switch(err) {
-        case ERR_ABRT: err_str = "Connection aborted (ERR_ABRT)"; break;
-        case ERR_RST: err_str = "Connection reset (ERR_RST)"; break;
-        case ERR_CONN: err_str = "Not connected (ERR_CONN)"; break;
-        case ERR_TIMEOUT: err_str = "Timeout (ERR_TIMEOUT)"; break;
-        case ERR_MEM: err_str = "Out of memory (ERR_MEM)"; break;
-        default: break;
+        case ERR_ABRT: err_str = "ABORTED"; break;
+        case ERR_RST: err_str = "RESET"; break;
+        case ERR_CONN: err_str = "NOT_CONNECTED"; break;
+        case ERR_TIMEOUT: err_str = "TIMEOUT"; break;
+        case ERR_MEM: err_str = "OUT_OF_MEMORY"; break;
+        default: err_str = "UNKNOWN"; break;
     }
     
     printf("DOIP Client: Raw TCP error callback - err=%d (%s)\r\n", err, err_str);
@@ -315,7 +298,10 @@ static void doip_tcp_err(void *arg, err_t err)
     }
 }
 
-// Add chunking helper function
+//-----------------------------------------------------------------------------
+// Helper Function Implementations
+//-----------------------------------------------------------------------------
+
 static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *context, 
                                                    const uint8_t *payload_data, 
                                                    uint32_t payload_length)
@@ -326,8 +312,11 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
     
     printf("DOIP Raw lwIP: Starting chunked transmission of %u bytes\r\n", (unsigned int)payload_length);
     
-    // Print TCP buffer information for debugging
-    doip_print_tcp_buffer_info(context->tcp_pcb);
+    // Print TCP buffer info for debugging
+    if (context->tcp_pcb != NULL) {
+        printf("DOIP Raw lwIP: TCP Buffer Info - Send: %u, Window: %u, MSS: %u bytes\r\n",
+               tcp_sndbuf(context->tcp_pcb), context->tcp_pcb->snd_wnd, context->tcp_pcb->mss);
+    }
     
     while (remaining_bytes > 0) {
         // Calculate optimal chunk size based on lwIP configuration
@@ -337,7 +326,7 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
         // Check TCP send buffer space
         uint16_t available_space = tcp_sndbuf(context->tcp_pcb);
         if (available_space < chunk_size) {
-            printf("DOIP Raw lwIP: TCP send buffer full (%u available, need %u), waiting...\r\n", 
+            printf("DOIP Raw lwIP: TCP buffer full (avail:%u, need:%u), waiting\r\n", 
                    available_space, chunk_size);
             
             // Wait for some space to become available
@@ -348,12 +337,12 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
         // Send chunk
         err_t err = tcp_write(context->tcp_pcb, &payload_data[offset], chunk_size, TCP_WRITE_FLAG_COPY);
         if (err != ERR_OK) {
-            printf("DOIP Raw lwIP: tcp_write failed for chunk at offset %u (size %u) - err=%d\r\n", 
+            printf("DOIP Raw lwIP: Chunk write failed (offset:%u, size:%u, err:%d)\r\n", 
                    offset, chunk_size, err);
             
             retry_count++;
             if (retry_count >= DOIP_CHUNK_RETRY_MAX) {
-                printf("DOIP Raw lwIP: Max retries exceeded for chunk transmission\r\n");
+                printf("DOIP Raw lwIP: Chunk transmission failed - max retries exceeded\r\n");
                 return DRV_DOIP_STATUS_ERROR;
             }
             
@@ -369,8 +358,7 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
             return DRV_DOIP_STATUS_ERROR;
         }
         
-        printf("DOIP Raw lwIP: Sent chunk %u bytes (offset %u, remaining %u)\r\n", 
-               chunk_size, offset, remaining_bytes - chunk_size);
+        // Progress: sent chunk
         
         // Update progress
         offset += chunk_size;
@@ -385,7 +373,9 @@ static drv_doip_status_t doip_send_chunked_payload(drv_doip_hw_context_t *contex
     return DRV_DOIP_STATUS_OK;
 }
 
-// Forward declarations of implementation functions
+//-----------------------------------------------------------------------------
+// Forward Declarations - Driver Implementation Functions
+//-----------------------------------------------------------------------------
 static drv_doip_status_t drv_doip_init_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context, drv_doip_vehicle_info_t *vehicle_info);
@@ -399,7 +389,10 @@ static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 
 
-// Unified raw message implementation for raw lwIP version
+//-----------------------------------------------------------------------------
+// Raw Message and Packet Listener Implementation
+//-----------------------------------------------------------------------------
+
 static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, uint16_t payload_type,
                                                         const uint8_t *payload_data, uint32_t payload_length,
                                                         bool use_static_buffer)
@@ -515,28 +508,36 @@ static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, 
     return DRV_DOIP_STATUS_OK;
 }
 
+// Consolidated packet listener stub - not implemented in raw lwIP version
+static drv_doip_status_t drv_doip_packet_listener_stub(void)
+{
+    printf("DOIP Raw lwIP: Packet listener functionality not implemented\r\n");
+    return DRV_DOIP_STATUS_ERROR;
+}
+
+// Packet listener function wrappers
 static drv_doip_status_t drv_doip_start_packet_listener_stub(const void *hw_context, const drv_doip_packet_listener_config_t *config)
 {
     (void)hw_context; (void)config;
-    printf("DOIP Raw lwIP: Packet listener not implemented in raw lwIP version\r\n");
-    return DRV_DOIP_STATUS_ERROR;
+    return drv_doip_packet_listener_stub();
 }
 
 static drv_doip_status_t drv_doip_stop_packet_listener_stub(const void *hw_context)
 {
     (void)hw_context;
-    printf("DOIP Raw lwIP: Packet listener not implemented in raw lwIP version\r\n");
-    return DRV_DOIP_STATUS_ERROR;
+    return drv_doip_packet_listener_stub();
 }
 
 static drv_doip_status_t drv_doip_register_packet_callback_stub(const void *hw_context, drv_doip_packet_callback_t callback)
 {
     (void)hw_context; (void)callback;
-    printf("DOIP Raw lwIP: Packet callbacks not implemented in raw lwIP version\r\n");
-    return DRV_DOIP_STATUS_ERROR;
+    return drv_doip_packet_listener_stub();
 }
 
-// Global driver instance
+//-----------------------------------------------------------------------------
+// Global Driver Instance
+//-----------------------------------------------------------------------------
+
 drv_doip_t doip_0 = {
     .is_init = false,
     .current_state = DRV_DOIP_STATE_IDLE,
@@ -558,7 +559,10 @@ drv_doip_t doip_0 = {
     .register_callback = drv_doip_register_callback_impl,
 };
 
-// Implementation functions
+//-----------------------------------------------------------------------------
+// Driver Implementation Functions
+//-----------------------------------------------------------------------------
+
 static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
 {
     ASSERT(hw_context != NULL);
@@ -685,7 +689,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
     doip_message_t request_msg, response_msg;
-    uint8_t buffer[1024];
+    uint8_t buffer[2048];  // Increased for multi-ECU responses
     err_t err;
     ip_addr_t broadcast_addr;
     struct pbuf *p;
@@ -809,7 +813,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         if (total_received + received <= sizeof(buffer)) {
             memcpy(buffer + total_received, temp_buffer, received);
             total_received += received;
-            printf("DOIP Client: Read %d bytes from stream buffer (total: %d)\r\n", received, total_received);
+            // Accumulating response data
         } else {
             printf("DOIP Client: Buffer overflow prevented - ignoring %d bytes\r\n", received);
             break;
@@ -821,8 +825,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     context->udp_pcb = NULL;
     
     if (total_received < DOIP_HEADER_SIZE) {
-        printf("DOIP Client: Insufficient data received (%d bytes)\r\n", total_received);
-        context->current_state = DRV_DOIP_STATE_ERROR;
+        printf("DOIP Client: Insufficient response data (%d bytes)\r\n", total_received);
+        context->current_state = DRV_DOIP_STATE_IDLE;
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -843,9 +847,9 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     }
     
     if (context->discovery_cache.count == 0) {
-        printf("DOIP Client: No valid vehicle identification responses found\r\n");
-        context->current_state = DRV_DOIP_STATE_ERROR;
-        return DRV_DOIP_STATUS_ERROR;
+        printf("DOIP Client: No valid ECU responses found\r\n");
+        context->current_state = DRV_DOIP_STATE_IDLE;
+        return DRV_DOIP_STATUS_NO_VEHICLE;
     }
     
     // Return the next vehicle from cache
@@ -861,7 +865,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     memcpy(vehicle_info, &context->discovery_cache.vehicles[context->discovery_cache.current_index], sizeof(drv_doip_vehicle_info_t));
     context->discovery_cache.current_index++;
     
-    printf("DOIP Client: Returning cached vehicle %d/%d\r\n", context->discovery_cache.current_index, context->discovery_cache.count);
+    // Returning cached vehicle from discovery
     
     // Store vehicle info in context
     memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
@@ -1192,8 +1196,8 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         return status;
     }
     
-    // Use larger buffer for responses (support up to 4KB responses)
-    uint8_t buffer[4096];
+    // Optimized buffer for diagnostic responses
+    uint8_t buffer[2048];  // Reduced from 4KB to 2KB
     size_t received = 0;
     TickType_t timeout_ticks = pdMS_TO_TICKS(DOIP_TCP_TIMEOUT_MS);
     
@@ -1273,12 +1277,7 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
             }
         }
         
-        // Debug: Print raw payload bytes
-        printf("DOIP Client: Payload bytes: ");
-        for (uint32_t i = 0; i < payload_length && i < 16; i++) {
-            printf("0x%02X ", buffer[8 + i]);
-        }
-        printf("\r\n");
+        // Received payload data
         
         // Extract diagnostic payload (skip DOIP addressing info - first 4 bytes of payload)
         if (payload_length > 4) {
@@ -1326,74 +1325,4 @@ static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context,
     return DRV_DOIP_STATUS_ERROR;
 }
 
-// Helper function implementations
-
-// Alive check function implementations
-static drv_doip_status_t doip_send_alive_check_request(drv_doip_hw_context_t *context)
-{
-    uint8_t message_buffer[10];
-    
-    // Create alive check request using utility
-    doip_utils_create_alive_check_request(message_buffer, DOIP_CLIENT_SOURCE_ADDRESS);
-    
-    // Send the message
-    err_t err = tcp_write(context->tcp_pcb, message_buffer, sizeof(message_buffer), TCP_WRITE_FLAG_COPY);
-    if (err != ERR_OK) {
-        printf("DOIP Client: tcp_write alive check failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    err = tcp_output(context->tcp_pcb);
-    if (err != ERR_OK) {
-        printf("DOIP Client: tcp_output alive check failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP Client: Alive check request sent (10 bytes)\r\n");
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t doip_handle_alive_check_response(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length)
-{
-    uint16_t source_address;
-    
-    printf("DOIP Client: Alive check response received\r\n");
-    
-    if (doip_utils_handle_alive_check_payload(payload, payload_length, &source_address)) {
-        printf("DOIP Client: Alive check response received from 0x%04X\r\n", source_address);
-    }
-    
-    return DRV_DOIP_STATUS_OK;
-}
-
-static drv_doip_status_t doip_handle_alive_check_request(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t payload_length)
-{
-    uint8_t message_buffer[10];
-    
-    if (payload_length < 2) {
-        printf("DOIP Client: Invalid alive check request payload length\r\n");
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP Client: Alive check request received, sending response\r\n");
-    
-    // Create alive check response using utility
-    doip_utils_create_alive_check_response(message_buffer, payload);
-    
-    // Send the response
-    err_t err = tcp_write(context->tcp_pcb, message_buffer, sizeof(message_buffer), TCP_WRITE_FLAG_COPY);
-    if (err != ERR_OK) {
-        printf("DOIP Client: tcp_write alive check response failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    err = tcp_output(context->tcp_pcb);
-    if (err != ERR_OK) {
-        printf("DOIP Client: tcp_output alive check response failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP Client: Alive check response sent (10 bytes)\r\n");
-    return DRV_DOIP_STATUS_OK;
-}
 
