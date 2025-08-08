@@ -27,30 +27,22 @@
 
 
 
-// Simple ECU cache for discovery
-#define BRIDGE_MAX_ECUS 8
-typedef struct {
-    uint8_t count;
-    uint8_t current_index;
-    drv_doip_vehicle_info_t vehicles[BRIDGE_MAX_ECUS];
-} bridge_ecu_cache_t;
+// Pure packet bridge - no caching needed
 
-// Simplified hardware context structure for network bridge
+// Pure packet bridge hardware context
 typedef struct {
     // Basic state
     drv_doip_state_t current_state;
-    drv_doip_vehicle_info_t current_vehicle;
     
     // Raw lwIP resources
     struct tcp_pcb *tcp_pcb;
     struct udp_pcb *udp_pcb;
     
-    // Discovery tracking
-    uint32_t discovered_ip_address;
-    bridge_ecu_cache_t discovery_cache;
-    
     // Single receive callback for all data
     drv_doip_callback_t receive_callback;
+    
+    // Last received packet source IP (for application use)
+    uint32_t last_source_ip;
     
     // Minimal network buffer
     uint8_t network_buffer[DOIP_NETWORK_BUFFER_SIZE];
@@ -59,13 +51,13 @@ typedef struct {
 // Small discovery message buffer
 static uint8_t discovery_message_buffer[32];
 
-// Static hardware context - simplified
+// Static hardware context - pure bridge
 static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .current_state = DRV_DOIP_STATE_IDLE,
     .tcp_pcb = NULL,
     .udp_pcb = NULL,
-    .discovered_ip_address = 0,
     .receive_callback = NULL,
+    .last_source_ip = 0,
 };
 
 // Forward declarations for bridge functions
@@ -78,7 +70,7 @@ static err_t bridge_tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pb
 static err_t bridge_tcp_sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len);
 static err_t bridge_tcp_connected_callback(void *arg, struct tcp_pcb *tpcb, err_t err);
 static void bridge_tcp_error_callback(void *arg, err_t err);
-// Simplified UDP callback - bridge mode
+// Pure packet bridge UDP callback - forwards all packets
 static void bridge_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                                     const ip_addr_t *addr, u16_t port)
 {
@@ -88,44 +80,19 @@ static void bridge_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf
         return;
     }
     
-    // Store IP for later use
-    context->discovered_ip_address = ip4_addr_get_u32(addr);
+    // Store source IP for application use AND DEBUG LOG IT
+    context->last_source_ip = ip4_addr_get_u32(addr);
+    uint32_t source_ip = context->last_source_ip;
     
-    // Copy packet data to network buffer
+    printf("DOIP Bridge: UDP packet from %lu.%lu.%lu.%lu:%d, len=%d\r\n",
+           source_ip & 0xFF, (source_ip >> 8) & 0xFF, 
+           (source_ip >> 16) & 0xFF, (source_ip >> 24) & 0xFF, port, p->tot_len);
+    
+    // Copy packet data to network buffer and forward to callback
     if (p->tot_len <= DOIP_NETWORK_BUFFER_SIZE && p->tot_len >= 8) {
         pbuf_copy_partial(p, context->network_buffer, p->tot_len, 0);
         
-        // Parse DoIP header
-        uint16_t payload_type = (context->network_buffer[2] << 8) | context->network_buffer[3];
-        uint32_t payload_length = (context->network_buffer[4] << 24) | (context->network_buffer[5] << 16) |
-                                 (context->network_buffer[6] << 8) | context->network_buffer[7];
-        
-        // Check if this is a vehicle identification response
-        if (payload_type == 0x0004 && payload_length >= 25 && context->discovery_cache.count < BRIDGE_MAX_ECUS) { // Vehicle ID response
-            drv_doip_vehicle_info_t *vehicle = &context->discovery_cache.vehicles[context->discovery_cache.count];
-            
-            // Parse VIN (17 bytes)
-            memcpy(vehicle->vin, &context->network_buffer[8], 17);
-            vehicle->vin[17] = '\0';
-            
-            // Parse Logical Address (2 bytes)
-            vehicle->logical_address = (context->network_buffer[25] << 8) | context->network_buffer[26];
-            
-            // Parse Entity ID (6 bytes)
-            if (payload_length >= 31) {
-                memcpy(vehicle->entity_id, &context->network_buffer[27], 6);
-            }
-            
-            // Set IP and port from UDP source
-            vehicle->ip_address = context->discovered_ip_address;
-            vehicle->tcp_port = 13400;
-            
-            context->discovery_cache.count++;
-            printf("DOIP Bridge: Cached ECU %d - VIN=%s, LA=0x%04X\r\n",
-                   context->discovery_cache.count, vehicle->vin, vehicle->logical_address);
-        }
-        
-        // Forward immediately to callback - no buffering
+        // Forward all packets to callback - no parsing or caching
         if (context->receive_callback) {
             context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
                                     context->network_buffer, 
@@ -216,6 +183,7 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
 
 static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
+static uint32_t drv_doip_get_last_source_ip_impl(const void *hw_context);
 
 
 //-----------------------------------------------------------------------------
@@ -310,6 +278,7 @@ drv_doip_t doip_0 = {
 
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,
+    .get_last_source_ip = drv_doip_get_last_source_ip_impl,
 };
 
 //-----------------------------------------------------------------------------
@@ -327,15 +296,9 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->current_state = DRV_DOIP_STATE_IDLE;
     context->tcp_pcb = NULL;
     context->udp_pcb = NULL;
-    context->discovered_ip_address = 0;
     context->receive_callback = NULL;
-    memset(&context->current_vehicle, 0, sizeof(context->current_vehicle));
+    context->last_source_ip = 0;
     memset(context->network_buffer, 0, DOIP_NETWORK_BUFFER_SIZE);
-    
-    // Initialize discovery cache
-    context->discovery_cache.count = 0;
-    context->discovery_cache.current_index = 0;
-    memset(context->discovery_cache.vehicles, 0, sizeof(context->discovery_cache.vehicles));
     
     printf("DOIP Bridge: Simple initialization completed\r\n");
     return DRV_DOIP_STATUS_OK;
@@ -372,13 +335,8 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     ASSERT(vehicle_info != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    printf("DOIP Bridge: Simple UDP discovery\r\n");
+    printf("DOIP Bridge: Sending UDP discovery broadcast\r\n");
     context->current_state = DRV_DOIP_STATE_DISCOVERING;
-    
-    // Clear discovery cache only if starting fresh (index wrapped around to 0)
-    if (context->discovery_cache.current_index == 0) {
-        context->discovery_cache.count = 0;
-    }
     
     // Simple discovery - single UDP broadcast
     err_t err;
@@ -449,38 +407,14 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP Bridge: Discovery request sent, simple timeout\r\n");
+    printf("DOIP Bridge: Discovery broadcast sent - responses forwarded to callback\r\n");
     
-    // Simple timeout - wait for callback responses
-    vTaskDelay(pdMS_TO_TICKS(DOIP_DISCOVERY_TIMEOUT_MS));
+    // Keep UDP PCB open for responses - application handles discovery data
+    context->current_state = DRV_DOIP_STATE_DISCOVERED;
     
-    // Clean up UDP PCB
-    udp_remove(context->udp_pcb);
-    context->udp_pcb = NULL;
-    
-    // Return ECU from cache (rotating through available ECUs)
-    if (context->discovery_cache.count > 0) {
-        // Get current ECU from cache
-        uint8_t index = context->discovery_cache.current_index % context->discovery_cache.count;
-        memcpy(vehicle_info, &context->discovery_cache.vehicles[index], sizeof(drv_doip_vehicle_info_t));
-        
-        // Advance to next ECU for subsequent calls
-        context->discovery_cache.current_index++;
-        
-        // Store current vehicle info in context
-        memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
-        context->current_state = DRV_DOIP_STATE_DISCOVERED;
-        
-        printf("DOIP Bridge: Returning ECU %d/%d - VIN=%s, LA=0x%04X\r\n",
-               index + 1, context->discovery_cache.count, 
-               vehicle_info->vin, vehicle_info->logical_address);
-        return DRV_DOIP_STATUS_OK;
-    } else {
-        // No ECUs found, return error
-        context->current_state = DRV_DOIP_STATE_IDLE;
-        printf("DOIP Bridge: No ECUs discovered\r\n");
-        return DRV_DOIP_STATUS_ERROR;
-    }
+    // Return success - all responses will be forwarded to callback
+    // Application (user_tasks.c) handles ECU discovery and selection
+    return DRV_DOIP_STATUS_OK;
 }
 
 // Simple bridge routing activation
@@ -719,8 +653,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Store vehicle info
-    memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
+    // Vehicle info handled by application - no storage needed
     
     // Send basic routing activation
     if (bridge_send_routing_activation(context) == DRV_DOIP_STATUS_OK) {
@@ -920,6 +853,14 @@ static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context,
     
     printf("DOIP Bridge: Callback type %d not supported in bridge mode\r\n", type);
     return DRV_DOIP_STATUS_ERROR;
+}
+
+// Helper function to get last received source IP address
+static uint32_t drv_doip_get_last_source_ip_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    return context->last_source_ip;
 }
 
 

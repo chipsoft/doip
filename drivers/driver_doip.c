@@ -156,6 +156,18 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
     return handle->register_callback(handle->hw_context, type, callback);
 }
 
+uint32_t hw_doip_get_last_source_ip(drv_doip_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_last_source_ip != NULL);
+    
+    if (!handle->is_init) {
+        return 0;
+    }
+    
+    return handle->get_last_source_ip(handle->hw_context);
+}
+
 // Large message functions removed - functionality moved to unified functions above
 
 //-----------------------------------------------------------------------------

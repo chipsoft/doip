@@ -400,6 +400,7 @@ typedef struct {
     drv_doip_state_t (*get_status)(const void *hw_context);
     drv_doip_status_t (*register_callback)(const void *hw_context, drv_doip_cb_type_t type, 
                                           drv_doip_callback_t callback);
+    uint32_t (*get_last_source_ip)(const void *hw_context);
 } drv_doip_t;
 /** @} */
 
@@ -531,6 +532,14 @@ drv_doip_state_t hw_doip_get_status(drv_doip_t *handle);
  */
 drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type_t type, 
                                            drv_doip_callback_t callback);
+
+/**
+ * @brief Get the last received UDP packet source IP address
+ * @param handle Pointer to DoIP driver instance
+ * @return Source IP address of last received UDP packet (network byte order)
+ * @note Useful for getting real ECU IP addresses from discovery responses
+ */
+uint32_t hw_doip_get_last_source_ip(drv_doip_t *handle);
 
 // Large message functions removed - functionality moved to unified functions above
 /** @} */

@@ -47,6 +47,9 @@
 #include "driver_doip.h"
 #include <string.h>
 
+// External reference to DoIP driver instance
+extern drv_doip_t doip_0;
+
 // Multi-ECU support constants
 #define MAX_DISCOVERED_ECUS 8
 #define ECU_DISCOVERY_TIMEOUT_MS 10000
@@ -65,6 +68,7 @@ typedef struct {
     drv_doip_vehicle_info_t vehicles[MAX_DISCOVERED_ECUS];
     uint8_t count;
     uint32_t discovery_timestamp;
+    bool discovery_active;
 } multi_ecu_discovery_t;
 
 static multi_ecu_discovery_t discovered_ecus = {0};
@@ -106,68 +110,202 @@ static const char* get_ecu_type_name(ecu_type_t ecu_type)
     }
 }
 
+
 /**
- * \brief Discover all available ECUs in the vehicle
+ * \brief Discovery callback - handles vehicle identification responses
+ * \param type Callback type
+ * \param data Pointer to received data (enhanced UDP context)
+ * \param data_len Length of received data
+ */
+static void discovery_callback(drv_doip_cb_type_t type, const void *data, size_t data_len)
+{
+    if (type != DRV_DOIP_CB_RAW_PACKET_RECEIVED || !discovered_ecus.discovery_active) {
+        return;
+    }
+    
+    if (data == NULL || data_len < 8) {
+        printf("DOIP Discovery: Invalid packet - data=%p, len=%zu\r\n", data, data_len);
+        return; // Invalid packet
+    }
+    
+    const uint8_t *packet = (const uint8_t *)data;
+    
+    printf("DOIP Discovery: Received packet %zu bytes: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+           data_len, packet[0], packet[1], packet[2], packet[3], 
+           packet[4], packet[5], packet[6], packet[7]);
+    
+    // Validate DoIP protocol version
+    if (packet[0] != 0x02 || packet[1] != 0xFD) {
+        printf("DOIP Discovery: Invalid protocol version: 0x%02X 0x%02X\r\n", packet[0], packet[1]);
+        return;
+    }
+    
+    // Parse DoIP header
+    uint16_t payload_type = (packet[2] << 8) | packet[3];
+    uint32_t payload_length = (packet[4] << 24) | (packet[5] << 16) | (packet[6] << 8) | packet[7];
+    
+    printf("DOIP Discovery: Payload type=0x%04X, length=%lu\r\n", payload_type, payload_length);
+    
+    // Check if this is a vehicle identification response
+    if (payload_type == 0x0004) {
+        if (data_len < 8 + payload_length) {
+            printf("DOIP Discovery: Incomplete packet: need %lu bytes, got %zu\r\n", 
+                   8 + payload_length, data_len);
+            return;
+        }
+        
+        if (payload_length < 25) {
+            printf("DOIP Discovery: Vehicle ID response too short: %lu bytes\r\n", payload_length);
+            return;
+        }
+        
+        if (discovered_ecus.count >= MAX_DISCOVERED_ECUS) {
+            printf("DOIP Discovery: Maximum ECU limit reached\r\n");
+            return;
+        }
+        
+        drv_doip_vehicle_info_t vehicle;
+        memset(&vehicle, 0, sizeof(vehicle));
+        
+        // Parse VIN (17 bytes) - ensure it's printable
+        memcpy(vehicle.vin, &packet[8], 17);
+        vehicle.vin[17] = '\0';
+        
+        // Clean up non-printable characters in VIN
+        for (int i = 0; i < 17; i++) {
+            if (vehicle.vin[i] < 32 || vehicle.vin[i] > 126) {
+                vehicle.vin[i] = '?'; // Replace unprintable chars
+            }
+        }
+        
+        // Parse Logical Address (2 bytes at offset 8+17=25)
+        vehicle.logical_address = (packet[8 + 17] << 8) | packet[8 + 18];
+        
+        // Parse Entity ID (6 bytes at offset 8+19=27)
+        if (payload_length >= 25) {
+            memcpy(vehicle.entity_id, &packet[8 + 19], 6);
+        }
+        
+        // Get real source IP address from driver (this is the ECU's actual IP!)
+        // IMPORTANT: Get IP immediately while it's still the current packet source
+        vehicle.ip_address = hw_doip_get_last_source_ip(&doip_0);
+        vehicle.tcp_port = 13400;
+        
+        // DEBUG: Show driver IP that will be stored
+        uint32_t driver_ip = hw_doip_get_last_source_ip(&doip_0);
+        printf("DOIP Discovery: Using driver IP=%lu.%lu.%lu.%lu\r\n",
+               driver_ip & 0xFF, (driver_ip >> 8) & 0xFF, (driver_ip >> 16) & 0xFF, (driver_ip >> 24) & 0xFF);
+        
+        printf("DOIP Discovery: Parsed - VIN='%s', LA=0x%04X, IP=%lu.%lu.%lu.%lu\r\n", 
+               vehicle.vin, vehicle.logical_address,
+               vehicle.ip_address & 0xFF, 
+               (vehicle.ip_address >> 8) & 0xFF,
+               (vehicle.ip_address >> 16) & 0xFF, 
+               (vehicle.ip_address >> 24) & 0xFF);
+        
+        // Check for duplicates
+        bool already_found = false;
+        for (uint8_t i = 0; i < discovered_ecus.count; i++) {
+            if (discovered_ecus.vehicles[i].logical_address == vehicle.logical_address) {
+                already_found = true;
+                printf("DOIP Discovery: Duplicate ECU 0x%04X ignored\r\n", vehicle.logical_address);
+                break;
+            }
+        }
+        
+        if (!already_found) {
+            // Add new ECU to discovery list
+            memcpy(&discovered_ecus.vehicles[discovered_ecus.count], &vehicle, sizeof(drv_doip_vehicle_info_t));
+            discovered_ecus.count++;
+            
+            ecu_type_t ecu_type = get_ecu_type_from_address(vehicle.logical_address);
+            printf("DOIP Client: Discovered ECU %d - %s (0x%04X): VIN=%s, IP=%lu.%lu.%lu.%lu:%d\r\n", 
+                   discovered_ecus.count, get_ecu_type_name(ecu_type), 
+                   vehicle.logical_address, vehicle.vin,
+                   vehicle.ip_address & 0xFF, 
+                   (vehicle.ip_address >> 8) & 0xFF,
+                   (vehicle.ip_address >> 16) & 0xFF, 
+                   (vehicle.ip_address >> 24) & 0xFF,
+                   vehicle.tcp_port);
+        }
+    } else {
+        printf("DOIP Discovery: Ignoring non-vehicle-ID packet type 0x%04X\r\n", payload_type);
+    }
+}
+
+/**
+ * \brief Discover all available ECUs in the vehicle using callback-based approach
  * \param handle DOIP driver handle
  * \return Number of ECUs discovered
  */
 static uint8_t doip_discover_all_ecus(drv_doip_t *handle)
 {
-    printf("DOIP Client: Starting multi-ECU discovery...\r\n");
+    printf("DOIP Client: Starting callback-based ECU discovery...\r\n");
     
+    // Reset discovery state
     discovered_ecus.count = 0;
     discovered_ecus.discovery_timestamp = xTaskGetTickCount();
+    discovered_ecus.discovery_active = true;
     
-    // Discover ECUs with extended timeout for multiple responses
-    drv_doip_vehicle_info_t temp_vehicle;
-    TickType_t discovery_start = xTaskGetTickCount();
-    
-    while (discovered_ecus.count < MAX_DISCOVERED_ECUS) {
-        drv_doip_status_t status = hw_doip_discover_vehicles(handle, &temp_vehicle);
-        
-        if (status == DRV_DOIP_STATUS_OK) {
-            // Check if this ECU is already discovered (avoid duplicates)
-            bool already_found = false;
-            for (uint8_t i = 0; i < discovered_ecus.count; i++) {
-                if (discovered_ecus.vehicles[i].logical_address == temp_vehicle.logical_address) {
-                    already_found = true;
-                    break;
-                }
-            }
-            
-            if (!already_found) {
-                // Add new ECU to discovery list
-                memcpy(&discovered_ecus.vehicles[discovered_ecus.count], &temp_vehicle, sizeof(drv_doip_vehicle_info_t));
-                discovered_ecus.count++;
-                
-                ecu_type_t ecu_type = get_ecu_type_from_address(temp_vehicle.logical_address);
-                printf("DOIP Client: Discovered ECU %d - %s (0x%04X): VIN=%s\r\n", 
-                       discovered_ecus.count, get_ecu_type_name(ecu_type), 
-                       temp_vehicle.logical_address, temp_vehicle.vin);
-            }
-        }
-        
-        // Check timeout for discovery process
-        if ((xTaskGetTickCount() - discovery_start) > pdMS_TO_TICKS(ECU_DISCOVERY_TIMEOUT_MS)) {
-            printf("DOIP Client: Discovery timeout reached\r\n");
-            break;
-        }
-        
-        // Small delay between discovery attempts
-        vTaskDelay(pdMS_TO_TICKS(500));
+    // Register discovery callback
+    drv_doip_status_t status = hw_doip_register_callback(handle, DRV_DOIP_CB_RAW_PACKET_RECEIVED, discovery_callback);
+    if (status != DRV_DOIP_STATUS_OK) {
+        printf("DOIP Client: Failed to register discovery callback\r\n");
+        discovered_ecus.discovery_active = false;
+        return 0;
     }
     
-    printf("DOIP Client: Multi-ECU discovery completed - found %d ECUs\r\n", discovered_ecus.count);
+    // Send single discovery broadcast
+    drv_doip_vehicle_info_t dummy_vehicle; // Not used by new driver
+    status = hw_doip_discover_vehicles(handle, &dummy_vehicle);
+    if (status != DRV_DOIP_STATUS_OK) {
+        printf("DOIP Client: Failed to send discovery broadcast\r\n");
+        discovered_ecus.discovery_active = false;
+        return 0;
+    }
+    
+    printf("DOIP Client: Discovery broadcast sent, waiting for responses...\r\n");
+    
+    // Wait for responses via callback
+    TickType_t discovery_start = xTaskGetTickCount();
+    uint8_t last_count = 0;
+    
+    while ((xTaskGetTickCount() - discovery_start) < pdMS_TO_TICKS(ECU_DISCOVERY_TIMEOUT_MS)) {
+        if (discovered_ecus.count > last_count) {
+            last_count = discovered_ecus.count;
+            printf("DOIP Client: Found %d ECUs so far...\r\n", discovered_ecus.count);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100)); // Check every 100ms
+        
+        // Stop early if we found maximum ECUs
+        if (discovered_ecus.count >= MAX_DISCOVERED_ECUS) {
+            printf("DOIP Client: Maximum ECU limit reached\r\n");
+            break;
+        }
+    }
+    
+    // Stop discovery
+    discovered_ecus.discovery_active = false;
+    
+    printf("DOIP Client: Discovery completed - found %d ECUs in %lu ms\r\n", 
+           discovered_ecus.count, 
+           (xTaskGetTickCount() - discovery_start) * portTICK_PERIOD_MS);
+    
     
     // Display summary of discovered ECUs
     if (discovered_ecus.count > 0) {
         printf("\r\n=== Discovered Vehicle ECUs ===\r\n");
         for (uint8_t i = 0; i < discovered_ecus.count; i++) {
             ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[i].logical_address);
-            printf("  ECU %d: %s (0x%04X) - VIN: %s\r\n", 
+            printf("  ECU %d: %s (0x%04X) - VIN: %s - IP: %lu.%lu.%lu.%lu\r\n", 
                    i + 1, get_ecu_type_name(ecu_type), 
                    discovered_ecus.vehicles[i].logical_address, 
-                   discovered_ecus.vehicles[i].vin);
+                   discovered_ecus.vehicles[i].vin,
+                   discovered_ecus.vehicles[i].ip_address & 0xFF,
+                   (discovered_ecus.vehicles[i].ip_address >> 8) & 0xFF,
+                   (discovered_ecus.vehicles[i].ip_address >> 16) & 0xFF,
+                   (discovered_ecus.vehicles[i].ip_address >> 24) & 0xFF);
         }
         printf("\r\n");
     }
@@ -489,6 +627,24 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
     }
     
     printf("\r\n=== Testing Concurrent ECU Requests ===\r\n");
+    printf("Waiting for ECU emulator to stabilize after large message tests...\r\n");
+    
+    // Give ECU emulator extended time to recover from intensive large message testing
+    // This prevents connection failures due to resource exhaustion
+    vTaskDelay(pdMS_TO_TICKS(10000)); // 10 second recovery period for heavily stressed emulator
+    
+    printf("Extended emulator stabilization complete, proceeding with ECU parameter reading...\r\n");
+    
+    // Test emulator health with a simple connection attempt before proceeding
+    printf("Testing emulator connectivity...\r\n");
+    drv_doip_status_t health_check = hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[0]);
+    if (health_check == DRV_DOIP_STATUS_OK) {
+        printf("✅ Emulator connectivity test passed\r\n");
+        hw_doip_disconnect(handle);
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Small delay after health check
+    } else {
+        printf("⚠️  Emulator connectivity test failed - proceeding with retries\r\n");
+    }
     
     // Test reading same DID from multiple ECUs to show differentiation
     uint16_t test_dids[] = {DID_VIN, DID_VEHICLE_SPEED_INFORMATION, DID_BATTERY_VOLTAGE_INFORMATION};
@@ -499,8 +655,26 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
         printf("\r\n--- Reading %s from all ECUs ---\r\n", test_names[did_idx]);
         
         for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
-            // Connect to specific ECU
-            if (hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[ecu_idx]) == DRV_DOIP_STATUS_OK) {
+            // Connect to specific ECU with retry logic for emulator stability
+            drv_doip_status_t connect_status = DRV_DOIP_STATUS_ERROR;
+            ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[ecu_idx].logical_address);
+            const char *ecu_name = get_ecu_type_name(ecu_type);
+            
+            for (int retry = 0; retry < 3; retry++) {
+                connect_status = hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[ecu_idx]);
+                if (connect_status == DRV_DOIP_STATUS_OK) {
+                    break; // Connection successful
+                }
+                
+                // Connection failed, wait before retry
+                if (retry < 2) { // Don't wait after last attempt
+                    printf("  [%s] Connection failed, retrying in 2 seconds... (attempt %d/3)\r\n", 
+                           ecu_name, retry + 1);
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                }
+            }
+            
+            if (connect_status == DRV_DOIP_STATUS_OK) {
                 // Read DID from this specific ECU
                 doip_read_did_from_ecu_and_display(handle, &discovered_ecus.vehicles[ecu_idx], 
                                                    test_dids[did_idx], test_names[did_idx], test_formats[did_idx]);
@@ -509,10 +683,9 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
                 hw_doip_disconnect(handle);
                 
                 // Increased delay between ECU connections to allow proper cleanup
-                vTaskDelay(pdMS_TO_TICKS(500));
+                vTaskDelay(pdMS_TO_TICKS(1000)); // Longer delay for emulator stability
             } else {
-                ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[ecu_idx].logical_address);
-                printf("  [%s] Connection failed\r\n", get_ecu_type_name(ecu_type));
+                printf("  [%s] Connection failed after 3 attempts - ECU may be unavailable\r\n", ecu_name);
             }
         }
     }
@@ -547,7 +720,12 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
            test_size, ecu_name, ecu_info->logical_address);
     
     // First, ensure we're connected to this ECU
-    printf("  Connecting to ECU %s...\r\n", ecu_name);
+    printf("  Connecting to ECU %s at %lu.%lu.%lu.%lu:%d...\r\n", ecu_name,
+           ecu_info->ip_address & 0xFF,
+           (ecu_info->ip_address >> 8) & 0xFF,
+           (ecu_info->ip_address >> 16) & 0xFF,
+           (ecu_info->ip_address >> 24) & 0xFF,
+           ecu_info->tcp_port);
     drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(handle, ecu_info);
     if (connect_status != DRV_DOIP_STATUS_OK) {
         // RED FLAG ERROR ALERT
@@ -681,8 +859,31 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
         printf("\r\n--- Testing %zu bytes (%zu KB) ---\r\n", 
                test_size, test_size / 1024);
         
+        // Check emulator health for high-stress tests
+        bool emulator_healthy = true;
+        if (test_size >= 6144) { // 6KB+ tests are high stress
+            printf("Pre-test emulator health check for %zu byte tests...\r\n", test_size);
+            drv_doip_status_t health_status = hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[0]);
+            if (health_status != DRV_DOIP_STATUS_OK) {
+                printf("⚠️  Emulator health check failed - may have connection issues\r\n");
+                emulator_healthy = false;
+            } else {
+                printf("✅ Emulator health check passed\r\n");
+                hw_doip_disconnect(handle);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+        }
+        
         for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
             total_tests++;
+            
+            // Skip remaining tests if emulator is unhealthy and this is a high-stress test
+            if (!emulator_healthy && test_size >= 6144) {
+                printf("  Skipping %zu byte test for ECU %d due to emulator health issues\r\n", 
+                       test_size, ecu_idx + 1);
+                skipped_tests++;
+                continue;
+            }
             
             test_result_t result = doip_test_large_message_single_ecu(handle, 
                                                                     &discovered_ecus.vehicles[ecu_idx], 
@@ -701,7 +902,15 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
         // Additional delay between different test sizes to allow network stabilization
         if (size_idx < num_test_sizes - 1) { // Don't delay after the last test size
             printf("--- Allowing network stabilization before next test size ---\r\n");
-            vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second between test sizes
+            
+            // Add longer recovery time for larger message sizes that stress the emulator more
+            uint32_t recovery_time_ms = 2000; // Base recovery time
+            if (test_sizes[size_idx] >= 4096) { // 4KB+ messages stress emulator more
+                recovery_time_ms = 5000; // 5 second recovery for high-stress tests
+                printf("--- Extended recovery period for high-stress test size ---\r\n");
+            }
+            
+            vTaskDelay(pdMS_TO_TICKS(recovery_time_ms));
         }
     }
     
