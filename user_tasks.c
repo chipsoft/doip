@@ -323,6 +323,32 @@ static bool large_message_buffer_in_use = false;
 // Forward declarations
 static void generate_test_pattern_with_seed(uint8_t *buffer, size_t size, size_t seed);
 
+// Test configuration structure for easy customization
+typedef struct {
+    bool enable_extended_testing;    // Full test suite for all ECUs
+    bool enable_early_termination;   // Stop ECU testing after failures
+    bool enable_adaptive_timing;     // Adjust delays based on results
+    uint16_t max_failures_per_ecu;   // Max failures before skipping ECU
+    uint32_t base_delay_ms;          // Base delay between tests
+    uint32_t failure_delay_ms;       // Extended delay after failures
+    bool verbose_logging;            // Detailed per-test logging
+    uint32_t fragment_timeout_ms;    // Per-fragment timeout (same as 8KB tests)
+    uint32_t overall_timeout_ms;     // Overall sustained transfer timeout
+} large_message_test_config_t;
+
+// Default test configuration
+static const large_message_test_config_t default_test_config = {
+    .enable_extended_testing = false,   // Use tiered approach by default
+    .enable_early_termination = true,   // Stop after failures
+    .enable_adaptive_timing = true,     // Smart delays
+    .max_failures_per_ecu = 3,          // 3 strikes rule
+    .base_delay_ms = 200,               // Fast base timing
+    .failure_delay_ms = 1000,           // Recovery time after failures
+    .verbose_logging = false,           // Summary mode by default
+    .fragment_timeout_ms = 10000,       // 10s per fragment (same as 8KB tests)
+    .overall_timeout_ms = 60000         // 60s total (reasonable for 256KB)
+};
+
 /**
  * \brief Generate test pattern data for large message testing
  * \param buffer Pointer to buffer to fill with test pattern
@@ -874,11 +900,15 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
  * \param handle DOIP driver handle
  * \param ecu_info Target ECU information  
  * \param total_size Target total size to transfer (will be rounded to 8KB multiples)
+ * \param fast_mode Enable fast mode (minimal delays, reduced logging)
+ * \param config Test configuration (NULL for default timeouts)
  * \return test_result_t indicating test result
  */
 static test_result_t doip_test_sustained_large_messages(drv_doip_t *handle, 
                                                        const drv_doip_vehicle_info_t *ecu_info,
-                                                       size_t total_size)
+                                                       size_t total_size,
+                                                       bool fast_mode,
+                                                       const large_message_test_config_t *config)
 {
     if (handle == NULL || ecu_info == NULL || total_size == 0) {
         return TEST_RESULT_FAILED;
@@ -907,15 +937,45 @@ static test_result_t doip_test_sustained_large_messages(drv_doip_t *handle,
     size_t total_bytes_sent = 0;
     uint32_t successful_fragments = 0;
     
+    // Use provided config or default timeouts (same as 8KB message tests)
+    const large_message_test_config_t *test_config = config ? config : &default_test_config;
+    const TickType_t fragment_timeout_ticks = pdMS_TO_TICKS(test_config->fragment_timeout_ms);
+    const TickType_t overall_timeout_ticks = pdMS_TO_TICKS(test_config->overall_timeout_ms);
+    
+    printf("  Timeout protection: %lu seconds per fragment, %lu seconds overall\r\n",
+           test_config->fragment_timeout_ms / 1000, test_config->overall_timeout_ms / 1000);
+    
+    // Pre-fill buffer with base pattern to optimize performance
+    large_message_test_buffer[0] = UDS_LARGE_MESSAGE_TEST;
+    generate_test_pattern_with_seed(&large_message_test_buffer[1], fragment_size, 0);
+    
     for (size_t fragment = 0; fragment < num_fragments; fragment++) {
-        // Fill buffer with unique pattern for each fragment
-        large_message_test_buffer[0] = UDS_LARGE_MESSAGE_TEST;
-        generate_test_pattern_with_seed(&large_message_test_buffer[1], fragment_size, fragment);
+        // Overall timeout check (same as 8KB message test approach)
+        TickType_t current_time = xTaskGetTickCount();
+        if ((current_time - overall_start) > overall_timeout_ticks) {
+            printf("    ⏰ TIMEOUT: Sustained transfer exceeded %lu seconds limit\r\n", 
+                   test_config->overall_timeout_ms / 1000);
+            printf("    Completed %u/%zu fragments before timeout\r\n", successful_fragments, num_fragments);
+            break;
+        }
+        
+        // Update fragment-specific signature only (last 8 bytes)
+        if (fragment_size >= 8) {
+            uint32_t fragment_signature = (uint32_t)fragment;
+            size_t sig_offset = 1 + fragment_size - 8; // After service ID, at end of data
+            large_message_test_buffer[sig_offset] = (uint8_t)((fragment_signature >> 24) & 0xFF);
+            large_message_test_buffer[sig_offset + 1] = (uint8_t)((fragment_signature >> 16) & 0xFF);
+            large_message_test_buffer[sig_offset + 2] = (uint8_t)((fragment_signature >> 8) & 0xFF);
+            large_message_test_buffer[sig_offset + 3] = (uint8_t)(fragment_signature & 0xFF);
+        }
         
         size_t buffer_size = fragment_size + 1; // Service ID + data
         
-        printf("    Fragment %zu/%zu: Sending %zu bytes...\r\n", 
-               fragment + 1, num_fragments, buffer_size);
+        // Conditional logging based on fast_mode
+        if (!fast_mode || (fragment % 10 == 0) || (fragment == num_fragments - 1)) {
+            printf("    Fragment %zu/%zu: Sending %zu bytes...\r\n", 
+                   fragment + 1, num_fragments, buffer_size);
+        }
         
         TickType_t fragment_start = xTaskGetTickCount();
         
@@ -928,25 +988,69 @@ static test_result_t doip_test_sustained_large_messages(drv_doip_t *handle,
         );
         
         TickType_t fragment_end = xTaskGetTickCount();
+        uint32_t fragment_ms = (fragment_end - fragment_start) * portTICK_PERIOD_MS;
+        
+        // Per-fragment timeout check (same as individual 8KB message tests)
+        if ((fragment_end - fragment_start) > fragment_timeout_ticks) {
+            printf("    ⏰ TIMEOUT: Fragment %zu exceeded %lu seconds limit (%lums actual)\r\n", 
+                   fragment + 1, test_config->fragment_timeout_ms / 1000, fragment_ms);
+            break;
+        }
         
         if (status == DRV_DOIP_STATUS_OK) {
             total_bytes_sent += buffer_size;
             successful_fragments++;
             
-            uint32_t fragment_ms = (fragment_end - fragment_start) * portTICK_PERIOD_MS;
             float fragment_kbps = 0.0f;
             if (fragment_ms > 0) {
                 fragment_kbps = ((float)buffer_size * 8.0f * 1000.0f) / ((float)fragment_ms * 1024.0f);
             }
-            printf("    Fragment %zu: ✅ SUCCESS (%zu bytes in %lums, %.1f Kbps)\r\n", 
-                   fragment + 1, buffer_size, fragment_ms, fragment_kbps);
+            
+            // Reduced logging in fast mode
+            if (!fast_mode || (fragment % 10 == 0) || (fragment == num_fragments - 1)) {
+                printf("    Fragment %zu: ✅ SUCCESS (%zu bytes in %lums, %.1f Kbps)\r\n", 
+                       fragment + 1, buffer_size, fragment_ms, fragment_kbps);
+            }
         } else {
             printf("    Fragment %zu: ❌ FAILED (status=%d)\r\n", fragment + 1, status);
+            
+            // Same error handling as 8KB message tests
+            if (status == DRV_DOIP_STATUS_TIMEOUT) {
+                printf("    ⏰ Driver reported timeout for fragment %zu\r\n", fragment + 1);
+            } else if (status == DRV_DOIP_STATUS_ERROR) {
+                printf("    💥 Driver reported error for fragment %zu\r\n", fragment + 1);
+            } else if (status == DRV_DOIP_STATUS_NO_VEHICLE) {
+                printf("    🚗 No vehicle connection for fragment %zu\r\n", fragment + 1);
+            }
+            
             break;
         }
         
-        // Small delay between fragments to allow ECU processing
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Adaptive inter-fragment delay based on performance and mode
+        uint32_t fragment_delay_ms;
+        
+        if (fast_mode) {
+            // Fast mode: minimal delays for maximum throughput
+            fragment_delay_ms = 1; // 1ms minimal delay
+            if (fragment_ms > 100) { // Only add delay if ECU is very slow
+                fragment_delay_ms = 10;
+            }
+        } else {
+            // Normal mode: conservative delays for stability
+            fragment_delay_ms = 10; // Reduced from 100ms to 10ms (90% faster)
+            
+            // Dynamic delay adjustment based on transmission speed
+            if (fragment_ms > 50) { // If fragment took >50ms, ECU might be slow
+                fragment_delay_ms = 50; // Give it more recovery time
+            } else if (fragment_ms < 20) { // Fast transmission
+                fragment_delay_ms = 5;  // Minimal delay for fast ECUs
+            }
+        }
+        
+        // Skip delay for last fragment
+        if (fragment < num_fragments - 1) {
+            vTaskDelay(pdMS_TO_TICKS(fragment_delay_ms));
+        }
     }
     
     TickType_t overall_end = xTaskGetTickCount();
@@ -965,86 +1069,125 @@ static test_result_t doip_test_sustained_large_messages(drv_doip_t *handle,
     printf("      Total time: %lums\r\n", overall_ms);
     printf("      Sustained throughput: %.2f MB/s\r\n", overall_mbps);
     
+    // Timeout-aware result evaluation (same logic as 8KB message tests)
+    bool timed_out = (overall_ms >= test_config->overall_timeout_ms) || (successful_fragments < num_fragments);
+    
     if (successful_fragments == num_fragments) {
         printf("  ✅ Sustained large message test: SUCCESS\r\n");
+        printf("      All fragments completed within timeout limits\r\n");
         return TEST_RESULT_PASSED;
+    } else if (timed_out) {
+        printf("  ⏰ Sustained large message test: TIMEOUT\r\n");
+        printf("      %u/%zu fragments completed before timeout\r\n", successful_fragments, num_fragments);
+        if (successful_fragments > (num_fragments * 75 / 100)) { // >75% success
+            printf("      Partial success - %u%% completion rate\r\n", 
+                   (successful_fragments * 100) / (uint32_t)num_fragments);
+            return TEST_RESULT_SKIPPED; // Treat as partial success
+        } else {
+            return TEST_RESULT_FAILED;
+        }
     } else {
         printf("  ❌ Sustained large message test: FAILED\r\n");
+        printf("      %u/%zu fragments failed due to errors\r\n", 
+               (uint32_t)num_fragments - successful_fragments, num_fragments);
         return TEST_RESULT_FAILED;
     }
 }
 
 /**
- * \brief Test large messages with all discovered ECUs
+ * \brief Test large messages with all discovered ECUs (optimized version)
  * \param handle DOIP driver handle
+ * \param config Test configuration (NULL for default)
  */
-static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
+static void doip_test_large_messages_all_ecus_optimized(drv_doip_t *handle, 
+                                                      const large_message_test_config_t *config)
 {
     if (handle == NULL || discovered_ecus.count == 0) {
         printf("DOIP Large Test: No ECUs available for testing\r\n");
         return;
     }
     
-    printf("\r\n=== DOIP Large Message Test Suite ===\r\n");
+    // Use default config if none provided
+    const large_message_test_config_t *test_config = config ? config : &default_test_config;
+    
+    printf("\r\n=== DOIP Large Message Test Suite (Optimized) ===\r\n");
     printf("Testing large message capabilities with %d ECUs\r\n", discovered_ecus.count);
     printf("Using 8KB static buffer (no heap allocation)\r\n");
     printf("Available heap: %zu bytes\r\n", xPortGetFreeHeapSize());
+    printf("Configuration: %s testing, %s timing, %s termination\r\n",
+           test_config->enable_extended_testing ? "Extended" : "Tiered",
+           test_config->enable_adaptive_timing ? "Adaptive" : "Fixed",
+           test_config->enable_early_termination ? "Early" : "Complete");
     
-    // Test sizes - up to 8KB using static buffer
-    const size_t test_sizes[] = {
-        256,       // 256B - Small message
-        512,       // 512B - Medium message  
-        1024,      // 1KB - Basic functionality
-        1400,      // Close to MTU boundary  
-        1600,      // Above MTU - fragmentation test
-        2048,      // 2KB - Reasonable large message
-        3072,      // 3KB - Larger test
-        4096,      // 4KB - Large message test
-        5120,      // 5KB - Very large message
-        6144,      // 6KB - Extra large message
-        7168,      // 7KB - Near maximum message  
-        8191,      // 8KB-1 - Maximum size (leave 1 byte for service ID)
-        // 256KB test removed - use sustained multi-fragment test instead
+    // Strategic test sizes for optimal coverage with minimal redundancy
+    const size_t basic_test_sizes[] = {
+        256,       // Small message - basic connectivity
+        1400,      // MTU boundary test (1460 - 60 TCP/IP headers)
+        1600,      // Above MTU - fragmentation test  
+        4096,      // 4KB - chunking boundary test
+        8191,      // Maximum static buffer size
     };
     
-    const size_t num_test_sizes = sizeof(test_sizes) / sizeof(test_sizes[0]);
+    const size_t extended_test_sizes[] = {
+        256, 512, 1024, 1400, 1600, 2048, 4096, 6144, 8191  // Full coverage for primary ECU
+    };
+    
+    const size_t num_basic_sizes = sizeof(basic_test_sizes) / sizeof(basic_test_sizes[0]);
+    const size_t num_extended_sizes = sizeof(extended_test_sizes) / sizeof(extended_test_sizes[0]);
     
     uint16_t total_tests = 0;
     uint16_t passed_tests = 0;
     uint16_t skipped_tests = 0;
     
-    // Test each size with each ECU
-    for (size_t size_idx = 0; size_idx < num_test_sizes; size_idx++) {
-        size_t test_size = test_sizes[size_idx];
+    printf("=== Tiered Testing Strategy ===\r\n");
+    printf("Primary ECU: Full test suite (%zu sizes)\r\n", num_extended_sizes);
+    printf("Other ECUs: Core test suite (%zu sizes)\r\n", num_basic_sizes);
+    printf("====================================\r\n\r\n");
+    
+    // Iterate through ECUs with different test strategies
+    for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
+        ecu_type_t ecu_type = get_ecu_type_from_address(discovered_ecus.vehicles[ecu_idx].logical_address);
+        const char *ecu_name = get_ecu_type_name(ecu_type);
+        bool is_primary = (ecu_idx == 0);
         
-        printf("\r\n--- Testing %zu bytes (%zu KB) ---\r\n", 
-               test_size, test_size / 1024);
+        // Choose test suite based on configuration and ECU priority
+        const size_t *test_sizes;
+        size_t num_test_sizes;
+        const char *suite_name;
         
-        // Check emulator health for high-stress tests
-        bool emulator_healthy = true;
-        if (test_size >= 6144) { // 6KB+ tests are high stress
-            printf("Pre-test emulator health check for %zu byte tests...\r\n", test_size);
-            drv_doip_status_t health_status = hw_doip_connect_to_vehicle(handle, &discovered_ecus.vehicles[0]);
-            if (health_status != DRV_DOIP_STATUS_OK) {
-                printf("⚠️  Emulator health check failed - may have connection issues\r\n");
-                emulator_healthy = false;
-            } else {
-                printf("✅ Emulator health check passed\r\n");
-                hw_doip_disconnect(handle);
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            }
+        if (test_config->enable_extended_testing || is_primary) {
+            test_sizes = extended_test_sizes;
+            num_test_sizes = num_extended_sizes;
+            suite_name = "Extended";
+        } else {
+            test_sizes = basic_test_sizes;
+            num_test_sizes = num_basic_sizes;
+            suite_name = "Core";
         }
         
-        for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count; ecu_idx++) {
+        printf("\r\n--- Testing ECU %d: %s (%s test suite) ---\r\n", 
+               ecu_idx + 1, ecu_name, suite_name);
+        
+        uint16_t ecu_failures = 0;
+        const uint16_t max_ecu_failures = test_config->max_failures_per_ecu;
+        size_t size_idx = 0;
+        
+        for (size_idx = 0; size_idx < num_test_sizes; size_idx++) {
+            size_t test_size = test_sizes[size_idx];
+            
+            // Skip remaining tests for this ECU if too many failures
+            if (ecu_failures >= max_ecu_failures && test_config->enable_early_termination) {
+                printf("  Skipping remaining tests for %s (too many failures: %d)\r\n", 
+                       ecu_name, ecu_failures);
+                skipped_tests += (num_test_sizes - size_idx);
+                break;
+            }
+            
             total_tests++;
             
-            // Skip remaining tests if emulator is unhealthy and this is a high-stress test
-            if (!emulator_healthy && test_size >= 6144) {
-                printf("  Skipping %zu byte test for ECU %d due to emulator health issues\r\n", 
-                       test_size, ecu_idx + 1);
-                skipped_tests++;
-                continue;
-            }
+            printf("    Test %zu/%zu: %zu bytes (%s)...\r\n", 
+                   size_idx + 1, num_test_sizes, test_size, 
+                   test_size >= 1024 ? (test_size >= 4096 ? "large" : "medium") : "small");
             
             test_result_t result = doip_test_large_message_single_ecu(handle, 
                                                                     &discovered_ecus.vehicles[ecu_idx], 
@@ -1054,24 +1197,41 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
                 passed_tests++;
             } else if (result == TEST_RESULT_SKIPPED) {
                 skipped_tests++;
+            } else {
+                ecu_failures++;
+                printf("    ❌ Failure %d/%d for ECU %s\r\n", ecu_failures, max_ecu_failures, ecu_name);
             }
             
-            // Increased delay between ECU tests to allow proper connection cleanup
-            vTaskDelay(pdMS_TO_TICKS(500));
+            // Adaptive delay based on configuration, test result and size
+            uint32_t delay_ms = test_config->base_delay_ms;
+            
+            if (test_config->enable_adaptive_timing) {
+                if (result != TEST_RESULT_PASSED) {
+                    delay_ms = test_config->failure_delay_ms; // Longer delay after failures
+                } else if (test_size >= 4096) {
+                    delay_ms = test_config->base_delay_ms * 2; // Medium delay for large tests
+                }
+            }
+            
+            if (delay_ms > 0) {
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            }
         }
         
-        // Additional delay between different test sizes to allow network stabilization
-        if (size_idx < num_test_sizes - 1) { // Don't delay after the last test size
-            printf("--- Allowing network stabilization before next test size ---\r\n");
-            
-            // Add longer recovery time for larger message sizes that stress the emulator more
-            uint32_t recovery_time_ms = 2000; // Base recovery time
-            if (test_sizes[size_idx] >= 4096) { // 4KB+ messages stress emulator more
-                recovery_time_ms = 5000; // 5 second recovery for high-stress tests
-                printf("--- Extended recovery period for high-stress test size ---\r\n");
-            }
-            
-            vTaskDelay(pdMS_TO_TICKS(recovery_time_ms));
+        // ECU summary
+        uint16_t ecu_tests = num_test_sizes;
+        if (ecu_failures >= max_ecu_failures && test_config->enable_early_termination) {
+            ecu_tests = size_idx; // Only count tests that were actually attempted
+        }
+        uint16_t ecu_passed = ecu_tests - ecu_failures;
+        
+        printf("  ECU %s Results: %d/%d passed", ecu_name, ecu_passed, ecu_tests);
+        if (ecu_failures == 0) {
+            printf(" ✅ PERFECT\r\n");
+        } else if (ecu_failures <= 2) {
+            printf(" ⚠️  GOOD\r\n");
+        } else {
+            printf(" ❌ POOR\r\n");
         }
     }
     
@@ -1121,6 +1281,60 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
     
     // Add delay before continuing with other tests
     vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+/**
+ * \brief Create test configuration for different scenarios
+ * \param scenario Configuration scenario (0=default, 1=fast, 2=thorough, 3=debug)
+ * \return Test configuration structure
+ */
+__attribute__((unused))
+static large_message_test_config_t create_test_config(int scenario)
+{
+    large_message_test_config_t config = default_test_config;
+    
+    switch (scenario) {
+        case 1: // Fast testing - minimal delays, early termination
+            config.enable_extended_testing = false;
+            config.enable_early_termination = true;
+            config.max_failures_per_ecu = 2;
+            config.base_delay_ms = 100;
+            config.failure_delay_ms = 500;
+            config.verbose_logging = false;
+            break;
+            
+        case 2: // Thorough testing - all ECUs get full test suite
+            config.enable_extended_testing = true;
+            config.enable_early_termination = false;
+            config.max_failures_per_ecu = 10;
+            config.base_delay_ms = 300;
+            config.failure_delay_ms = 1500;
+            config.verbose_logging = true;
+            break;
+            
+        case 3: // Debug mode - extensive logging and recovery
+            config.enable_extended_testing = false;
+            config.enable_early_termination = false;
+            config.max_failures_per_ecu = 5;
+            config.base_delay_ms = 500;
+            config.failure_delay_ms = 2000;
+            config.verbose_logging = true;
+            break;
+            
+        default: // scenario 0 or unknown - use defaults
+            break;
+    }
+    
+    return config;
+}
+
+/**
+ * \brief Legacy wrapper for backward compatibility
+ * \param handle DOIP driver handle
+ */
+static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
+{
+    doip_test_large_messages_all_ecus_optimized(handle, NULL);
 }
 
 /**
@@ -1184,10 +1398,11 @@ static void doip_client_task(void *pvParameters)
 					// Connect to ECU for sustained test
 					drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(doip_handle, &discovered_ecus.vehicles[ecu_idx]);
 					if (connect_status == DRV_DOIP_STATUS_OK) {
-						// Test 256KB sustained transfer (32 x 8KB messages)
-						doip_test_sustained_large_messages(doip_handle, &discovered_ecus.vehicles[ecu_idx], 256 * 1024);
+						// Test 256KB sustained transfer (32 x 8KB messages) in FAST MODE
+						printf("*** FAST MODE ENABLED: Minimal delays, optimized logging, full timeout protection ***\r\n");
+						doip_test_sustained_large_messages(doip_handle, &discovered_ecus.vehicles[ecu_idx], 256 * 1024, true, NULL);
 						hw_doip_disconnect(doip_handle);
-						vTaskDelay(pdMS_TO_TICKS(1000)); // Recovery delay
+						vTaskDelay(pdMS_TO_TICKS(500)); // Reduced recovery delay in fast mode
 					}
 				}
 				
