@@ -305,12 +305,18 @@ static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *contex
         // Force transmission to free buffers
         tcp_output(context->tcp_pcb);
         
-        // Adaptive delay based on buffer pressure
+        // Adaptive delay based on buffer pressure with more aggressive recovery
         uint8_t utilization = ((TCP_SEND_BUFFER_SIZE - available) * 100) / TCP_SEND_BUFFER_SIZE;
         
-        if (utilization > 90)      vTaskDelay(pdMS_TO_TICKS(20));  // High pressure
-        else if (utilization > 75) vTaskDelay(pdMS_TO_TICKS(10));  // Medium pressure  
-        else                       vTaskDelay(pdMS_TO_TICKS(5));   // Low pressure
+        if (utilization > 90) {
+            // High pressure - aggressive recovery
+            printf("DOIP Universal: High TCP buffer pressure (%d%% used), forcing recovery\r\n", utilization);
+            vTaskDelay(pdMS_TO_TICKS(50));  // Longer delay for buffer drain
+        } else if (utilization > 75) {
+            vTaskDelay(pdMS_TO_TICKS(20));  // Medium pressure  
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));  // Low pressure
+        }
     }
     
     printf("DOIP Universal: TCP buffer timeout after 5 seconds\r\n");
@@ -332,11 +338,32 @@ static drv_doip_status_t tcp_write_with_backpressure(drv_doip_hw_context_t *cont
         return status;
     }
     
-    // Perform TCP write
+    // Perform TCP write with retry on memory errors
     err_t err = tcp_write(context->tcp_pcb, data, length, TCP_WRITE_FLAG_COPY);
     if (err != ERR_OK) {
-        printf("DOIP Universal: tcp_write failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
+        printf("DOIP Universal: tcp_write failed - err=%d", err);
+        
+        // ERR_MEM (-1) indicates insufficient memory - try recovery
+        if (err == ERR_MEM) {
+            printf(" (ERR_MEM - insufficient memory)\r\n");
+            printf("DOIP Universal: Attempting TCP buffer recovery...\r\n");
+            
+            // Force output to free buffers
+            tcp_output(context->tcp_pcb);
+            vTaskDelay(pdMS_TO_TICKS(100)); // Give TCP stack time to free buffers
+            
+            // Retry once
+            err = tcp_write(context->tcp_pcb, data, length, TCP_WRITE_FLAG_COPY);
+            if (err == ERR_OK) {
+                printf("DOIP Universal: Recovery successful - tcp_write retry succeeded\r\n");
+            } else {
+                printf("DOIP Universal: Recovery failed - tcp_write retry err=%d\r\n", err);
+                return DRV_DOIP_STATUS_ERROR;
+            }
+        } else {
+            printf(" (other error)\r\n");
+            return DRV_DOIP_STATUS_ERROR;
+        }
     }
     
     return DRV_DOIP_STATUS_OK;

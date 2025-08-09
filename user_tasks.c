@@ -320,6 +320,9 @@ static uint8_t doip_discover_all_ecus(drv_doip_t *handle)
 static uint8_t large_message_test_buffer[LARGE_MESSAGE_TEST_BUFFER_SIZE];
 static bool large_message_buffer_in_use = false;
 
+// Forward declarations
+static void generate_test_pattern_with_seed(uint8_t *buffer, size_t size, size_t seed);
+
 /**
  * \brief Generate test pattern data for large message testing
  * \param buffer Pointer to buffer to fill with test pattern
@@ -327,20 +330,46 @@ static bool large_message_buffer_in_use = false;
  */
 static void generate_test_pattern(uint8_t *buffer, size_t size)
 {
+    generate_test_pattern_with_seed(buffer, size, 0);
+}
+
+/**
+ * \brief Generate test pattern data with seed for unique fragments
+ * \param buffer Pointer to buffer to fill with test pattern
+ * \param size Size of buffer in bytes
+ * \param seed Seed value for unique pattern generation
+ */
+static void generate_test_pattern_with_seed(uint8_t *buffer, size_t size, size_t seed)
+{
     if (buffer == NULL || size == 0) {
         return;
     }
     
-    // Create a 256-byte repeating pattern (0x00 to 0xFF)
+    // Create a 256-byte repeating pattern (0x00 to 0xFF) with seed offset
     const size_t pattern_size = 256;
     
-    // Fill buffer with repeating pattern
+    // Fill buffer with repeating pattern, offset by seed
     for (size_t i = 0; i < size; i++) {
-        buffer[i] = (uint8_t)(i % pattern_size);
+        buffer[i] = (uint8_t)((i + seed) % pattern_size);
     }
     
-    // Add unique signature at the end (last 4 bytes = message size as big-endian uint32)
-    if (size >= 4) {
+    // Add unique signature: fragment number (seed) and size
+    if (size >= 8) {
+        // Last 8 bytes: seed (4 bytes) + size (4 bytes) 
+        uint32_t seed_signature = (uint32_t)seed;
+        uint32_t size_signature = (uint32_t)size;
+        
+        buffer[size - 8] = (uint8_t)((seed_signature >> 24) & 0xFF);
+        buffer[size - 7] = (uint8_t)((seed_signature >> 16) & 0xFF);
+        buffer[size - 6] = (uint8_t)((seed_signature >> 8) & 0xFF);
+        buffer[size - 5] = (uint8_t)(seed_signature & 0xFF);
+        
+        buffer[size - 4] = (uint8_t)((size_signature >> 24) & 0xFF);
+        buffer[size - 3] = (uint8_t)((size_signature >> 16) & 0xFF);
+        buffer[size - 2] = (uint8_t)((size_signature >> 8) & 0xFF);
+        buffer[size - 1] = (uint8_t)(size_signature & 0xFF);
+    } else if (size >= 4) {
+        // Fallback for smaller buffers: just use size
         uint32_t signature = (uint32_t)size;
         buffer[size - 4] = (uint8_t)((signature >> 24) & 0xFF);
         buffer[size - 3] = (uint8_t)((signature >> 16) & 0xFF);
@@ -631,7 +660,7 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
     
     // Give ECU emulator extended time to recover from intensive large message testing
     // This prevents connection failures due to resource exhaustion
-    vTaskDelay(pdMS_TO_TICKS(10000)); // 10 second recovery period for heavily stressed emulator
+    vTaskDelay(pdMS_TO_TICKS(1000)); // 10 second recovery period for heavily stressed emulator
     
     printf("Extended emulator stabilization complete, proceeding with ECU parameter reading...\r\n");
     
@@ -758,15 +787,15 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
         return TEST_RESULT_SKIPPED;
     }
     
-    // Mark buffer as in use
+    // Mark static buffer as in use
     large_message_buffer_in_use = true;
     
-    // Use static buffer - no allocation needed!
+    // Fill buffer with test pattern
     large_message_test_buffer[0] = UDS_LARGE_MESSAGE_TEST;
     generate_test_pattern(&large_message_test_buffer[1], test_size);
     
     // Send large message test via raw message API
-    printf("  Sending %zu byte message (using static buffer)...\r\n", buffer_size);
+    printf("  Sending %zu byte message (static buffer)...\r\n", buffer_size);
     TickType_t send_start = xTaskGetTickCount();
     
     drv_doip_status_t status = hw_doip_send_raw_message(
@@ -796,10 +825,26 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
         // Disconnect before returning error
         printf("  Disconnecting from ECU %s after error...\r\n", ecu_name);
         hw_doip_disconnect(handle);
+        
+        // Extended recovery delay after errors to ensure TCP cleanup
+        printf("  Extended error recovery delay...\r\n");
+        vTaskDelay(pdMS_TO_TICKS(1500)); // 1.5 second recovery after errors
+        
         return TEST_RESULT_FAILED;
     }
     
     measure_transfer_performance("Send", buffer_size, send_start, send_end);
+    
+    // Enhanced performance logging for very large messages
+    if (buffer_size >= 65536) { // 64KB+
+        uint32_t elapsed_ms = (send_end - send_start) * portTICK_PERIOD_MS;
+        if (elapsed_ms > 0) {
+            float mb_per_sec = ((float)buffer_size / (1024.0f * 1024.0f)) / ((float)elapsed_ms / 1000.0f);
+            uint32_t estimated_chunks = (buffer_size + 1199) / 1200; // DOIP_SAFE_CHUNK_SIZE = 1200
+            printf("  📊 Performance: %.2f MB/s, ~%lu chunks (1200 bytes each)\r\n", 
+                   mb_per_sec, estimated_chunks);
+        }
+    }
     
     printf("  ✅ Large message test with ECU %s: SUCCESS\r\n", ecu_name);
     printf("  Successfully sent %zu byte large message via unified DoIP API\r\n", buffer_size);
@@ -811,7 +856,122 @@ static test_result_t doip_test_large_message_single_ecu(drv_doip_t *handle,
         printf("  WARNING: Failed to disconnect from ECU %s: status %d\r\n", ecu_name, disconnect_status);
     }
     
+    // Enhanced recovery delay for TCP buffer cleanup - especially after large messages
+    printf("  Waiting for TCP buffer cleanup...\r\n");
+    if (buffer_size >= 8192) {
+        // Longer delay after large messages to ensure TCP buffers are fully drained
+        vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second recovery delay for large messages
+        printf("  Extended recovery completed for large message\r\n");
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(500)); // 500ms recovery delay for smaller messages
+    }
+    
     return TEST_RESULT_PASSED;
+}
+
+/**
+ * \brief Test sustained large message transfers (multiple 8KB messages)
+ * \param handle DOIP driver handle
+ * \param ecu_info Target ECU information  
+ * \param total_size Target total size to transfer (will be rounded to 8KB multiples)
+ * \return test_result_t indicating test result
+ */
+static test_result_t doip_test_sustained_large_messages(drv_doip_t *handle, 
+                                                       const drv_doip_vehicle_info_t *ecu_info,
+                                                       size_t total_size)
+{
+    if (handle == NULL || ecu_info == NULL || total_size == 0) {
+        return TEST_RESULT_FAILED;
+    }
+    
+    if (large_message_buffer_in_use) {
+        printf("  SKIP: Large message buffer is in use by another test\r\n");
+        return TEST_RESULT_SKIPPED;
+    }
+    
+    ecu_type_t ecu_type = get_ecu_type_from_address(ecu_info->logical_address);
+    const char *ecu_name = get_ecu_type_name(ecu_type);
+    
+    // Calculate number of 8KB fragments needed
+    const size_t fragment_size = LARGE_MESSAGE_TEST_BUFFER_SIZE - 1; // Leave 1 byte for service ID
+    const size_t num_fragments = (total_size + fragment_size - 1) / fragment_size; // Round up
+    const size_t actual_total_size = num_fragments * fragment_size;
+    
+    printf("  Testing sustained transfer: %zu bytes (%zu x %zu-byte fragments) with ECU %s\r\n", 
+           actual_total_size, num_fragments, fragment_size, ecu_name);
+    
+    // Mark buffer as in use
+    large_message_buffer_in_use = true;
+    
+    TickType_t overall_start = xTaskGetTickCount();
+    size_t total_bytes_sent = 0;
+    uint32_t successful_fragments = 0;
+    
+    for (size_t fragment = 0; fragment < num_fragments; fragment++) {
+        // Fill buffer with unique pattern for each fragment
+        large_message_test_buffer[0] = UDS_LARGE_MESSAGE_TEST;
+        generate_test_pattern_with_seed(&large_message_test_buffer[1], fragment_size, fragment);
+        
+        size_t buffer_size = fragment_size + 1; // Service ID + data
+        
+        printf("    Fragment %zu/%zu: Sending %zu bytes...\r\n", 
+               fragment + 1, num_fragments, buffer_size);
+        
+        TickType_t fragment_start = xTaskGetTickCount();
+        
+        drv_doip_status_t status = hw_doip_send_raw_message(
+            handle, 
+            DOIP_DIAGNOSTIC_MESSAGE,
+            large_message_test_buffer, 
+            buffer_size,
+            true  // use_static_buffer = true
+        );
+        
+        TickType_t fragment_end = xTaskGetTickCount();
+        
+        if (status == DRV_DOIP_STATUS_OK) {
+            total_bytes_sent += buffer_size;
+            successful_fragments++;
+            
+            uint32_t fragment_ms = (fragment_end - fragment_start) * portTICK_PERIOD_MS;
+            float fragment_kbps = 0.0f;
+            if (fragment_ms > 0) {
+                fragment_kbps = ((float)buffer_size * 8.0f * 1000.0f) / ((float)fragment_ms * 1024.0f);
+            }
+            printf("    Fragment %zu: ✅ SUCCESS (%zu bytes in %lums, %.1f Kbps)\r\n", 
+                   fragment + 1, buffer_size, fragment_ms, fragment_kbps);
+        } else {
+            printf("    Fragment %zu: ❌ FAILED (status=%d)\r\n", fragment + 1, status);
+            break;
+        }
+        
+        // Small delay between fragments to allow ECU processing
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+    TickType_t overall_end = xTaskGetTickCount();
+    large_message_buffer_in_use = false;
+    
+    // Calculate overall performance
+    uint32_t overall_ms = (overall_end - overall_start) * portTICK_PERIOD_MS;
+    float overall_mbps = 0.0f;
+    if (overall_ms > 0) {
+        overall_mbps = ((float)total_bytes_sent / (1024.0f * 1024.0f)) / ((float)overall_ms / 1000.0f);
+    }
+    
+    printf("  📊 Sustained Transfer Results:\r\n");
+    printf("      Total sent: %zu bytes (%zu KB)\r\n", total_bytes_sent, total_bytes_sent / 1024);
+    printf("      Successful fragments: %u/%zu\r\n", successful_fragments, num_fragments);
+    printf("      Total time: %lums\r\n", overall_ms);
+    printf("      Sustained throughput: %.2f MB/s\r\n", overall_mbps);
+    
+    if (successful_fragments == num_fragments) {
+        printf("  ✅ Sustained large message test: SUCCESS\r\n");
+        return TEST_RESULT_PASSED;
+    } else {
+        printf("  ❌ Sustained large message test: FAILED\r\n");
+        return TEST_RESULT_FAILED;
+    }
 }
 
 /**
@@ -844,6 +1004,7 @@ static void doip_test_large_messages_all_ecus(drv_doip_t *handle)
         6144,      // 6KB - Extra large message
         7168,      // 7KB - Near maximum message  
         8191,      // 8KB-1 - Maximum size (leave 1 byte for service ID)
+        // 256KB test removed - use sustained multi-fragment test instead
     };
     
     const size_t num_test_sizes = sizeof(test_sizes) / sizeof(test_sizes[0]);
@@ -1016,6 +1177,19 @@ static void doip_client_task(void *pvParameters)
 				
 				// Test large message capabilities with all ECUs
 				doip_test_large_messages_all_ecus(doip_handle);
+				
+				// Test sustained large message transfer (256KB equivalent)
+				printf("\r\n=== Testing Sustained Large Message Transfer ===\r\n");
+				for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count && ecu_idx < 2; ecu_idx++) {
+					// Connect to ECU for sustained test
+					drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(doip_handle, &discovered_ecus.vehicles[ecu_idx]);
+					if (connect_status == DRV_DOIP_STATUS_OK) {
+						// Test 256KB sustained transfer (32 x 8KB messages)
+						doip_test_sustained_large_messages(doip_handle, &discovered_ecus.vehicles[ecu_idx], 256 * 1024);
+						hw_doip_disconnect(doip_handle);
+						vTaskDelay(pdMS_TO_TICKS(1000)); // Recovery delay
+					}
+				}
 				
 				// Test concurrent ECU requests
 				doip_test_concurrent_ecu_requests(doip_handle);
@@ -1285,7 +1459,7 @@ static void diagnostic_processor_task(void *pvParameters)
             printf("Diagnostic Processor: Traditional DOIP mode - monitoring connection state\r\n");
             drv_doip_state_t current_state = hw_doip_get_status(doip_handle);
             printf("Diagnostic Processor: Current DOIP state: %d\r\n", current_state);
-            vTaskDelay(pdMS_TO_TICKS(10000)); // Report every 10 seconds
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Report every 10 seconds
         }
     }
     
