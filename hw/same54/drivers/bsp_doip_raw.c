@@ -15,14 +15,14 @@
 #include <string.h>
 
 
-// Simple network bridge configuration - minimal buffering
-#define DOIP_NETWORK_BUFFER_SIZE     1024    /**< Single network buffer for operations */
+// MTU-optimized network bridge configuration
+#define DOIP_UNIFIED_BUFFER_SIZE     1460    /**< TCP MSS-sized buffer for optimal network utilization */
 #define DOIP_DISCOVERY_TIMEOUT_MS    5000    /**< Discovery timeout */
 #define DOIP_TCP_CONNECT_TIMEOUT_MS  10000   /**< TCP connection timeout */
 
-// Large message chunking configuration - optimized for TCP buffer size
-#define DOIP_BRIDGE_CHUNK_SIZE       720     /**< Chunk size for large messages (optimized for TCP_SND_BUF availability) */
-#define DOIP_BRIDGE_DIRECT_SEND_LIMIT 1000   /**< Messages <= this size use direct send for performance */
+// MTU-optimized message chunking - matches TCP segment size
+#define DOIP_BRIDGE_CHUNK_SIZE       1452    /**< Optimal chunk size (TCP_MSS - DoIP_header = 1460 - 8) */
+#define DOIP_BRIDGE_DIRECT_SEND_LIMIT 1452   /**< Messages <= this size use direct send (matches chunk size) */
 
 
 
@@ -44,8 +44,8 @@ typedef struct {
     // Last received packet source IP (for application use)
     uint32_t last_source_ip;
     
-    // Minimal network buffer
-    uint8_t network_buffer[DOIP_NETWORK_BUFFER_SIZE];
+    // MTU-optimized unified buffer for all operations
+    uint8_t unified_buffer[DOIP_UNIFIED_BUFFER_SIZE];
 } drv_doip_hw_context_t;
 
 // Small discovery message buffer
@@ -88,15 +88,24 @@ static void bridge_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf
            source_ip & 0xFF, (source_ip >> 8) & 0xFF, 
            (source_ip >> 16) & 0xFF, (source_ip >> 24) & 0xFF, port, p->tot_len);
     
-    // Copy packet data to network buffer and forward to callback
-    if (p->tot_len <= DOIP_NETWORK_BUFFER_SIZE && p->tot_len >= 8) {
-        pbuf_copy_partial(p, context->network_buffer, p->tot_len, 0);
-        
-        // Forward all packets to callback - no parsing or caching
-        if (context->receive_callback) {
-            context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
-                                    context->network_buffer, 
-                                    p->tot_len);
+    // Forward packet data directly to callback - no intermediate copying
+    if (p->tot_len >= 8 && p->tot_len <= DOIP_UNIFIED_BUFFER_SIZE) {
+        // Only copy to buffer if payload spans multiple pbufs or callback needs persistent data
+        if (p->next != NULL || context->receive_callback == NULL) {
+            pbuf_copy_partial(p, context->unified_buffer, p->tot_len, 0);
+            
+            if (context->receive_callback) {
+                context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
+                                        context->unified_buffer, 
+                                        p->tot_len);
+            }
+        } else {
+            // Direct forwarding for single pbuf - zero-copy optimization
+            if (context->receive_callback) {
+                context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
+                                        p->payload, 
+                                        p->len);
+            }
         }
     }
     
@@ -132,16 +141,24 @@ static err_t bridge_tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pb
         return err;
     }
     
-    // Copy data to network buffer and forward to callback immediately
-    if (p->len > 0 && p->len <= DOIP_NETWORK_BUFFER_SIZE) {
-        pbuf_copy_partial(p, context->network_buffer, p->len, 0);
+    // Optimized TCP receive with minimal copying
+    if (p->len > 0 && p->len <= DOIP_UNIFIED_BUFFER_SIZE) {
         tcp_recved(tpcb, p->len);
         
-        // Forward to callback immediately - no buffering
+        // Forward to callback with zero-copy optimization when possible
         if (context->receive_callback) {
-            context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
-                                    context->network_buffer, 
-                                    p->len);
+            if (p->next == NULL) {
+                // Single pbuf - direct forwarding (zero-copy)
+                context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
+                                        p->payload, 
+                                        p->len);
+            } else {
+                // Multiple pbufs - need to copy to unified buffer
+                pbuf_copy_partial(p, context->unified_buffer, p->len, 0);
+                context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
+                                        context->unified_buffer, 
+                                        p->len);
+            }
         }
     }
     
@@ -301,7 +318,7 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->udp_pcb = NULL;
     context->receive_callback = NULL;
     context->last_source_ip = 0;
-    memset(context->network_buffer, 0, DOIP_NETWORK_BUFFER_SIZE);
+    memset(context->unified_buffer, 0, DOIP_UNIFIED_BUFFER_SIZE);
     
     printf("DOIP Bridge: Simple initialization completed\r\n");
     return DRV_DOIP_STATUS_OK;
@@ -461,27 +478,26 @@ static drv_doip_status_t bridge_send_routing_activation(drv_doip_hw_context_t *c
 static drv_doip_status_t bridge_send_direct_message(drv_doip_hw_context_t *context, 
                                                    uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length)
 {
-    // Build complete message in stack buffer for small messages
+    // Use unified buffer for direct messages (MTU-optimized)
     uint32_t total_size = 8 + payload_length;
-    uint8_t message_buffer[8 + DOIP_BRIDGE_DIRECT_SEND_LIMIT];
     
-    // Build DoIP header
-    message_buffer[0] = 0x02;  // Protocol version
-    message_buffer[1] = 0xFD;  // Inverse protocol version  
-    message_buffer[2] = (payload_type >> 8) & 0xFF;
-    message_buffer[3] = payload_type & 0xFF;
-    message_buffer[4] = (payload_length >> 24) & 0xFF;
-    message_buffer[5] = (payload_length >> 16) & 0xFF;
-    message_buffer[6] = (payload_length >> 8) & 0xFF;
-    message_buffer[7] = payload_length & 0xFF;
+    // Build DoIP header in unified buffer
+    context->unified_buffer[0] = 0x02;  // Protocol version
+    context->unified_buffer[1] = 0xFD;  // Inverse protocol version  
+    context->unified_buffer[2] = (payload_type >> 8) & 0xFF;
+    context->unified_buffer[3] = payload_type & 0xFF;
+    context->unified_buffer[4] = (payload_length >> 24) & 0xFF;
+    context->unified_buffer[5] = (payload_length >> 16) & 0xFF;
+    context->unified_buffer[6] = (payload_length >> 8) & 0xFF;
+    context->unified_buffer[7] = payload_length & 0xFF;
     
     // Copy payload data
     if (payload_length > 0 && payload_data != NULL) {
-        memcpy(&message_buffer[8], payload_data, payload_length);
+        memcpy(&context->unified_buffer[8], payload_data, payload_length);
     }
     
     // Send complete message
-    err_t err = tcp_write(context->tcp_pcb, message_buffer, total_size, TCP_WRITE_FLAG_COPY);
+    err_t err = tcp_write(context->tcp_pcb, context->unified_buffer, total_size, TCP_WRITE_FLAG_COPY);
     if (err != ERR_OK) {
         printf("DOIP Bridge: Direct send tcp_write failed - err=%d\r\n", err);
         return DRV_DOIP_STATUS_ERROR;
@@ -560,14 +576,14 @@ static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *cont
             continue;
         }
         
-        // Copy chunk to network buffer and send
+        // Copy chunk to unified buffer and send
         if (payload_data != NULL) {
-            memcpy(context->network_buffer, &payload_data[offset], chunk_size);
+            memcpy(context->unified_buffer, &payload_data[offset], chunk_size);
         } else {
-            memset(context->network_buffer, 0, chunk_size);  // Send zeros if no data
+            memset(context->unified_buffer, 0, chunk_size);  // Send zeros if no data
         }
         
-        err = tcp_write(context->tcp_pcb, context->network_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
+        err = tcp_write(context->tcp_pcb, context->unified_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
         if (err != ERR_OK) {
             if (err == ERR_MEM) {
                 // Memory exhausted - wait longer and try smaller chunk
@@ -588,12 +604,12 @@ static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *cont
                 
                 // Update remaining data size
                 if (payload_data != NULL) {
-                    memcpy(context->network_buffer, &payload_data[offset], chunk_size);
+                    memcpy(context->unified_buffer, &payload_data[offset], chunk_size);
                 } else {
-                    memset(context->network_buffer, 0, chunk_size);
+                    memset(context->unified_buffer, 0, chunk_size);
                 }
                 
-                err = tcp_write(context->tcp_pcb, context->network_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
+                err = tcp_write(context->tcp_pcb, context->unified_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
                 if (err != ERR_OK) {
                     printf("DOIP Bridge: Chunk write failed even with smaller size - err=%d, chunk=%u\r\n", err, chunk_count + 1);
                     return DRV_DOIP_STATUS_ERROR;
