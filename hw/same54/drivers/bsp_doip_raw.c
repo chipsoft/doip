@@ -156,13 +156,16 @@ static err_t bridge_tcp_sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len
     return ERR_OK;
 }
 
-// Simplified TCP error callback - bridge mode
+// Improved TCP error callback - bridge mode with diagnostics
 static void bridge_tcp_error_callback(void *arg, err_t err)
 {
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)arg;
     
-    context->tcp_pcb = NULL; // PCB is already freed by lwIP
-    context->current_state = DRV_DOIP_STATE_ERROR;
+    if (context != NULL) {
+        printf("DOIP Bridge: TCP error callback - err=%d, previous_state=%d\r\n", err, context->current_state);
+        context->tcp_pcb = NULL; // PCB is already freed by lwIP
+        context->current_state = DRV_DOIP_STATE_ERROR;
+    }
 }
 
 
@@ -520,27 +523,39 @@ static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *cont
     uint32_t remaining = payload_length;
     uint32_t offset = 0;
     uint32_t chunk_count = 0;
+    TickType_t chunk_start_time = xTaskGetTickCount();
+    const TickType_t max_chunk_time = pdMS_TO_TICKS(30000); // 30 second timeout per message
     
     while (remaining > 0) {
+        // Check for overall timeout
+        if ((xTaskGetTickCount() - chunk_start_time) > max_chunk_time) {
+            printf("DOIP Bridge: Chunked send timeout after 30 seconds\r\n");
+            return DRV_DOIP_STATUS_TIMEOUT;
+        }
         uint32_t chunk_size = (remaining > DOIP_BRIDGE_CHUNK_SIZE) ? DOIP_BRIDGE_CHUNK_SIZE : remaining;
         
-        // Intelligent TCP send buffer space checking
+        // Conservative TCP send buffer space checking with memory headroom
         uint16_t available = tcp_sndbuf(context->tcp_pcb);
-        if (available < chunk_size) {
+        uint32_t needed_space = chunk_size + 128;  // Add headroom for lwIP internal overhead
+        
+        if (available < needed_space) {
             // Calculate buffer utilization for smarter delays
             uint16_t total_buffer = TCP_SND_BUF;  // From lwipopts.h
             uint8_t utilization_percent = ((total_buffer - available) * 100) / total_buffer;
             
             printf("DOIP Bridge: Waiting for TCP buffer space (%u needed, %u available, %u%% used)\r\n", 
-                   chunk_size, available, utilization_percent);
+                   needed_space, available, utilization_percent);
             
-            // Dynamic delay based on buffer pressure
+            // Force TCP output to free buffers
+            tcp_output(context->tcp_pcb);
+            
+            // Dynamic delay based on buffer pressure with longer waits
             if (utilization_percent > 90) {
-                vTaskDelay(pdMS_TO_TICKS(5));  // High pressure: 5ms delay
+                vTaskDelay(pdMS_TO_TICKS(15));  // High pressure: longer delay for memory recovery
             } else if (utilization_percent > 75) {
-                vTaskDelay(pdMS_TO_TICKS(2));  // Medium pressure: 2ms delay  
+                vTaskDelay(pdMS_TO_TICKS(8));   // Medium pressure: moderate delay
             } else {
-                vTaskDelay(pdMS_TO_TICKS(1));  // Low pressure: 1ms delay
+                vTaskDelay(pdMS_TO_TICKS(3));   // Low pressure: short delay
             }
             continue;
         }
@@ -554,8 +569,39 @@ static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *cont
         
         err = tcp_write(context->tcp_pcb, context->network_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
         if (err != ERR_OK) {
-            printf("DOIP Bridge: Chunk write failed - err=%d, chunk=%u\r\n", err, chunk_count + 1);
-            return DRV_DOIP_STATUS_ERROR;
+            if (err == ERR_MEM) {
+                // Memory exhausted - wait longer and try smaller chunk
+                printf("DOIP Bridge: TCP memory exhausted on chunk %u, retrying with smaller size...\r\n", chunk_count + 1);
+                
+                // Force immediate TCP output to free up buffers
+                tcp_output(context->tcp_pcb);
+                vTaskDelay(pdMS_TO_TICKS(10));  // Longer delay for memory recovery
+                
+                // Try with smaller chunk size (half)
+                uint32_t smaller_chunk = chunk_size / 2;
+                if (smaller_chunk < 64) {
+                    smaller_chunk = 64; // Minimum chunk size
+                }
+                
+                printf("DOIP Bridge: Retrying with %u bytes (was %u)...\r\n", smaller_chunk, chunk_size);
+                chunk_size = smaller_chunk;
+                
+                // Update remaining data size
+                if (payload_data != NULL) {
+                    memcpy(context->network_buffer, &payload_data[offset], chunk_size);
+                } else {
+                    memset(context->network_buffer, 0, chunk_size);
+                }
+                
+                err = tcp_write(context->tcp_pcb, context->network_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
+                if (err != ERR_OK) {
+                    printf("DOIP Bridge: Chunk write failed even with smaller size - err=%d, chunk=%u\r\n", err, chunk_count + 1);
+                    return DRV_DOIP_STATUS_ERROR;
+                }
+            } else {
+                printf("DOIP Bridge: Chunk write failed - err=%d, chunk=%u\r\n", err, chunk_count + 1);
+                return DRV_DOIP_STATUS_ERROR;
+            }
         }
         
         remaining -= chunk_size;
@@ -602,7 +648,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         tcp_abort(context->tcp_pcb);  // Force close to free resources immediately
         context->tcp_pcb = NULL;
         context->current_state = DRV_DOIP_STATE_IDLE;
-        vTaskDelay(pdMS_TO_TICKS(500)); // Longer delay for proper resource cleanup
+        vTaskDelay(pdMS_TO_TICKS(250)); // Extended delay for proper resource cleanup
     }
     
     // Create TCP PCB
@@ -630,10 +676,10 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Improved connection waiting with shorter timeout and better cleanup
+    // Improved connection waiting with proper timeout and better cleanup
     printf("DOIP Bridge: Waiting for connection...\r\n");
     uint32_t timeout_start = xTaskGetTickCount();
-    uint32_t timeout_ticks = pdMS_TO_TICKS(2000); // Reduced from 10s to 2s for faster failure detection
+    uint32_t timeout_ticks = pdMS_TO_TICKS(DOIP_TCP_CONNECT_TIMEOUT_MS); // Use defined 10-second timeout
     
     while ((context->current_state == DRV_DOIP_STATE_CONNECTING) && 
            ((xTaskGetTickCount() - timeout_start) < timeout_ticks)) {
@@ -641,15 +687,18 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     }
     
     if (context->current_state != DRV_DOIP_STATE_CONNECTED) {
-        printf("DOIP Bridge: Connection failed (state=%d after %lums)\r\n", 
-               context->current_state, 
-               (xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS);
+        uint32_t actual_timeout_ms = (xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS;
+        printf("DOIP Bridge: Connection failed (state=%d after %lums, timeout was %lums)\r\n", 
+               context->current_state, actual_timeout_ms, DOIP_TCP_CONNECT_TIMEOUT_MS);
         
         if (context->tcp_pcb != NULL) {
             tcp_abort(context->tcp_pcb); // Force close for immediate resource recovery
             context->tcp_pcb = NULL;
         }
         context->current_state = DRV_DOIP_STATE_ERROR;
+        
+        // Additional cleanup delay after connection failure to ensure resources are freed
+        vTaskDelay(pdMS_TO_TICKS(250));
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -674,16 +723,16 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
     if (context->tcp_pcb != NULL) {
         printf("DOIP Bridge: Closing TCP PCB (state=%d)\r\n", context->tcp_pcb->state);
         
-        // Use graceful close if connected, abort if not
-        if (context->tcp_pcb->state == ESTABLISHED) {
-            tcp_close(context->tcp_pcb);
-        } else {
-            tcp_abort(context->tcp_pcb); // Force close for faster resource recovery
-        }
+        // Clear error callback to suppress expected ERR_ABRT during disconnect
+        tcp_err(context->tcp_pcb, NULL);
+        
+        // Always use tcp_abort for immediate resource cleanup
+        // tcp_close() can cause ERR_ABRT if remote side is already closing
+        tcp_abort(context->tcp_pcb); 
         context->tcp_pcb = NULL;
         
-        // Allow time for proper cleanup
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Extended cleanup delay to ensure lwIP resources are fully released
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
