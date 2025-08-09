@@ -15,21 +15,53 @@
 #include <string.h>
 
 
-// MTU-optimized network bridge configuration
+// Universal DoIP message sending - network and memory optimized
 #define DOIP_UNIFIED_BUFFER_SIZE     1460    /**< TCP MSS-sized buffer for optimal network utilization */
 #define DOIP_DISCOVERY_TIMEOUT_MS    5000    /**< Discovery timeout */
 #define DOIP_TCP_CONNECT_TIMEOUT_MS  10000   /**< TCP connection timeout */
 
-// MTU-optimized message chunking - matches TCP segment size
-#define DOIP_BRIDGE_CHUNK_SIZE       1452    /**< Optimal chunk size (TCP_MSS - DoIP_header = 1460 - 8) */
-#define DOIP_BRIDGE_DIRECT_SEND_LIMIT 1452   /**< Messages <= this size use direct send (matches chunk size) */
+// Network layer constants
+#define DOIP_HEADER_SIZE            8        /**< DoIP header size */
+#define TCP_MSS_SIZE                1460     /**< TCP Maximum Segment Size from config */
+#define TCP_SEND_BUFFER_SIZE        5840     /**< TCP send buffer size (4 × TCP_MSS) */
+#define TCP_BUFFER_SAFETY_MARGIN    512      /**< Never use last 512 bytes of TCP buffer */
+#define TCP_USABLE_BUFFER          (TCP_SEND_BUFFER_SIZE - TCP_BUFFER_SAFETY_MARGIN)
+
+// Universal chunking strategy - conservative and reliable
+#define DOIP_SAFE_CHUNK_SIZE        1200     /**< Conservative chunk size for buffer stability */
+#define DOIP_TINY_MESSAGE_LIMIT     64       /**< Messages ≤ 64 bytes - single segment */
+#define DOIP_SMALL_MESSAGE_LIMIT    1452     /**< Messages ≤ 1452 bytes - single optimal segment */
+#define DOIP_MEDIUM_MESSAGE_LIMIT   TCP_USABLE_BUFFER  /**< Messages that fit in TCP buffer */
+
+// Message classification for optimal sending strategies
+typedef enum {
+    DOIP_MSG_TINY,      /**< ≤ 64 bytes - single segment with header */
+    DOIP_MSG_SMALL,     /**< ≤ 1452 bytes - single segment optimal */  
+    DOIP_MSG_MEDIUM,    /**< ≤ 5328 bytes - fits in TCP buffer */
+    DOIP_MSG_LARGE,     /**< > 5328 bytes - requires streaming */
+} doip_message_class_t;
 
 
 
 
 // Pure packet bridge - no caching needed
 
-// Pure packet bridge hardware context
+// Universal DoIP sender state for enhanced buffer management
+typedef struct {
+    // Message streaming state
+    const uint8_t *current_payload;
+    uint32_t remaining_bytes;
+    uint32_t current_offset;
+    
+    // TCP buffer monitoring
+    uint32_t bytes_in_flight;
+    uint32_t last_buffer_check_time;
+    
+    // Pre-built DoIP header for efficiency
+    uint8_t doip_header[DOIP_HEADER_SIZE];
+} universal_doip_sender_t;
+
+// Pure packet bridge hardware context with universal sender
 typedef struct {
     // Basic state
     drv_doip_state_t current_state;
@@ -46,6 +78,9 @@ typedef struct {
     
     // MTU-optimized unified buffer for all operations
     uint8_t unified_buffer[DOIP_UNIFIED_BUFFER_SIZE];
+    
+    // Universal sender state for enhanced message handling
+    universal_doip_sender_t sender_state;
 } drv_doip_hw_context_t;
 
 // Small discovery message buffer
@@ -60,12 +95,18 @@ static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .last_source_ip = 0,
 };
 
-// Forward declarations for bridge functions
+// Forward declarations for universal DoIP sending system
 static drv_doip_status_t bridge_send_routing_activation(drv_doip_hw_context_t *context);
-static drv_doip_status_t bridge_send_direct_message(drv_doip_hw_context_t *context, 
-                                                   uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length);
-static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *context, 
-                                                    uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length);
+static doip_message_class_t classify_doip_message(uint32_t payload_length);
+static void build_doip_header(uint8_t *header, uint16_t message_type, uint32_t payload_length);
+static drv_doip_status_t universal_doip_send(drv_doip_hw_context_t *context, 
+                                            uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length);
+static drv_doip_status_t send_tiny_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length);
+static drv_doip_status_t send_small_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length);
+static drv_doip_status_t send_medium_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length);
+static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length);
+static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *context, uint32_t needed_bytes);
+static drv_doip_status_t tcp_write_with_backpressure(drv_doip_hw_context_t *context, const uint8_t *data, uint32_t length);
 static err_t bridge_tcp_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
 static err_t bridge_tcp_sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len);
 static err_t bridge_tcp_connected_callback(void *arg, struct tcp_pcb *tpcb, err_t err);
@@ -207,6 +248,312 @@ static uint32_t drv_doip_get_last_source_ip_impl(const void *hw_context);
 
 
 //-----------------------------------------------------------------------------
+// Universal DoIP Message Sending System
+//-----------------------------------------------------------------------------
+
+/**
+ * \brief Classify DoIP message based on payload length for optimal sending strategy
+ * \param payload_length Length of DoIP payload in bytes
+ * \return Message class for routing to appropriate sending strategy
+ */
+static doip_message_class_t classify_doip_message(uint32_t payload_length)
+{
+    uint32_t total_size = DOIP_HEADER_SIZE + payload_length;
+    
+    if (total_size <= DOIP_TINY_MESSAGE_LIMIT)      return DOIP_MSG_TINY;
+    if (total_size <= DOIP_SMALL_MESSAGE_LIMIT)     return DOIP_MSG_SMALL;  
+    if (total_size <= DOIP_MEDIUM_MESSAGE_LIMIT)    return DOIP_MSG_MEDIUM;
+    return DOIP_MSG_LARGE;
+}
+
+/**
+ * \brief Build DoIP header in provided buffer
+ * \param header Pointer to 8-byte buffer for header
+ * \param message_type DoIP message type (e.g., 0x8001)
+ * \param payload_length Length of payload in bytes
+ */
+static void build_doip_header(uint8_t *header, uint16_t message_type, uint32_t payload_length)
+{
+    header[0] = 0x02;  // Protocol version
+    header[1] = 0xFD;  // Inverse protocol version
+    header[2] = (message_type >> 8) & 0xFF;        // Message type high byte
+    header[3] = message_type & 0xFF;               // Message type low byte
+    header[4] = (payload_length >> 24) & 0xFF;     // Length high bytes
+    header[5] = (payload_length >> 16) & 0xFF;
+    header[6] = (payload_length >> 8) & 0xFF;
+    header[7] = payload_length & 0xFF;             // Length low byte
+}
+
+/**
+ * \brief Wait for sufficient TCP buffer space with adaptive backpressure control
+ * \param context DoIP hardware context
+ * \param needed_bytes Number of bytes needed in TCP send buffer
+ * \return DRV_DOIP_STATUS_OK on success, DRV_DOIP_STATUS_TIMEOUT on timeout
+ */
+static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *context, uint32_t needed_bytes)
+{
+    TickType_t start_time = xTaskGetTickCount();
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(5000); // 5 second timeout
+    
+    while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
+        uint16_t available = tcp_sndbuf(context->tcp_pcb);
+        
+        if (available >= (needed_bytes + TCP_BUFFER_SAFETY_MARGIN)) {
+            return DRV_DOIP_STATUS_OK; // Sufficient space available
+        }
+        
+        // Force transmission to free buffers
+        tcp_output(context->tcp_pcb);
+        
+        // Adaptive delay based on buffer pressure
+        uint8_t utilization = ((TCP_SEND_BUFFER_SIZE - available) * 100) / TCP_SEND_BUFFER_SIZE;
+        
+        if (utilization > 90)      vTaskDelay(pdMS_TO_TICKS(20));  // High pressure
+        else if (utilization > 75) vTaskDelay(pdMS_TO_TICKS(10));  // Medium pressure  
+        else                       vTaskDelay(pdMS_TO_TICKS(5));   // Low pressure
+    }
+    
+    printf("DOIP Universal: TCP buffer timeout after 5 seconds\r\n");
+    return DRV_DOIP_STATUS_TIMEOUT; // Buffer space not available within timeout
+}
+
+/**
+ * \brief TCP write with built-in backpressure control
+ * \param context DoIP hardware context
+ * \param data Data to send
+ * \param length Length of data in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t tcp_write_with_backpressure(drv_doip_hw_context_t *context, const uint8_t *data, uint32_t length)
+{
+    // Wait for sufficient buffer space
+    drv_doip_status_t status = wait_for_tcp_buffer_space(context, length);
+    if (status != DRV_DOIP_STATUS_OK) {
+        return status;
+    }
+    
+    // Perform TCP write
+    err_t err = tcp_write(context->tcp_pcb, data, length, TCP_WRITE_FLAG_COPY);
+    if (err != ERR_OK) {
+        printf("DOIP Universal: tcp_write failed - err=%d\r\n", err);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Send tiny DoIP message (≤64 bytes) - single optimized segment
+ * \param context DoIP hardware context
+ * \param payload Payload data to send
+ * \param length Payload length in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t send_tiny_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length)
+{
+    printf("DOIP Universal: Tiny message send - %u bytes\r\n", (unsigned int)length);
+    
+    // Pack header + payload in single segment for maximum efficiency
+    build_doip_header(context->sender_state.doip_header, 0x8001, length);
+    memcpy(context->unified_buffer, context->sender_state.doip_header, DOIP_HEADER_SIZE);
+    
+    if (length > 0 && payload != NULL) {
+        memcpy(context->unified_buffer + DOIP_HEADER_SIZE, payload, length);
+    }
+    
+    return tcp_write_with_backpressure(context, context->unified_buffer, DOIP_HEADER_SIZE + length);
+}
+
+/**
+ * \brief Send small DoIP message (≤1452 bytes) - single optimal TCP segment
+ * \param context DoIP hardware context
+ * \param payload Payload data to send
+ * \param length Payload length in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t send_small_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length)
+{
+    printf("DOIP Universal: Small message send - %u bytes (single segment)\r\n", (unsigned int)length);
+    
+    // Build complete message in unified buffer - optimal network utilization
+    build_doip_header(context->sender_state.doip_header, 0x8001, length);
+    memcpy(context->unified_buffer, context->sender_state.doip_header, DOIP_HEADER_SIZE);
+    
+    if (length > 0 && payload != NULL) {
+        memcpy(context->unified_buffer + DOIP_HEADER_SIZE, payload, length);
+    }
+    
+    // Send complete message and flush immediately
+    drv_doip_status_t status = tcp_write_with_backpressure(context, context->unified_buffer, DOIP_HEADER_SIZE + length);
+    if (status == DRV_DOIP_STATUS_OK) {
+        tcp_output(context->tcp_pcb); // Force immediate transmission
+    }
+    
+    return status;
+}
+
+/**
+ * \brief Send medium DoIP message (≤5328 bytes) - fits in TCP buffer
+ * \param context DoIP hardware context  
+ * \param payload Payload data to send
+ * \param length Payload length in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t send_medium_message(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length)
+{
+    printf("DOIP Universal: Medium message send - %u bytes (multi-chunk)\r\n", (unsigned int)length);
+    
+    // Send header first
+    build_doip_header(context->sender_state.doip_header, 0x8001, length);
+    drv_doip_status_t status = tcp_write_with_backpressure(context, context->sender_state.doip_header, DOIP_HEADER_SIZE);
+    if (status != DRV_DOIP_STATUS_OK) {
+        return status;
+    }
+    
+    // Send payload in safe chunks
+    uint32_t remaining = length;
+    uint32_t offset = 0;
+    uint32_t chunk_count = 0;
+    
+    while (remaining > 0) {
+        uint32_t chunk_size = (remaining > DOIP_SAFE_CHUNK_SIZE) ? DOIP_SAFE_CHUNK_SIZE : remaining;
+        
+        if (payload != NULL) {
+            memcpy(context->unified_buffer, payload + offset, chunk_size);
+        } else {
+            memset(context->unified_buffer, 0, chunk_size);
+        }
+        
+        status = tcp_write_with_backpressure(context, context->unified_buffer, chunk_size);
+        if (status != DRV_DOIP_STATUS_OK) {
+            return status;
+        }
+        
+        remaining -= chunk_size;
+        offset += chunk_size;
+        chunk_count++;
+        
+        // Periodic flush for flow control every 3 chunks
+        if ((chunk_count % 3) == 0) {
+            tcp_output(context->tcp_pcb);
+        }
+    }
+    
+    // Final flush
+    tcp_output(context->tcp_pcb);
+    printf("DOIP Universal: Medium message completed - %u chunks sent\r\n", chunk_count);
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Send large DoIP message (>5328 bytes) - streaming with backpressure
+ * \param context DoIP hardware context
+ * \param payload Payload data to send
+ * \param length Payload length in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *context, const uint8_t *payload, uint32_t length)
+{
+    printf("DOIP Universal: Large message streaming - %u bytes\r\n", (unsigned int)length);
+    
+    // Initialize streaming state
+    context->sender_state.current_payload = payload;
+    context->sender_state.remaining_bytes = length;
+    context->sender_state.current_offset = 0;
+    
+    // Send header with streaming
+    build_doip_header(context->sender_state.doip_header, 0x8001, length);
+    drv_doip_status_t status = tcp_write_with_backpressure(context, context->sender_state.doip_header, DOIP_HEADER_SIZE);
+    if (status != DRV_DOIP_STATUS_OK) {
+        return status;
+    }
+    
+    // Stream payload with intelligent backpressure control
+    uint32_t chunk_count = 0;
+    TickType_t streaming_start = xTaskGetTickCount();
+    const TickType_t max_streaming_time = pdMS_TO_TICKS(30000); // 30 second timeout
+    
+    while (context->sender_state.remaining_bytes > 0) {
+        // Overall timeout protection
+        if ((xTaskGetTickCount() - streaming_start) > max_streaming_time) {
+            printf("DOIP Universal: Streaming timeout after 30 seconds\r\n");
+            return DRV_DOIP_STATUS_TIMEOUT;
+        }
+        
+        uint32_t chunk_size = (context->sender_state.remaining_bytes > DOIP_SAFE_CHUNK_SIZE) ? 
+                              DOIP_SAFE_CHUNK_SIZE : context->sender_state.remaining_bytes;
+        
+        // Prepare chunk in unified buffer
+        if (context->sender_state.current_payload != NULL) {
+            memcpy(context->unified_buffer, 
+                   context->sender_state.current_payload + context->sender_state.current_offset, 
+                   chunk_size);
+        } else {
+            memset(context->unified_buffer, 0, chunk_size);
+        }
+        
+        // Send chunk with backpressure control
+        status = tcp_write_with_backpressure(context, context->unified_buffer, chunk_size);
+        if (status != DRV_DOIP_STATUS_OK) {
+            return status;
+        }
+        
+        // Update streaming state
+        context->sender_state.remaining_bytes -= chunk_size;
+        context->sender_state.current_offset += chunk_size;
+        chunk_count++;
+        
+        // Aggressive flow control for large messages
+        if ((chunk_count % 2) == 0) {
+            tcp_output(context->tcp_pcb); // Force transmission every 2 chunks
+        }
+    }
+    
+    // Final flush
+    tcp_output(context->tcp_pcb);
+    printf("DOIP Universal: Large message streaming completed - %u chunks sent\r\n", chunk_count);
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Universal DoIP message sender - routes to optimal strategy by message class
+ * \param context DoIP hardware context
+ * \param payload_type DoIP message type (e.g., 0x8001)
+ * \param payload_data Payload data to send
+ * \param payload_length Payload length in bytes
+ * \return DRV_DOIP_STATUS_OK on success, error on failure
+ */
+static drv_doip_status_t universal_doip_send(drv_doip_hw_context_t *context, 
+                                            uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length)
+{
+    // Classify message and route to optimal sending strategy
+    doip_message_class_t msg_class = classify_doip_message(payload_length);
+    
+    const char* class_names[] = {"TINY", "SMALL", "MEDIUM", "LARGE"};
+    printf("DOIP Universal: Sending %s message - type=0x%04X, length=%u bytes\r\n", 
+           class_names[msg_class], payload_type, (unsigned int)payload_length);
+    
+    // Execute class-specific optimized sending strategy
+    switch (msg_class) {
+        case DOIP_MSG_TINY:
+            return send_tiny_message(context, payload_data, payload_length);
+            
+        case DOIP_MSG_SMALL:  
+            return send_small_message(context, payload_data, payload_length);
+            
+        case DOIP_MSG_MEDIUM:
+            return send_medium_message(context, payload_data, payload_length);
+            
+        case DOIP_MSG_LARGE:
+            return send_large_message_streaming(context, payload_data, payload_length);
+            
+        default:
+            printf("DOIP Universal: Invalid message class\r\n");
+            return DRV_DOIP_STATUS_ERROR;
+    }
+}
+
+//-----------------------------------------------------------------------------
 // Raw Message and Packet Listener Implementation
 //-----------------------------------------------------------------------------
 
@@ -217,36 +564,29 @@ static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, 
     ASSERT(hw_context != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    printf("DOIP Bridge: Smart send - type=0x%04X, length=%u bytes\r\n", 
-           payload_type, (unsigned int)payload_length);
-    
-    // Check connection
+    // Check connection state
     if (context->current_state != DRV_DOIP_STATE_CONNECTED && 
         context->current_state != DRV_DOIP_STATE_ACTIVATED) {
-        printf("DOIP Bridge: Not connected\r\n");
+        printf("DOIP Universal: Not connected (state=%d)\r\n", context->current_state);
         return DRV_DOIP_STATUS_ERROR;
     }
     
     if (context->tcp_pcb == NULL) {
-        printf("DOIP Bridge: No TCP connection\r\n");
+        printf("DOIP Universal: No TCP connection\r\n");
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Validate payload size against DoIP specification
+    // Validate payload size against DoIP specification (if defined)
+    #ifdef DOIP_MAX_SAFE_PAYLOAD_SIZE
     if (payload_length > DOIP_MAX_SAFE_PAYLOAD_SIZE) {
-        printf("DOIP Bridge: Payload exceeds DoIP limit (%u > %u bytes)\r\n", 
+        printf("DOIP Universal: Payload exceeds DoIP limit (%u > %u bytes)\r\n", 
                (unsigned int)payload_length, (unsigned int)DOIP_MAX_SAFE_PAYLOAD_SIZE);
         return DRV_DOIP_STATUS_ERROR;
     }
+    #endif
     
-    // Smart routing based on message size
-    if (payload_length <= DOIP_BRIDGE_DIRECT_SEND_LIMIT) {
-        // Small message: use direct send for performance
-        return bridge_send_direct_message(context, payload_type, payload_data, payload_length);
-    } else {
-        // Large message: use chunking
-        return bridge_send_chunked_message(context, payload_type, payload_data, payload_length);
-    }
+    // Route to universal sending system for optimal handling
+    return universal_doip_send(context, payload_type, payload_data, payload_length);
 }
 
 // Consolidated packet listener stub - not implemented in raw lwIP version
@@ -319,6 +659,9 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->receive_callback = NULL;
     context->last_source_ip = 0;
     memset(context->unified_buffer, 0, DOIP_UNIFIED_BUFFER_SIZE);
+    
+    // Initialize universal sender state
+    memset(&context->sender_state, 0, sizeof(universal_doip_sender_t));
     
     printf("DOIP Bridge: Simple initialization completed\r\n");
     return DRV_DOIP_STATUS_OK;
@@ -474,167 +817,8 @@ static drv_doip_status_t bridge_send_routing_activation(drv_doip_hw_context_t *c
     return DRV_DOIP_STATUS_OK;
 }
 
-// Direct send for small messages (uses stack buffer for performance)
-static drv_doip_status_t bridge_send_direct_message(drv_doip_hw_context_t *context, 
-                                                   uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length)
-{
-    // Use unified buffer for direct messages (MTU-optimized)
-    uint32_t total_size = 8 + payload_length;
-    
-    // Build DoIP header in unified buffer
-    context->unified_buffer[0] = 0x02;  // Protocol version
-    context->unified_buffer[1] = 0xFD;  // Inverse protocol version  
-    context->unified_buffer[2] = (payload_type >> 8) & 0xFF;
-    context->unified_buffer[3] = payload_type & 0xFF;
-    context->unified_buffer[4] = (payload_length >> 24) & 0xFF;
-    context->unified_buffer[5] = (payload_length >> 16) & 0xFF;
-    context->unified_buffer[6] = (payload_length >> 8) & 0xFF;
-    context->unified_buffer[7] = payload_length & 0xFF;
-    
-    // Copy payload data
-    if (payload_length > 0 && payload_data != NULL) {
-        memcpy(&context->unified_buffer[8], payload_data, payload_length);
-    }
-    
-    // Send complete message
-    err_t err = tcp_write(context->tcp_pcb, context->unified_buffer, total_size, TCP_WRITE_FLAG_COPY);
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: Direct send tcp_write failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    err = tcp_output(context->tcp_pcb);
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: Direct send tcp_output failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    return DRV_DOIP_STATUS_OK;
-}
-
-// Chunked send for large messages (uses network buffer for chunking)
-static drv_doip_status_t bridge_send_chunked_message(drv_doip_hw_context_t *context, 
-                                                    uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length)
-{
-    printf("DOIP Bridge: Chunked send - type=0x%04X, length=%u bytes\r\n", payload_type, (unsigned int)payload_length);
-    
-    // Step 1: Send DoIP header first
-    uint8_t header[8];
-    header[0] = 0x02;  // Protocol version
-    header[1] = 0xFD;  // Inverse protocol version
-    header[2] = (payload_type >> 8) & 0xFF;
-    header[3] = payload_type & 0xFF;
-    header[4] = (payload_length >> 24) & 0xFF;
-    header[5] = (payload_length >> 16) & 0xFF;
-    header[6] = (payload_length >> 8) & 0xFF;
-    header[7] = payload_length & 0xFF;
-    
-    err_t err = tcp_write(context->tcp_pcb, header, sizeof(header), TCP_WRITE_FLAG_COPY);
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: Header write failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    // Step 2: Send payload in chunks
-    uint32_t remaining = payload_length;
-    uint32_t offset = 0;
-    uint32_t chunk_count = 0;
-    TickType_t chunk_start_time = xTaskGetTickCount();
-    const TickType_t max_chunk_time = pdMS_TO_TICKS(30000); // 30 second timeout per message
-    
-    while (remaining > 0) {
-        // Check for overall timeout
-        if ((xTaskGetTickCount() - chunk_start_time) > max_chunk_time) {
-            printf("DOIP Bridge: Chunked send timeout after 30 seconds\r\n");
-            return DRV_DOIP_STATUS_TIMEOUT;
-        }
-        uint32_t chunk_size = (remaining > DOIP_BRIDGE_CHUNK_SIZE) ? DOIP_BRIDGE_CHUNK_SIZE : remaining;
-        
-        // Conservative TCP send buffer space checking with memory headroom
-        uint16_t available = tcp_sndbuf(context->tcp_pcb);
-        uint32_t needed_space = chunk_size + 128;  // Add headroom for lwIP internal overhead
-        
-        if (available < needed_space) {
-            // Calculate buffer utilization for smarter delays
-            uint16_t total_buffer = TCP_SND_BUF;  // From lwipopts.h
-            uint8_t utilization_percent = ((total_buffer - available) * 100) / total_buffer;
-            
-            printf("DOIP Bridge: Waiting for TCP buffer space (%u needed, %u available, %u%% used)\r\n", 
-                   needed_space, available, utilization_percent);
-            
-            // Force TCP output to free buffers
-            tcp_output(context->tcp_pcb);
-            
-            // Dynamic delay based on buffer pressure with longer waits
-            if (utilization_percent > 90) {
-                vTaskDelay(pdMS_TO_TICKS(15));  // High pressure: longer delay for memory recovery
-            } else if (utilization_percent > 75) {
-                vTaskDelay(pdMS_TO_TICKS(8));   // Medium pressure: moderate delay
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(3));   // Low pressure: short delay
-            }
-            continue;
-        }
-        
-        // Copy chunk to unified buffer and send
-        if (payload_data != NULL) {
-            memcpy(context->unified_buffer, &payload_data[offset], chunk_size);
-        } else {
-            memset(context->unified_buffer, 0, chunk_size);  // Send zeros if no data
-        }
-        
-        err = tcp_write(context->tcp_pcb, context->unified_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
-        if (err != ERR_OK) {
-            if (err == ERR_MEM) {
-                // Memory exhausted - wait longer and try smaller chunk
-                printf("DOIP Bridge: TCP memory exhausted on chunk %u, retrying with smaller size...\r\n", chunk_count + 1);
-                
-                // Force immediate TCP output to free up buffers
-                tcp_output(context->tcp_pcb);
-                vTaskDelay(pdMS_TO_TICKS(10));  // Longer delay for memory recovery
-                
-                // Try with smaller chunk size (half)
-                uint32_t smaller_chunk = chunk_size / 2;
-                if (smaller_chunk < 64) {
-                    smaller_chunk = 64; // Minimum chunk size
-                }
-                
-                printf("DOIP Bridge: Retrying with %u bytes (was %u)...\r\n", smaller_chunk, chunk_size);
-                chunk_size = smaller_chunk;
-                
-                // Update remaining data size
-                if (payload_data != NULL) {
-                    memcpy(context->unified_buffer, &payload_data[offset], chunk_size);
-                } else {
-                    memset(context->unified_buffer, 0, chunk_size);
-                }
-                
-                err = tcp_write(context->tcp_pcb, context->unified_buffer, chunk_size, TCP_WRITE_FLAG_COPY);
-                if (err != ERR_OK) {
-                    printf("DOIP Bridge: Chunk write failed even with smaller size - err=%d, chunk=%u\r\n", err, chunk_count + 1);
-                    return DRV_DOIP_STATUS_ERROR;
-                }
-            } else {
-                printf("DOIP Bridge: Chunk write failed - err=%d, chunk=%u\r\n", err, chunk_count + 1);
-                return DRV_DOIP_STATUS_ERROR;
-            }
-        }
-        
-        remaining -= chunk_size;
-        offset += chunk_size;
-        chunk_count++;
-    }
-    
-    // Step 3: Flush all data
-    err = tcp_output(context->tcp_pcb);
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: tcp_output failed - err=%d\r\n", err);
-        return DRV_DOIP_STATUS_ERROR;
-    }
-    
-    printf("DOIP Bridge: Chunked send completed - %u chunks sent\r\n", chunk_count);
-    return DRV_DOIP_STATUS_OK;
-}
+// Legacy bridge send functions removed - replaced by universal DoIP sending system
+// All message sending now handled by universal_doip_send() with class-based routing
 
 static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context, const drv_doip_vehicle_info_t *vehicle_info)
 {
