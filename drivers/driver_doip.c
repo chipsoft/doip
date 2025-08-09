@@ -168,6 +168,43 @@ uint32_t hw_doip_get_last_source_ip(drv_doip_t *handle)
     return handle->get_last_source_ip(handle->hw_context);
 }
 
+drv_doip_status_t hw_doip_get_metrics(drv_doip_t *handle, drv_doip_metrics_t *metrics)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_metrics != NULL);
+    ASSERT(metrics != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->get_metrics(handle->hw_context, metrics);
+}
+
+drv_doip_status_t hw_doip_reset_metrics(drv_doip_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->reset_metrics != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->reset_metrics(handle->hw_context);
+}
+
+drv_doip_status_t hw_doip_print_metrics(drv_doip_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->print_metrics != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->print_metrics(handle->hw_context);
+}
+
 // Large message functions removed - functionality moved to unified functions above
 
 //-----------------------------------------------------------------------------

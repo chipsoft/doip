@@ -259,7 +259,7 @@ typedef enum {
  */
 typedef void (*drv_doip_callback_t)(drv_doip_cb_type_t type, const void *data, size_t data_len);
 
-// Forward declaration for raw packet structure
+// Forward declarations
 struct drv_doip_raw_packet;
 
 /**
@@ -368,6 +368,96 @@ typedef struct {
     drv_doip_packet_callback_t packet_callback;
 } drv_doip_packet_listener_config_t;
 
+/**
+ * @brief DoIP driver performance metrics structure
+ * @details Comprehensive performance monitoring for network optimization and debugging
+ */
+typedef struct drv_doip_metrics {
+    /** @name Message Statistics
+     * Counters for different message types and sizes
+     * @{
+     */
+    uint32_t messages_sent_total;           /**< Total messages sent */
+    uint32_t messages_sent_tiny;            /**< Tiny messages (≤64 bytes) */
+    uint32_t messages_sent_small;           /**< Small messages (≤1452 bytes) */
+    uint32_t messages_sent_medium;          /**< Medium messages (≤5328 bytes) */
+    uint32_t messages_sent_large;           /**< Large messages (>5328 bytes) */
+    uint32_t messages_failed;               /**< Failed message attempts */
+    /** @} */
+    
+    /** @name Data Transfer Statistics
+     * Throughput and volume measurements
+     * @{
+     */
+    uint64_t bytes_transferred_total;       /**< Total bytes successfully sent */
+    uint64_t bytes_transferred_payload;     /**< Payload bytes (excluding headers) */
+    uint32_t chunks_sent_total;             /**< Total chunks sent (for large messages) */
+    uint32_t fragments_sent_total;          /**< Total fragments sent (application level) */
+    /** @} */
+    
+    /** @name TCP Performance
+     * TCP layer performance indicators
+     * @{
+     */
+    uint32_t tcp_buffer_waits;              /**< Times waited for TCP buffer space */
+    uint32_t tcp_buffer_overruns;           /**< TCP buffer full events */
+    uint32_t tcp_retries_successful;        /**< Successful ERR_MEM recoveries */
+    uint32_t tcp_retries_failed;            /**< Failed ERR_MEM recoveries */
+    uint32_t tcp_forced_outputs;            /**< Forced tcp_output() calls */
+    /** @} */
+    
+    /** @name Timing Statistics
+     * Performance timing measurements in milliseconds
+     * @{
+     */
+    uint32_t max_chunk_time_ms;             /**< Maximum time to send single chunk */
+    uint32_t max_message_time_ms;           /**< Maximum time to send complete message */
+    uint32_t max_buffer_wait_time_ms;       /**< Maximum TCP buffer wait time */
+    uint32_t total_transfer_time_ms;        /**< Cumulative transfer time */
+    /** @} */
+    
+    /** @name Connection Statistics
+     * Network connection performance
+     * @{
+     */
+    uint32_t connections_established;       /**< Successful connections */
+    uint32_t connections_failed;            /**< Failed connection attempts */
+    uint32_t disconnections_clean;          /**< Clean disconnections */
+    uint32_t disconnections_error;          /**< Error-based disconnections */
+    uint32_t discovery_requests_sent;       /**< Discovery broadcasts sent */
+    uint32_t discovery_responses_received;  /**< Discovery responses received */
+    /** @} */
+    
+    /** @name Buffer Utilization
+     * Memory and buffer usage statistics
+     * @{
+     */
+    uint32_t peak_tcp_buffer_usage;         /**< Peak TCP buffer utilization (bytes) */
+    uint32_t avg_tcp_buffer_usage;          /**< Average TCP buffer utilization (bytes) */
+    uint32_t unified_buffer_reuses;         /**< Unified buffer reuse count */
+    /** @} */
+    
+    /** @name Error Statistics
+     * Detailed error tracking
+     * @{
+     */
+    uint32_t timeouts_total;                /**< Total timeout events */
+    uint32_t timeouts_connection;           /**< Connection timeouts */
+    uint32_t timeouts_transfer;             /**< Transfer timeouts */
+    uint32_t timeouts_buffer;               /**< Buffer wait timeouts */
+    uint32_t protocol_errors;               /**< DoIP protocol errors */
+    /** @} */
+    
+    /** @name Session Information
+     * Current session context
+     * @{
+     */
+    uint32_t session_start_time;            /**< Session start timestamp (FreeRTOS ticks) */
+    uint32_t last_activity_time;            /**< Last activity timestamp */
+    uint32_t uptime_seconds;                /**< Driver uptime in seconds */
+    /** @} */
+} drv_doip_metrics_t;
+
 // Driver structure with function pointers
 typedef struct {
     bool is_init;
@@ -396,6 +486,11 @@ typedef struct {
     drv_doip_status_t (*stop_packet_listener)(const void *hw_context);
     drv_doip_status_t (*register_packet_callback)(const void *hw_context, drv_doip_packet_callback_t callback);
     
+    // Performance metrics
+    drv_doip_status_t (*get_metrics)(const void *hw_context, drv_doip_metrics_t *metrics);
+    drv_doip_status_t (*reset_metrics)(const void *hw_context);
+    drv_doip_status_t (*print_metrics)(const void *hw_context);
+    
     // Status and callback management
     drv_doip_state_t (*get_status)(const void *hw_context);
     drv_doip_status_t (*register_callback)(const void *hw_context, drv_doip_cb_type_t type, 
@@ -403,6 +498,8 @@ typedef struct {
     uint32_t (*get_last_source_ip)(const void *hw_context);
 } drv_doip_t;
 /** @} */
+
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -540,6 +637,31 @@ drv_doip_status_t hw_doip_register_callback(drv_doip_t *handle, drv_doip_cb_type
  * @note Useful for getting real ECU IP addresses from discovery responses
  */
 uint32_t hw_doip_get_last_source_ip(drv_doip_t *handle);
+
+/**
+ * @brief Get current performance metrics
+ * @param handle Pointer to DoIP driver instance
+ * @param metrics Pointer to metrics structure to populate
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Provides comprehensive performance statistics for optimization and debugging
+ */
+drv_doip_status_t hw_doip_get_metrics(drv_doip_t *handle, drv_doip_metrics_t *metrics);
+
+/**
+ * @brief Reset all performance metrics
+ * @param handle Pointer to DoIP driver instance
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Clears all counters and timing statistics, preserves session start time
+ */
+drv_doip_status_t hw_doip_reset_metrics(drv_doip_t *handle);
+
+/**
+ * @brief Print formatted metrics report to console
+ * @param handle Pointer to DoIP driver instance
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Outputs comprehensive metrics report for debugging and optimization
+ */
+drv_doip_status_t hw_doip_print_metrics(drv_doip_t *handle);
 
 // Large message functions removed - functionality moved to unified functions above
 /** @} */

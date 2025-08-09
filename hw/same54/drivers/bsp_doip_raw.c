@@ -81,6 +81,13 @@ typedef struct {
     
     // Universal sender state for enhanced message handling
     universal_doip_sender_t sender_state;
+    
+    // Performance metrics
+    drv_doip_metrics_t metrics;
+    
+    // Buffer utilization tracking for metrics
+    uint32_t buffer_sample_count;
+    uint64_t buffer_utilization_sum;
 } drv_doip_hw_context_t;
 
 // Small discovery message buffer
@@ -139,6 +146,7 @@ static void bridge_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf
                 context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
                                         context->unified_buffer, 
                                         p->tot_len);
+                context->metrics.discovery_responses_received++;
             }
         } else {
             // Direct forwarding for single pbuf - zero-copy optimization
@@ -146,6 +154,7 @@ static void bridge_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf
                 context->receive_callback(DRV_DOIP_CB_RAW_PACKET_RECEIVED, 
                                         p->payload, 
                                         p->len);
+                context->metrics.discovery_responses_received++;
             }
         }
     }
@@ -246,6 +255,15 @@ static drv_doip_state_t drv_doip_get_status_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_register_callback_impl(const void *hw_context, drv_doip_cb_type_t type, drv_doip_callback_t callback);
 static uint32_t drv_doip_get_last_source_ip_impl(const void *hw_context);
 
+// Performance metrics function declarations
+static drv_doip_status_t drv_doip_get_metrics_impl(const void *hw_context, drv_doip_metrics_t *metrics);
+static drv_doip_status_t drv_doip_reset_metrics_impl(const void *hw_context);
+static drv_doip_status_t drv_doip_print_metrics_impl(const void *hw_context);
+
+// Metrics helper functions
+static void update_buffer_utilization_metrics(drv_doip_hw_context_t *context);
+static void update_timing_metrics(drv_doip_hw_context_t *context, uint32_t operation_time_ms, bool is_chunk);
+
 
 //-----------------------------------------------------------------------------
 // Universal DoIP Message Sending System
@@ -295,15 +313,24 @@ static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *contex
     TickType_t start_time = xTaskGetTickCount();
     const TickType_t timeout_ticks = pdMS_TO_TICKS(5000); // 5 second timeout
     
+    // Track that we're waiting for buffer space
+    context->metrics.tcp_buffer_waits++;
+    
     while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
         uint16_t available = tcp_sndbuf(context->tcp_pcb);
         
         if (available >= (needed_bytes + TCP_BUFFER_SAFETY_MARGIN)) {
+            // Success - update buffer wait time metrics
+            uint32_t wait_time_ms = (xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS;
+            if (wait_time_ms > context->metrics.max_buffer_wait_time_ms) {
+                context->metrics.max_buffer_wait_time_ms = wait_time_ms;
+            }
             return DRV_DOIP_STATUS_OK; // Sufficient space available
         }
         
         // Force transmission to free buffers
         tcp_output(context->tcp_pcb);
+        context->metrics.tcp_forced_outputs++;
         
         // Adaptive delay based on buffer pressure with more aggressive recovery
         uint8_t utilization = ((TCP_SEND_BUFFER_SIZE - available) * 100) / TCP_SEND_BUFFER_SIZE;
@@ -320,6 +347,15 @@ static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *contex
     }
     
     printf("DOIP Universal: TCP buffer timeout after 5 seconds\r\n");
+    
+    // Update timeout metrics
+    context->metrics.timeouts_total++;
+    context->metrics.timeouts_buffer++;
+    uint32_t wait_time_ms = (xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS;
+    if (wait_time_ms > context->metrics.max_buffer_wait_time_ms) {
+        context->metrics.max_buffer_wait_time_ms = wait_time_ms;
+    }
+    
     return DRV_DOIP_STATUS_TIMEOUT; // Buffer space not available within timeout
 }
 
@@ -350,14 +386,17 @@ static drv_doip_status_t tcp_write_with_backpressure(drv_doip_hw_context_t *cont
             
             // Force output to free buffers
             tcp_output(context->tcp_pcb);
+            context->metrics.tcp_forced_outputs++;
             vTaskDelay(pdMS_TO_TICKS(100)); // Give TCP stack time to free buffers
             
             // Retry once
             err = tcp_write(context->tcp_pcb, data, length, TCP_WRITE_FLAG_COPY);
             if (err == ERR_OK) {
                 printf("DOIP Universal: Recovery successful - tcp_write retry succeeded\r\n");
+                context->metrics.tcp_retries_successful++;
             } else {
                 printf("DOIP Universal: Recovery failed - tcp_write retry err=%d\r\n", err);
+                context->metrics.tcp_retries_failed++;
                 return DRV_DOIP_STATUS_ERROR;
             }
         } else {
@@ -459,10 +498,12 @@ static drv_doip_status_t send_medium_message(drv_doip_hw_context_t *context, con
         remaining -= chunk_size;
         offset += chunk_size;
         chunk_count++;
+        context->metrics.chunks_sent_total++;
         
         // Periodic flush for flow control every 3 chunks
         if ((chunk_count % 3) == 0) {
             tcp_output(context->tcp_pcb);
+            context->metrics.tcp_forced_outputs++;
         }
     }
     
@@ -529,10 +570,12 @@ static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *con
         context->sender_state.remaining_bytes -= chunk_size;
         context->sender_state.current_offset += chunk_size;
         chunk_count++;
+        context->metrics.chunks_sent_total++;
         
         // Aggressive flow control for large messages
         if ((chunk_count % 2) == 0) {
             tcp_output(context->tcp_pcb); // Force transmission every 2 chunks
+            context->metrics.tcp_forced_outputs++;
         }
     }
     
@@ -553,6 +596,9 @@ static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *con
 static drv_doip_status_t universal_doip_send(drv_doip_hw_context_t *context, 
                                             uint16_t payload_type, const uint8_t *payload_data, uint32_t payload_length)
 {
+    // Record start time for metrics
+    TickType_t start_time = xTaskGetTickCount();
+    
     // Classify message and route to optimal sending strategy
     doip_message_class_t msg_class = classify_doip_message(payload_length);
     
@@ -560,24 +606,59 @@ static drv_doip_status_t universal_doip_send(drv_doip_hw_context_t *context,
     printf("DOIP Universal: Sending %s message - type=0x%04X, length=%u bytes\r\n", 
            class_names[msg_class], payload_type, (unsigned int)payload_length);
     
+    // Update buffer utilization metrics
+    update_buffer_utilization_metrics(context);
+    context->metrics.unified_buffer_reuses++;
+    
     // Execute class-specific optimized sending strategy
+    drv_doip_status_t result;
     switch (msg_class) {
         case DOIP_MSG_TINY:
-            return send_tiny_message(context, payload_data, payload_length);
+            result = send_tiny_message(context, payload_data, payload_length);
+            if (result == DRV_DOIP_STATUS_OK) context->metrics.messages_sent_tiny++;
+            break;
             
         case DOIP_MSG_SMALL:  
-            return send_small_message(context, payload_data, payload_length);
+            result = send_small_message(context, payload_data, payload_length);
+            if (result == DRV_DOIP_STATUS_OK) context->metrics.messages_sent_small++;
+            break;
             
         case DOIP_MSG_MEDIUM:
-            return send_medium_message(context, payload_data, payload_length);
+            result = send_medium_message(context, payload_data, payload_length);
+            if (result == DRV_DOIP_STATUS_OK) context->metrics.messages_sent_medium++;
+            break;
             
         case DOIP_MSG_LARGE:
-            return send_large_message_streaming(context, payload_data, payload_length);
+            result = send_large_message_streaming(context, payload_data, payload_length);
+            if (result == DRV_DOIP_STATUS_OK) context->metrics.messages_sent_large++;
+            break;
             
         default:
             printf("DOIP Universal: Invalid message class\r\n");
-            return DRV_DOIP_STATUS_ERROR;
+            result = DRV_DOIP_STATUS_ERROR;
+            break;
     }
+    
+    // Update metrics based on result
+    if (result == DRV_DOIP_STATUS_OK) {
+        context->metrics.messages_sent_total++;
+        context->metrics.bytes_transferred_total += DOIP_HEADER_SIZE + payload_length;
+        context->metrics.bytes_transferred_payload += payload_length;
+        
+        // Update timing metrics
+        uint32_t operation_time_ms = (xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS;
+        update_timing_metrics(context, operation_time_ms, false);
+    } else {
+        context->metrics.messages_failed++;
+        
+        // Count specific error types
+        if (result == DRV_DOIP_STATUS_TIMEOUT) {
+            context->metrics.timeouts_total++;
+            context->metrics.timeouts_transfer++;
+        }
+    }
+    
+    return result;
 }
 
 //-----------------------------------------------------------------------------
@@ -663,6 +744,11 @@ drv_doip_t doip_0 = {
     .stop_packet_listener = drv_doip_stop_packet_listener_stub,
     .register_packet_callback = drv_doip_register_packet_callback_stub,
 
+    // Performance metrics functions
+    .get_metrics = drv_doip_get_metrics_impl,
+    .reset_metrics = drv_doip_reset_metrics_impl,
+    .print_metrics = drv_doip_print_metrics_impl,
+
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,
     .get_last_source_ip = drv_doip_get_last_source_ip_impl,
@@ -690,7 +776,14 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     // Initialize universal sender state
     memset(&context->sender_state, 0, sizeof(universal_doip_sender_t));
     
-    printf("DOIP Bridge: Simple initialization completed\r\n");
+    // Initialize performance metrics
+    memset(&context->metrics, 0, sizeof(drv_doip_metrics_t));
+    context->metrics.session_start_time = xTaskGetTickCount();
+    context->metrics.last_activity_time = context->metrics.session_start_time;
+    context->buffer_sample_count = 0;
+    context->buffer_utilization_sum = 0;
+    
+    printf("DOIP Bridge: Simple initialization completed with metrics reset\r\n");
     return DRV_DOIP_STATUS_OK;
 }
 
@@ -798,6 +891,7 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     }
     
     printf("DOIP Bridge: Discovery broadcast sent - responses forwarded to callback\r\n");
+    context->metrics.discovery_requests_sent++;
     
     // Keep UDP PCB open for responses - application handles discovery data
     context->current_state = DRV_DOIP_STATE_DISCOVERED;
@@ -923,6 +1017,9 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
             context->tcp_pcb = NULL;
         }
         context->current_state = DRV_DOIP_STATE_ERROR;
+        context->metrics.connections_failed++;
+        context->metrics.timeouts_total++;
+        context->metrics.timeouts_connection++;
         
         // Additional cleanup delay after connection failure to ensure resources are freed
         vTaskDelay(pdMS_TO_TICKS(250));
@@ -934,6 +1031,10 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     // Send basic routing activation
     if (bridge_send_routing_activation(context) == DRV_DOIP_STATUS_OK) {
         context->current_state = DRV_DOIP_STATE_ACTIVATED;
+        context->metrics.connections_established++;
+    } else {
+        context->metrics.connections_failed++;
+        return DRV_DOIP_STATUS_ERROR;
     }
     
     printf("DOIP Bridge: Simple connect completed\r\n");
@@ -963,6 +1064,7 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
+    context->metrics.disconnections_clean++;
     printf("DOIP Bridge: Disconnect completed\r\n");
     return DRV_DOIP_STATUS_OK;
 }
@@ -1137,6 +1239,189 @@ static uint32_t drv_doip_get_last_source_ip_impl(const void *hw_context)
     ASSERT(hw_context != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     return context->last_source_ip;
+}
+
+//-----------------------------------------------------------------------------
+// Performance Metrics Implementation
+//-----------------------------------------------------------------------------
+
+/**
+ * \brief Update buffer utilization metrics
+ * \param context DoIP hardware context
+ */
+static void update_buffer_utilization_metrics(drv_doip_hw_context_t *context)
+{
+    if (context->tcp_pcb != NULL) {
+        uint16_t available = tcp_sndbuf(context->tcp_pcb);
+        uint32_t used = TCP_SEND_BUFFER_SIZE - available;
+        
+        // Track peak usage
+        if (used > context->metrics.peak_tcp_buffer_usage) {
+            context->metrics.peak_tcp_buffer_usage = used;
+        }
+        
+        // Running average calculation
+        context->buffer_utilization_sum += used;
+        context->buffer_sample_count++;
+        context->metrics.avg_tcp_buffer_usage = (uint32_t)(context->buffer_utilization_sum / context->buffer_sample_count);
+        
+        // Count buffer pressure events
+        if (available < TCP_BUFFER_SAFETY_MARGIN) {
+            context->metrics.tcp_buffer_overruns++;
+        }
+    }
+}
+
+/**
+ * \brief Update timing metrics
+ * \param context DoIP hardware context
+ * \param operation_time_ms Operation duration in milliseconds
+ * \param is_chunk True if this is a chunk operation, false for complete message
+ */
+static void update_timing_metrics(drv_doip_hw_context_t *context, uint32_t operation_time_ms, bool is_chunk)
+{
+    context->metrics.total_transfer_time_ms += operation_time_ms;
+    context->metrics.last_activity_time = xTaskGetTickCount();
+    
+    if (is_chunk) {
+        if (operation_time_ms > context->metrics.max_chunk_time_ms) {
+            context->metrics.max_chunk_time_ms = operation_time_ms;
+        }
+    } else {
+        if (operation_time_ms > context->metrics.max_message_time_ms) {
+            context->metrics.max_message_time_ms = operation_time_ms;
+        }
+    }
+}
+
+/**
+ * \brief Get current performance metrics
+ * \param hw_context DoIP hardware context
+ * \param metrics Pointer to metrics structure to populate
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_get_metrics_impl(const void *hw_context, drv_doip_metrics_t *metrics)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(metrics != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    // Update uptime
+    uint32_t current_time = xTaskGetTickCount();
+    context->metrics.uptime_seconds = (current_time - context->metrics.session_start_time) / (1000 / portTICK_PERIOD_MS);
+    
+    // Copy metrics structure
+    memcpy(metrics, &context->metrics, sizeof(drv_doip_metrics_t));
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Reset all performance metrics
+ * \param hw_context DoIP hardware context  
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_reset_metrics_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    printf("DOIP Metrics: Resetting all performance metrics\r\n");
+    
+    // Preserve session start time for uptime calculation
+    uint32_t session_start = context->metrics.session_start_time;
+    
+    // Clear all metrics
+    memset(&context->metrics, 0, sizeof(drv_doip_metrics_t));
+    context->buffer_sample_count = 0;
+    context->buffer_utilization_sum = 0;
+    
+    // Restore session timing
+    context->metrics.session_start_time = session_start;
+    context->metrics.last_activity_time = xTaskGetTickCount();
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Print formatted metrics report to console
+ * \param hw_context DoIP hardware context
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_print_metrics_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    // Update uptime before printing
+    uint32_t current_time = xTaskGetTickCount();
+    context->metrics.uptime_seconds = (current_time - context->metrics.session_start_time) / (1000 / portTICK_PERIOD_MS);
+    
+    printf("\r\n=== DoIP Driver Performance Metrics ===\r\n");
+    
+    // Session Information
+    printf("Session Info:\r\n");
+    printf("  Uptime: %lu seconds\r\n", context->metrics.uptime_seconds);
+    printf("  Last Activity: %lu ticks ago\r\n", current_time - context->metrics.last_activity_time);
+    
+    // Message Statistics
+    printf("\r\nMessage Statistics:\r\n");
+    printf("  Total Messages: %lu (Failed: %lu)\r\n", context->metrics.messages_sent_total, context->metrics.messages_failed);
+    printf("  By Size: Tiny=%lu, Small=%lu, Medium=%lu, Large=%lu\r\n",
+           context->metrics.messages_sent_tiny, context->metrics.messages_sent_small,
+           context->metrics.messages_sent_medium, context->metrics.messages_sent_large);
+    
+    // Data Transfer
+    printf("\r\nData Transfer:\r\n");
+    printf("  Total Bytes: %llu (Payload: %llu)\r\n", 
+           context->metrics.bytes_transferred_total, context->metrics.bytes_transferred_payload);
+    printf("  Chunks Sent: %lu, Fragments: %lu\r\n", 
+           context->metrics.chunks_sent_total, context->metrics.fragments_sent_total);
+    
+    // TCP Performance
+    printf("\r\nTCP Performance:\r\n");
+    printf("  Buffer Waits: %lu, Overruns: %lu\r\n", 
+           context->metrics.tcp_buffer_waits, context->metrics.tcp_buffer_overruns);
+    printf("  Retries: Success=%lu, Failed=%lu\r\n", 
+           context->metrics.tcp_retries_successful, context->metrics.tcp_retries_failed);
+    printf("  Forced Outputs: %lu\r\n", context->metrics.tcp_forced_outputs);
+    
+    // Buffer Utilization
+    printf("\r\nBuffer Utilization:\r\n");
+    printf("  Peak Usage: %lu bytes (%.1f%%)\r\n", 
+           context->metrics.peak_tcp_buffer_usage,
+           (float)context->metrics.peak_tcp_buffer_usage * 100.0f / TCP_SEND_BUFFER_SIZE);
+    printf("  Average Usage: %lu bytes (%.1f%%)\r\n", 
+           context->metrics.avg_tcp_buffer_usage,
+           (float)context->metrics.avg_tcp_buffer_usage * 100.0f / TCP_SEND_BUFFER_SIZE);
+    printf("  Buffer Reuses: %lu\r\n", context->metrics.unified_buffer_reuses);
+    
+    // Timing Performance
+    printf("\r\nTiming Performance:\r\n");
+    printf("  Max Chunk Time: %lu ms\r\n", context->metrics.max_chunk_time_ms);
+    printf("  Max Message Time: %lu ms\r\n", context->metrics.max_message_time_ms);
+    printf("  Max Buffer Wait: %lu ms\r\n", context->metrics.max_buffer_wait_time_ms);
+    printf("  Total Transfer Time: %lu ms\r\n", context->metrics.total_transfer_time_ms);
+    
+    // Connection Statistics
+    printf("\r\nConnection Statistics:\r\n");
+    printf("  Connections: Success=%lu, Failed=%lu\r\n", 
+           context->metrics.connections_established, context->metrics.connections_failed);
+    printf("  Disconnections: Clean=%lu, Error=%lu\r\n", 
+           context->metrics.disconnections_clean, context->metrics.disconnections_error);
+    printf("  Discovery: Sent=%lu, Received=%lu\r\n", 
+           context->metrics.discovery_requests_sent, context->metrics.discovery_responses_received);
+    
+    // Error Statistics
+    printf("\r\nError Statistics:\r\n");
+    printf("  Timeouts: Total=%lu (Conn=%lu, Transfer=%lu, Buffer=%lu)\r\n",
+           context->metrics.timeouts_total, context->metrics.timeouts_connection,
+           context->metrics.timeouts_transfer, context->metrics.timeouts_buffer);
+    printf("  Protocol Errors: %lu\r\n", context->metrics.protocol_errors);
+    
+    printf("=== End Metrics Report ===\r\n\r\n");
+    
+    return DRV_DOIP_STATUS_OK;
 }
 
 

@@ -682,6 +682,11 @@ static void doip_test_concurrent_ecu_requests(drv_doip_t *handle)
     }
     
     printf("\r\n=== Testing Concurrent ECU Requests ===\r\n");
+    
+    // Print comprehensive metrics report after large message testing
+    printf("=== DoIP Performance Metrics After Large Message Testing ===\r\n");
+    hw_doip_print_metrics(&doip_0);
+    
     printf("Waiting for ECU emulator to stabilize after large message tests...\r\n");
     
     // Give ECU emulator extended time to recover from intensive large message testing
@@ -1372,6 +1377,10 @@ static void doip_client_task(void *pvParameters)
 		return;
 	}
 	
+	// Reset metrics for clean session start
+	hw_doip_reset_metrics(doip_handle);
+	printf("DOIP Client: Performance metrics reset for clean session\r\n");
+	
 	printf("DOIP Client: Driver initialized successfully\r\n");
 	
 	// Small delay to ensure driver is ready
@@ -1480,6 +1489,10 @@ static void doip_client_task(void *pvParameters)
 					
 					// Disconnect after communication
 					hw_doip_disconnect(doip_handle);
+					
+					// Print metrics report every cycle for monitoring
+					printf("\r\n=== DoIP Session Metrics Summary ===\r\n");
+					hw_doip_print_metrics(doip_handle);
 					
 					// Wait before next cycle
 					vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
