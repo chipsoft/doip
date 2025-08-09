@@ -458,6 +458,43 @@ typedef struct drv_doip_metrics {
     /** @} */
 } drv_doip_metrics_t;
 
+/**
+ * @brief DoIP driver configuration structure
+ * @details Configurable parameters for timeouts and network behavior
+ */
+typedef struct {
+    /** @name Timeout Configuration
+     * Configurable timeout values in milliseconds
+     * @{
+     */
+    uint32_t discovery_timeout_ms;      /**< Vehicle discovery timeout (default: 5000ms) */
+    uint32_t tcp_connect_timeout_ms;    /**< TCP connection timeout (default: 10000ms) */
+    uint32_t streaming_timeout_ms;      /**< Large message streaming timeout (default: 30000ms) */
+    uint32_t buffer_wait_timeout_ms;    /**< TCP buffer wait timeout (default: 5000ms) */
+    uint32_t fragment_timeout_ms;       /**< Per-fragment timeout for sustained transfers (default: 10000ms) */
+    uint32_t overall_timeout_ms;        /**< Overall transfer timeout for sustained transfers (default: 60000ms) */
+    /** @} */
+    
+    /** @name Network Configuration
+     * Network behavior parameters
+     * @{
+     */
+    uint16_t safe_chunk_size;           /**< Safe chunk size for message fragmentation (default: 1200) */
+    uint16_t tcp_buffer_safety_margin;  /**< TCP buffer safety margin (default: 512) */
+    uint8_t  max_connection_retries;    /**< Maximum connection retry attempts (default: 3) */
+    uint8_t  max_tcp_retries;           /**< Maximum TCP write retry attempts (default: 1) */
+    /** @} */
+    
+    /** @name Flow Control
+     * Flow control and backpressure parameters
+     * @{
+     */
+    uint32_t inter_fragment_delay_ms;   /**< Delay between fragments in sustained transfers (default: 10ms) */
+    uint32_t connection_recovery_delay_ms; /**< Delay after connection for resource cleanup (default: 250ms) */
+    uint32_t error_recovery_delay_ms;   /**< Delay after errors before retry (default: 1000ms) */
+    /** @} */
+} drv_doip_config_t;
+
 // Driver structure with function pointers
 typedef struct {
     bool is_init;
@@ -490,6 +527,11 @@ typedef struct {
     drv_doip_status_t (*get_metrics)(const void *hw_context, drv_doip_metrics_t *metrics);
     drv_doip_status_t (*reset_metrics)(const void *hw_context);
     drv_doip_status_t (*print_metrics)(const void *hw_context);
+    
+    // Configuration management
+    drv_doip_status_t (*set_config)(const void *hw_context, const drv_doip_config_t *config);
+    drv_doip_status_t (*get_config)(const void *hw_context, drv_doip_config_t *config);
+    drv_doip_status_t (*reset_config)(const void *hw_context);
     
     // Status and callback management
     drv_doip_state_t (*get_status)(const void *hw_context);
@@ -662,6 +704,39 @@ drv_doip_status_t hw_doip_reset_metrics(drv_doip_t *handle);
  * @note Outputs comprehensive metrics report for debugging and optimization
  */
 drv_doip_status_t hw_doip_print_metrics(drv_doip_t *handle);
+
+/**
+ * @brief Set driver configuration parameters
+ * @param handle Pointer to DoIP driver instance
+ * @param config Pointer to configuration structure with new parameters
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Configuration takes effect immediately for new operations
+ */
+drv_doip_status_t hw_doip_set_config(drv_doip_t *handle, const drv_doip_config_t *config);
+
+/**
+ * @brief Get current driver configuration
+ * @param handle Pointer to DoIP driver instance
+ * @param config Pointer to configuration structure to populate
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Returns current active configuration parameters
+ */
+drv_doip_status_t hw_doip_get_config(drv_doip_t *handle, drv_doip_config_t *config);
+
+/**
+ * @brief Reset driver configuration to default values
+ * @param handle Pointer to DoIP driver instance
+ * @return DRV_DOIP_STATUS_OK on success, error code otherwise
+ * @note Restores all timeout and network parameters to factory defaults
+ */
+drv_doip_status_t hw_doip_reset_config(drv_doip_t *handle);
+
+/**
+ * @brief Create a default DoIP configuration
+ * @param config Pointer to configuration structure to initialize
+ * @note Fills structure with recommended default values for automotive applications
+ */
+void hw_doip_create_default_config(drv_doip_config_t *config);
 
 // Large message functions removed - functionality moved to unified functions above
 /** @} */

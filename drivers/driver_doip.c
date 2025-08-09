@@ -205,6 +205,68 @@ drv_doip_status_t hw_doip_print_metrics(drv_doip_t *handle)
     return handle->print_metrics(handle->hw_context);
 }
 
+drv_doip_status_t hw_doip_set_config(drv_doip_t *handle, const drv_doip_config_t *config)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_config != NULL);
+    ASSERT(config != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->set_config(handle->hw_context, config);
+}
+
+drv_doip_status_t hw_doip_get_config(drv_doip_t *handle, drv_doip_config_t *config)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_config != NULL);
+    ASSERT(config != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->get_config(handle->hw_context, config);
+}
+
+drv_doip_status_t hw_doip_reset_config(drv_doip_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->reset_config != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    return handle->reset_config(handle->hw_context);
+}
+
+void hw_doip_create_default_config(drv_doip_config_t *config)
+{
+    ASSERT(config != NULL);
+    
+    // Timeout Configuration (in milliseconds)
+    config->discovery_timeout_ms = 5000;       // 5 seconds for vehicle discovery
+    config->tcp_connect_timeout_ms = 10000;    // 10 seconds for TCP connection
+    config->streaming_timeout_ms = 30000;      // 30 seconds for large message streaming
+    config->buffer_wait_timeout_ms = 5000;     // 5 seconds for TCP buffer wait
+    config->fragment_timeout_ms = 10000;       // 10 seconds per fragment (sustained transfers)
+    config->overall_timeout_ms = 60000;        // 60 seconds overall transfer timeout
+    
+    // Network Configuration
+    config->safe_chunk_size = 1200;            // Conservative chunk size for stability
+    config->tcp_buffer_safety_margin = 512;    // 512 bytes safety margin
+    config->max_connection_retries = 3;        // 3 retry attempts for connections
+    config->max_tcp_retries = 1;              // 1 retry attempt for TCP write failures
+    
+    // Flow Control (in milliseconds)
+    config->inter_fragment_delay_ms = 10;      // 10ms between fragments (adaptive mode)
+    config->connection_recovery_delay_ms = 250; // 250ms after connection operations
+    config->error_recovery_delay_ms = 1000;    // 1 second after errors
+}
+
 // Large message functions removed - functionality moved to unified functions above
 
 //-----------------------------------------------------------------------------

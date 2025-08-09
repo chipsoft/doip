@@ -85,6 +85,9 @@ typedef struct {
     // Performance metrics
     drv_doip_metrics_t metrics;
     
+    // Configuration parameters
+    drv_doip_config_t config;
+    
     // Buffer utilization tracking for metrics
     uint32_t buffer_sample_count;
     uint64_t buffer_utilization_sum;
@@ -260,6 +263,11 @@ static drv_doip_status_t drv_doip_get_metrics_impl(const void *hw_context, drv_d
 static drv_doip_status_t drv_doip_reset_metrics_impl(const void *hw_context);
 static drv_doip_status_t drv_doip_print_metrics_impl(const void *hw_context);
 
+// Configuration function declarations
+static drv_doip_status_t drv_doip_set_config_impl(const void *hw_context, const drv_doip_config_t *config);
+static drv_doip_status_t drv_doip_get_config_impl(const void *hw_context, drv_doip_config_t *config);
+static drv_doip_status_t drv_doip_reset_config_impl(const void *hw_context);
+
 // Metrics helper functions
 static void update_buffer_utilization_metrics(drv_doip_hw_context_t *context);
 static void update_timing_metrics(drv_doip_hw_context_t *context, uint32_t operation_time_ms, bool is_chunk);
@@ -311,7 +319,7 @@ static void build_doip_header(uint8_t *header, uint16_t message_type, uint32_t p
 static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *context, uint32_t needed_bytes)
 {
     TickType_t start_time = xTaskGetTickCount();
-    const TickType_t timeout_ticks = pdMS_TO_TICKS(5000); // 5 second timeout
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(context->config.buffer_wait_timeout_ms);
     
     // Track that we're waiting for buffer space
     context->metrics.tcp_buffer_waits++;
@@ -319,7 +327,7 @@ static drv_doip_status_t wait_for_tcp_buffer_space(drv_doip_hw_context_t *contex
     while ((xTaskGetTickCount() - start_time) < timeout_ticks) {
         uint16_t available = tcp_sndbuf(context->tcp_pcb);
         
-        if (available >= (needed_bytes + TCP_BUFFER_SAFETY_MARGIN)) {
+        if (available >= (needed_bytes + context->config.tcp_buffer_safety_margin)) {
             // Success - update buffer wait time metrics
             uint32_t wait_time_ms = (xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS;
             if (wait_time_ms > context->metrics.max_buffer_wait_time_ms) {
@@ -482,7 +490,7 @@ static drv_doip_status_t send_medium_message(drv_doip_hw_context_t *context, con
     uint32_t chunk_count = 0;
     
     while (remaining > 0) {
-        uint32_t chunk_size = (remaining > DOIP_SAFE_CHUNK_SIZE) ? DOIP_SAFE_CHUNK_SIZE : remaining;
+        uint32_t chunk_size = (remaining > context->config.safe_chunk_size) ? context->config.safe_chunk_size : remaining;
         
         if (payload != NULL) {
             memcpy(context->unified_buffer, payload + offset, chunk_size);
@@ -539,7 +547,7 @@ static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *con
     // Stream payload with intelligent backpressure control
     uint32_t chunk_count = 0;
     TickType_t streaming_start = xTaskGetTickCount();
-    const TickType_t max_streaming_time = pdMS_TO_TICKS(30000); // 30 second timeout
+    const TickType_t max_streaming_time = pdMS_TO_TICKS(context->config.streaming_timeout_ms);
     
     while (context->sender_state.remaining_bytes > 0) {
         // Overall timeout protection
@@ -548,8 +556,8 @@ static drv_doip_status_t send_large_message_streaming(drv_doip_hw_context_t *con
             return DRV_DOIP_STATUS_TIMEOUT;
         }
         
-        uint32_t chunk_size = (context->sender_state.remaining_bytes > DOIP_SAFE_CHUNK_SIZE) ? 
-                              DOIP_SAFE_CHUNK_SIZE : context->sender_state.remaining_bytes;
+        uint32_t chunk_size = (context->sender_state.remaining_bytes > context->config.safe_chunk_size) ? 
+                              context->config.safe_chunk_size : context->sender_state.remaining_bytes;
         
         // Prepare chunk in unified buffer
         if (context->sender_state.current_payload != NULL) {
@@ -749,6 +757,11 @@ drv_doip_t doip_0 = {
     .reset_metrics = drv_doip_reset_metrics_impl,
     .print_metrics = drv_doip_print_metrics_impl,
 
+    // Configuration functions
+    .set_config = drv_doip_set_config_impl,
+    .get_config = drv_doip_get_config_impl,
+    .reset_config = drv_doip_reset_config_impl,
+
     .get_status = drv_doip_get_status_impl,
     .register_callback = drv_doip_register_callback_impl,
     .get_last_source_ip = drv_doip_get_last_source_ip_impl,
@@ -783,7 +796,10 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->buffer_sample_count = 0;
     context->buffer_utilization_sum = 0;
     
-    printf("DOIP Bridge: Simple initialization completed with metrics reset\r\n");
+    // Initialize configuration with defaults
+    hw_doip_create_default_config(&context->config);
+    
+    printf("DOIP Bridge: Simple initialization completed with metrics reset and default config\r\n");
     return DRV_DOIP_STATUS_OK;
 }
 
@@ -1000,7 +1016,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     // Improved connection waiting with proper timeout and better cleanup
     printf("DOIP Bridge: Waiting for connection...\r\n");
     uint32_t timeout_start = xTaskGetTickCount();
-    uint32_t timeout_ticks = pdMS_TO_TICKS(DOIP_TCP_CONNECT_TIMEOUT_MS); // Use defined 10-second timeout
+    uint32_t timeout_ticks = pdMS_TO_TICKS(context->config.tcp_connect_timeout_ms);
     
     while ((context->current_state == DRV_DOIP_STATE_CONNECTING) && 
            ((xTaskGetTickCount() - timeout_start) < timeout_ticks)) {
@@ -1010,7 +1026,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     if (context->current_state != DRV_DOIP_STATE_CONNECTED) {
         uint32_t actual_timeout_ms = (xTaskGetTickCount() - timeout_start) * portTICK_PERIOD_MS;
         printf("DOIP Bridge: Connection failed (state=%d after %lums, timeout was %lums)\r\n", 
-               context->current_state, actual_timeout_ms, DOIP_TCP_CONNECT_TIMEOUT_MS);
+               context->current_state, actual_timeout_ms, context->config.tcp_connect_timeout_ms);
         
         if (context->tcp_pcb != NULL) {
             tcp_abort(context->tcp_pcb); // Force close for immediate resource recovery
@@ -1022,7 +1038,7 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         context->metrics.timeouts_connection++;
         
         // Additional cleanup delay after connection failure to ensure resources are freed
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(context->config.error_recovery_delay_ms));
         return DRV_DOIP_STATUS_ERROR;
     }
     
@@ -1060,7 +1076,7 @@ static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
         context->tcp_pcb = NULL;
         
         // Extended cleanup delay to ensure lwIP resources are fully released
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(context->config.connection_recovery_delay_ms));
     }
     
     context->current_state = DRV_DOIP_STATE_IDLE;
@@ -1266,7 +1282,7 @@ static void update_buffer_utilization_metrics(drv_doip_hw_context_t *context)
         context->metrics.avg_tcp_buffer_usage = (uint32_t)(context->buffer_utilization_sum / context->buffer_sample_count);
         
         // Count buffer pressure events
-        if (available < TCP_BUFFER_SAFETY_MARGIN) {
+        if (available < context->config.tcp_buffer_safety_margin) {
             context->metrics.tcp_buffer_overruns++;
         }
     }
@@ -1420,6 +1436,86 @@ static drv_doip_status_t drv_doip_print_metrics_impl(const void *hw_context)
     printf("  Protocol Errors: %lu\r\n", context->metrics.protocol_errors);
     
     printf("=== End Metrics Report ===\r\n\r\n");
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// Configuration Management Implementation
+//-----------------------------------------------------------------------------
+
+/**
+ * \brief Set driver configuration parameters
+ * \param hw_context DoIP hardware context
+ * \param config Pointer to new configuration
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_set_config_impl(const void *hw_context, const drv_doip_config_t *config)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(config != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    // Validate configuration parameters
+    if (config->discovery_timeout_ms < 1000 || config->discovery_timeout_ms > 30000) {
+        printf("DOIP Config: Invalid discovery timeout: %lu ms (valid range: 1000-30000)\r\n", config->discovery_timeout_ms);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (config->tcp_connect_timeout_ms < 1000 || config->tcp_connect_timeout_ms > 60000) {
+        printf("DOIP Config: Invalid TCP connect timeout: %lu ms (valid range: 1000-60000)\r\n", config->tcp_connect_timeout_ms);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    if (config->safe_chunk_size < 256 || config->safe_chunk_size > 8192) {
+        printf("DOIP Config: Invalid chunk size: %u bytes (valid range: 256-8192)\r\n", config->safe_chunk_size);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Copy validated configuration
+    memcpy(&context->config, config, sizeof(drv_doip_config_t));
+    
+    printf("DOIP Config: Configuration updated successfully\r\n");
+    printf("  Discovery timeout: %lu ms\r\n", config->discovery_timeout_ms);
+    printf("  TCP connect timeout: %lu ms\r\n", config->tcp_connect_timeout_ms);
+    printf("  Safe chunk size: %u bytes\r\n", config->safe_chunk_size);
+    printf("  Buffer wait timeout: %lu ms\r\n", config->buffer_wait_timeout_ms);
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Get current driver configuration
+ * \param hw_context DoIP hardware context
+ * \param config Pointer to configuration structure to populate
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_get_config_impl(const void *hw_context, drv_doip_config_t *config)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(config != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    // Copy current configuration
+    memcpy(config, &context->config, sizeof(drv_doip_config_t));
+    
+    return DRV_DOIP_STATUS_OK;
+}
+
+/**
+ * \brief Reset driver configuration to default values
+ * \param hw_context DoIP hardware context
+ * \return DRV_DOIP_STATUS_OK on success
+ */
+static drv_doip_status_t drv_doip_reset_config_impl(const void *hw_context)
+{
+    ASSERT(hw_context != NULL);
+    drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
+    
+    printf("DOIP Config: Resetting configuration to defaults\r\n");
+    
+    // Reset to default configuration
+    hw_doip_create_default_config(&context->config);
     
     return DRV_DOIP_STATUS_OK;
 }

@@ -1381,6 +1381,15 @@ static void doip_client_task(void *pvParameters)
 	hw_doip_reset_metrics(doip_handle);
 	printf("DOIP Client: Performance metrics reset for clean session\r\n");
 	
+	// Demonstrate configurable timeout functionality
+	drv_doip_config_t current_config;
+	hw_doip_get_config(doip_handle, &current_config);
+	printf("DOIP Client: Current configuration:\r\n");
+	printf("  Discovery timeout: %lu ms\r\n", current_config.discovery_timeout_ms);
+	printf("  TCP connect timeout: %lu ms\r\n", current_config.tcp_connect_timeout_ms);
+	printf("  Safe chunk size: %u bytes\r\n", current_config.safe_chunk_size);
+	printf("  Buffer wait timeout: %lu ms\r\n", current_config.buffer_wait_timeout_ms);
+	
 	printf("DOIP Client: Driver initialized successfully\r\n");
 	
 	// Small delay to ensure driver is ready
