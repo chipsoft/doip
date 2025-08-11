@@ -44,6 +44,27 @@
 #define CONF_GCLK_SERCOM2_CORE_SRC GCLK_PCHCTRL_GEN_GCLK0_Val
 #endif
 
+// <y> Core Clock Source for SERCOM4
+#ifndef CONF_GCLK_SERCOM4_CORE_SRC
+#define CONF_GCLK_SERCOM4_CORE_SRC GCLK_PCHCTRL_GEN_GCLK0_Val
+#endif
+
+/**
+ * \def CONF_GCLK_SERCOM4_CORE_FREQUENCY
+ * \brief SERCOM4's Core Clock frequency
+ */
+#ifndef CONF_GCLK_SERCOM4_CORE_FREQUENCY
+#define CONF_GCLK_SERCOM4_CORE_FREQUENCY 12000000
+#endif
+
+/**
+ * \def CONF_GCLK_SERCOM4_SLOW_FREQUENCY
+ * \brief SERCOM4's Slow Clock frequency
+ */
+#ifndef CONF_GCLK_SERCOM4_SLOW_FREQUENCY
+#define CONF_GCLK_SERCOM4_SLOW_FREQUENCY 32768
+#endif
+
 // <y> Slow Clock Source
 // <id> slow_gclk_selection
 
