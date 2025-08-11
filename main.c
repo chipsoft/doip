@@ -36,21 +36,32 @@
 #include <utils.h>
 #include <hal_init.h>
 #include <hal_gpio.h>
-#include <hal_mac_async.h>
 #include "bsp_led.h"
-#include "bsp_ethernet.h"
 #include "eth_ipstack_main.h"
 #include "user_tasks.h"
 #include "bsp_doip.h"  // Universal DOIP driver
-#include "bsp_net.h"   // New universal network driver
+#ifndef USE_KSZ8851SNL_INTERFACE
+#include "bsp_net.h"   // Universal network driver (GMAC only)
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
+
+// Network interface specific includes
+#ifdef USE_KSZ8851SNL_INTERFACE
+#include "bsp_ksz8851snl.h"
+#include "ksz8851snl_config.h"
+#else
+#include <hal_mac_async.h>
+#include "bsp_ethernet.h"
+#endif
 
 /* RTT printf integration */
 extern void rtt_printf_init(void);
 
 /* Peripheral descriptors */
+#ifndef USE_KSZ8851SNL_INTERFACE
 struct mac_async_descriptor COMMUNICATION_IO;
+#endif
 
 /* Task handles */
 // static TaskHandle_t xCreatedEthernetBasicTask; // Removed - not used anymore
@@ -75,7 +86,45 @@ static void network_init_task(void *pvParameters)
 	
 	printf("Network initialization task started\r\n");
 	
+#ifdef USE_KSZ8851SNL_INTERFACE
+	printf("Using KSZ8851SNL SPI-Ethernet interface\r\n");
+	
+	// Initialize KSZ8851SNL driver first (this will initialize SPI)
+	drv_ksz8851snl_config_t ksz_config = {
+		.mac_addr = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},
+		.auto_negotiation = true,
+		.link_speed = 100,
+		.full_duplex = true
+	};
+	
+	drv_ksz8851snl_status_t init_status = hw_ksz8851snl_init(&ksz8851snl_0, &ksz_config);
+	if (init_status != DRV_KSZ8851SNL_STATUS_OK) {
+		printf("[MAIN] KSZ8851SNL initialization failed: %d\r\n", init_status);
+		printf("[MAIN] Check SPI configuration and connections\r\n");
+		// Continue anyway for now - could be a configuration issue
+	} else {
+		printf("[MAIN] KSZ8851SNL driver initialized successfully\r\n");
+		
+		// Now test chip ID (SPI communication test)
+		drv_ksz8851snl_id_info_t id_info;
+		drv_ksz8851snl_status_t chip_status = hw_ksz8851snl_get_chip_id(&ksz8851snl_0, &id_info);
+		
+		if (chip_status == DRV_KSZ8851SNL_STATUS_OK && id_info.chip_detected) {
+			printf("[MAIN] KSZ8851SNL Chip ID: 0x%04X, Revision: %d\r\n", 
+			       id_info.chip_id, id_info.revision_id);
+			printf("[MAIN] SPI Communication: %s\r\n", 
+			       id_info.spi_communication_ok ? "OK" : "FAILED");
+		} else {
+			printf("[MAIN] KSZ8851SNL chip detection failed: %d\r\n", chip_status);
+			printf("[MAIN] Check SPI wiring and connections\r\n");
+		}
+	}
+#else
+	printf("Using GMAC Ethernet interface\r\n");
+#endif
+	
 	// Configure network parameters
+#ifndef USE_KSZ8851SNL_INTERFACE
 	drv_net_config_t net_config = {
 		.mac_addr = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},
 		.use_dhcp = false,
@@ -85,9 +134,20 @@ static void network_init_task(void *pvParameters)
 		.hostname = "same54-doip",
 		.dhcp_timeout_ms = 30000,
 	};
+#endif
 	
 	// Initialize network stack
 	printf("Initializing network stack...\r\n");
+	
+#ifdef USE_KSZ8851SNL_INTERFACE
+	// For KSZ8851SNL: simplified initialization (TODO: implement proper network stack)
+	printf("KSZ8851SNL network initialization - simplified version\r\n");
+	printf("TODO: Implement full network stack integration for KSZ8851SNL\r\n");
+	
+	// For now, just verify that our drivers can be accessed
+	printf("Network stack placeholder initialized\r\n");
+#else
+	// For GMAC: use universal network driver
 	drv_net_status_t net_result = hw_net_init(&lwip_network_0);
 	if (net_result != DRV_NET_STATUS_OK) {
 		printf("Network initialization failed: %d\r\n", net_result);
@@ -101,6 +161,7 @@ static void network_init_task(void *pvParameters)
 		vTaskDelete(NULL);
 		return;
 	}
+#endif
 	
 	printf("Network stack initialized successfully\r\n");
 	
@@ -156,7 +217,12 @@ int main(void)
 	task_led_create();
 	
 	/* Start Ethernet link monitoring through driver API */
+#ifdef USE_KSZ8851SNL_INTERFACE
+	// TODO: Implement link monitoring for KSZ8851SNL
+	printf("KSZ8851SNL link monitoring not yet implemented\r\n");
+#else
 	hw_eth_start_link_monitor(&eth_communication);
+#endif
 
 	/* Create network initialization task that will start DOIP client */
 	if (xTaskCreate(network_init_task,
