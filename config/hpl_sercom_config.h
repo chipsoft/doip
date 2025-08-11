@@ -275,4 +275,118 @@
 
 // <<< end of configuration section >>>
 
+// ===== SERCOM4 SPI Configuration =====
+// This configuration is required for KSZ8851SNL SPI communication
+
+// <e> SERCOM4 SPI Configuration
+// <id> sercom4_spi_config
+#ifndef CONF_SERCOM_4_SPI_ENABLE
+#define CONF_SERCOM_4_SPI_ENABLE 1
+#endif
+
+// <o> Baud rate <1-6250000>
+// <i> SPI baud rate setting
+// <id> spi_master_baud
+#ifndef CONF_SERCOM_4_SPI_BAUD
+#define CONF_SERCOM_4_SPI_BAUD 25000000
+#endif
+
+// <o> Clock Polarity
+// <0x0=>Idle low
+// <0x1=>Idle high
+// <i> Determines if the leading edge is rising or falling with a corresponding opposite edge at the trailing edge. (CPOL)
+// <id> spi_master_arch_cpol
+#ifndef CONF_SERCOM_4_SPI_CPOL
+#define CONF_SERCOM_4_SPI_CPOL 0x0
+#endif
+
+// <o> Clock Phase
+// <0x0=>Sample input on leading edge
+// <0x1=>Sample input on trailing edge
+// <i> Determines if input data is sampled on leading or trailing SCK edge. (CPHA)
+// <id> spi_master_arch_cpha
+#define CONF_SERCOM_4_SPI_CPHA 0x1
+#endif
+
+// <o> Immediate Buffer Overflow Notification
+// <i> Controls when OVF is asserted (IBON)
+// <0x0=>In data stream
+// <0x1=>On buffer overflow
+// <id> spi_master_arch_ibon
+#ifndef CONF_SERCOM_4_SPI_IBON
+#define CONF_SERCOM_4_SPI_IBON 0x0
+#endif
+
+// <q> Run in stand-by
+// <i> Module stays active in stand-by sleep mode. (RUNSTDBY)
+// <id> spi_master_arch_runstdby
+#ifndef CONF_SERCOM_4_SPI_RUNSTDBY
+#define CONF_SERCOM_4_SPI_RUNSTDBY 0x0
+#endif
+
+// <o> Debug Stop Mode
+// <i> Behavior of the baud-rate generator when CPU is halted by external debugger. (DBGSTOP)
+// <0=>Keep running
+// <1=>Halt
+// <id> spi_master_arch_dbgstop
+#ifndef CONF_SERCOM_4_SPI_DBGSTOP
+#define CONF_SERCOM_4_SPI_DBGSTOP 0
+#endif
+
+// Address mode disabled in master mode
+#ifndef CONF_SERCOM_4_SPI_AMODE_EN
+#define CONF_SERCOM_4_SPI_AMODE_EN 0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_AMODE
+#define CONF_SERCOM_4_SPI_AMODE 0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_ADDR
+#define CONF_SERCOM_4_SPI_ADDR 0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_ADDRMASK
+#define CONF_SERCOM_4_SPI_ADDRMASK 0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_SSDE
+#define CONF_SERCOM_4_SPI_SSDE 0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_MSSEN
+#define CONF_SERCOM_4_SPI_MSSEN 0x0
+#endif
+
+#ifndef CONF_SERCOM_4_SPI_PLOADEN
+#define CONF_SERCOM_4_SPI_PLOADEN 0
+#endif
+
+// <o> Receive Data Pinout
+// <0x0=>PAD[0]
+// <0x1=>PAD[1]
+// <0x2=>PAD[2]
+// <0x3=>PAD[3]
+// <id> spi_master_rxpo
+#ifndef CONF_SERCOM_4_SPI_RXPO
+#define CONF_SERCOM_4_SPI_RXPO 3
+#endif
+
+// <o> Transmit Data Pinout
+// <0x0=>PAD[0,1]_DO_SCK
+// <0x1=>PAD[2,3]_DO_SCK
+// <0x2=>PAD[3,1]_DO_SCK
+// <0x3=>PAD[0,3]_DO_SCK
+// <id> spi_master_txpo
+#ifndef CONF_SERCOM_4_SPI_TXPO
+#define CONF_SERCOM_4_SPI_TXPO 0
+#endif
+
+// Calculate baud register value from requested baudrate value
+#ifndef CONF_SERCOM_4_SPI_BAUD_RATE
+#define CONF_SERCOM_4_SPI_BAUD_RATE ((float)CONF_GCLK_SERCOM4_CORE_FREQUENCY / (float)(2 * CONF_SERCOM_4_SPI_BAUD)) - 1
+#endif
+
+// </e>
+
 #endif // HPL_SERCOM_CONFIG_H
