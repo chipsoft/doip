@@ -61,7 +61,7 @@
 // <i> USART baud rate setting
 // <id> usart_baud_rate
 #ifndef CONF_SERCOM_2_USART_BAUD
-#define CONF_SERCOM_2_USART_BAUD 9600
+#define CONF_SERCOM_2_USART_BAUD 115200
 #endif
 
 // </h>
@@ -273,27 +273,69 @@
 #endif
 #endif
 
-// <<< end of configuration section >>>
+#include <peripheral_clk_config.h>
 
-// ===== SERCOM4 SPI Configuration =====
-// This configuration is required for KSZ8851SNL SPI communication
-
-// <e> SERCOM4 SPI Configuration
-// <id> sercom4_spi_config
+// Enable configuration of module
 #ifndef CONF_SERCOM_4_SPI_ENABLE
 #define CONF_SERCOM_4_SPI_ENABLE 1
 #endif
 
-// <o> Baud rate <1-6250000>
-// <i> SPI baud rate setting
-// <id> spi_master_baud
+// Set module in SPI Master mode
+#ifndef CONF_SERCOM_4_SPI_MODE
+#define CONF_SERCOM_4_SPI_MODE 0x03
+#endif
+
+// <h> Basic Configuration
+
+// <q> Receive buffer enable
+// <i> Enable receive buffer to receive data from slave (RXEN)
+// <id> spi_master_rx_enable
+#ifndef CONF_SERCOM_4_SPI_RXEN
+#define CONF_SERCOM_4_SPI_RXEN 0x1
+#endif
+
+// <o> Character Size
+// <i> Bit size for all characters sent over the SPI bus (CHSIZE)
+// <0x0=>8 bits
+// <0x1=>9 bits
+// <id> spi_master_character_size
+#ifndef CONF_SERCOM_4_SPI_CHSIZE
+#define CONF_SERCOM_4_SPI_CHSIZE 0x0
+#endif
+// <o> Baud rate <1-18000000>
+// <i> The SPI data transfer rate
+// <id> spi_master_baud_rate
 #ifndef CONF_SERCOM_4_SPI_BAUD
-#define CONF_SERCOM_4_SPI_BAUD 25000000
+#define CONF_SERCOM_4_SPI_BAUD 12000000
+#endif
+
+// </h>
+
+// <e> Advanced Configuration
+// <id> spi_master_advanced
+#ifndef CONF_SERCOM_4_SPI_ADVANCED
+#define CONF_SERCOM_4_SPI_ADVANCED 1
+#endif
+
+// <o> Dummy byte <0x00-0x1ff>
+// <id> spi_master_dummybyte
+// <i> Dummy byte used when reading data from the slave without sending any data
+#ifndef CONF_SERCOM_4_SPI_DUMMYBYTE
+#define CONF_SERCOM_4_SPI_DUMMYBYTE 0x100
+#endif
+
+// <o> Data Order
+// <0=>MSB first
+// <1=>LSB first
+// <i> I least significant or most significant bit is shifted out first (DORD)
+// <id> spi_master_arch_dord
+#ifndef CONF_SERCOM_4_SPI_DORD
+#define CONF_SERCOM_4_SPI_DORD 0x0
 #endif
 
 // <o> Clock Polarity
-// <0x0=>Idle low
-// <0x1=>Idle high
+// <0=>SCK is low when idle
+// <1=>SCK is high when idle
 // <i> Determines if the leading edge is rising or falling with a corresponding opposite edge at the trailing edge. (CPOL)
 // <id> spi_master_arch_cpol
 #ifndef CONF_SERCOM_4_SPI_CPOL
@@ -305,7 +347,8 @@
 // <0x1=>Sample input on trailing edge
 // <i> Determines if input data is sampled on leading or trailing SCK edge. (CPHA)
 // <id> spi_master_arch_cpha
-#define CONF_SERCOM_4_SPI_CPHA 0x1
+#ifndef CONF_SERCOM_4_SPI_CPHA
+#define CONF_SERCOM_4_SPI_CPHA 0x0
 #endif
 
 // <o> Immediate Buffer Overflow Notification
@@ -332,6 +375,8 @@
 #ifndef CONF_SERCOM_4_SPI_DBGSTOP
 #define CONF_SERCOM_4_SPI_DBGSTOP 0
 #endif
+
+// </e>
 
 // Address mode disabled in master mode
 #ifndef CONF_SERCOM_4_SPI_AMODE_EN
@@ -387,6 +432,6 @@
 #define CONF_SERCOM_4_SPI_BAUD_RATE ((float)CONF_GCLK_SERCOM4_CORE_FREQUENCY / (float)(2 * CONF_SERCOM_4_SPI_BAUD)) - 1
 #endif
 
-// </e>
+// <<< end of configuration section >>>
 
 #endif // HPL_SERCOM_CONFIG_H

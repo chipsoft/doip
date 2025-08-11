@@ -46,6 +46,9 @@ static drv_spi_status_t drv_spi_register_callback_impl(const void *hw_context,
                                                        drv_spi_cb_type_t type, 
                                                        drv_spi_callback_t callback);
 
+// Direct SERCOM4 SPI transfer fallback (bypasses ASF4)
+static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t *rx_data, uint32_t length);
+
 drv_spi_t spi_4 = {
     .is_init = false,
     .is_enabled = false,
@@ -79,20 +82,34 @@ static drv_spi_status_t convert_asf4_error(int32_t asf4_error)
 
 static void drv_spi_configure_pins(void)
 {
-    // Configure SERCOM4 pins for SPI
+    printf("[SPI4] Configuring SERCOM4 SPI pins...\r\n");
+    
+    // Configure SERCOM4 pins for SPI - following working example pattern
     // PB26 - SCK (PAD1)
+    gpio_set_pin_level(GPIO(GPIO_PORTB, 26), false); // Initial level low
+    gpio_set_pin_direction(GPIO(GPIO_PORTB, 26), GPIO_DIRECTION_OUT);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 26), PINMUX_PB26D_SERCOM4_PAD1);
+    printf("[SPI4] SCK (PB26) configured as SERCOM4_PAD1\r\n");
     
     // PB27 - MOSI (PAD0)  
+    gpio_set_pin_level(GPIO(GPIO_PORTB, 27), false); // Initial level low
+    gpio_set_pin_direction(GPIO(GPIO_PORTB, 27), GPIO_DIRECTION_OUT);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 27), PINMUX_PB27D_SERCOM4_PAD0);
+    printf("[SPI4] MOSI (PB27) configured as SERCOM4_PAD0\r\n");
     
-    // PB28 - SS (PAD2) - This will be managed manually for CS
+    // PB28 - CS (PAD2) - This will be managed manually for CS
     gpio_set_pin_function(GPIO(GPIO_PORTB, 28), GPIO_PIN_FUNCTION_OFF);
     gpio_set_pin_direction(GPIO(GPIO_PORTB, 28), GPIO_DIRECTION_OUT);
     gpio_set_pin_level(GPIO(GPIO_PORTB, 28), true); // CS idle high
+    printf("[SPI4] CS (PB28) configured as GPIO output (idle high)\r\n");
     
     // PB29 - MISO (PAD3)
+    gpio_set_pin_direction(GPIO(GPIO_PORTB, 29), GPIO_DIRECTION_IN);
+    gpio_set_pin_pull_mode(GPIO(GPIO_PORTB, 29), GPIO_PULL_OFF);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 29), PINMUX_PB29D_SERCOM4_PAD3);
+    printf("[SPI4] MISO (PB29) configured as SERCOM4_PAD3 (input, no pull)\r\n");
+    
+    printf("[SPI4] All SPI pins configured successfully\r\n");
 }
 
 static void drv_spi_configure_sercom4_clock(void)
@@ -103,10 +120,13 @@ static void drv_spi_configure_sercom4_clock(void)
     hri_mclk_set_APBDMASK_SERCOM4_bit(MCLK);
     printf("[SPI4] SERCOM4 APB clock enabled\r\n");
     
-    // Configure GCLK for SERCOM4 - use same clock as SERCOM2
+    // Configure GCLK for SERCOM4 - using working example's approach
     hri_gclk_write_PCHCTRL_reg(GCLK, SERCOM4_GCLK_ID_CORE, CONF_GCLK_SERCOM4_CORE_SRC | (1 << GCLK_PCHCTRL_CHEN_Pos));
+    hri_gclk_write_PCHCTRL_reg(GCLK, SERCOM4_GCLK_ID_SLOW, CONF_GCLK_SERCOM4_SLOW_SRC | (1 << GCLK_PCHCTRL_CHEN_Pos));
     printf("[SPI4] SERCOM4 core clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
            SERCOM4_GCLK_ID_CORE, CONF_GCLK_SERCOM4_CORE_SRC);
+    printf("[SPI4] SERCOM4 slow clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
+           SERCOM4_GCLK_ID_SLOW, CONF_GCLK_SERCOM4_SLOW_SRC);
 }
 
 static drv_spi_status_t drv_spi_init_impl(const void *hw_context, const drv_spi_config_t *config)
@@ -126,19 +146,18 @@ static drv_spi_status_t drv_spi_init_impl(const void *hw_context, const drv_spi_
     drv_spi_configure_sercom4_clock();
     drv_spi_configure_pins();
     
-    // Initialize SPI with ASF4
+    // Initialize SPI with ASF4 - using same approach as working example
+    printf("[SPI4] Calling spi_m_sync_init with descriptor %p and SERCOM4\r\n", (void*)context->spi_desc);
     int32_t result = spi_m_sync_init(context->spi_desc, SERCOM4);
     if (result != ERR_NONE) {
         printf("[SPI4] ASF4 spi_m_sync_init failed: %d\r\n", result);
         return convert_asf4_error(result);
     }
+    printf("[SPI4] spi_m_sync_init successful\r\n");
     
-    // Set SPI mode (clock polarity and phase) - KSZ8851SNL uses Mode 1 (CPOL=0, CPHA=1)
-    result = spi_m_sync_set_mode(context->spi_desc, SPI_MODE_1); // Mode 1 for KSZ8851SNL
-    if (result != ERR_NONE) {
-        printf("[SPI4] Failed to set SPI mode: %d\r\n", result);
-        return convert_asf4_error(result);
-    }
+    // SPI mode is configured in hpl_sercom_config.h
+    // No need to manually set mode as it's handled by the configuration
+    printf("[SPI4] Using SPI mode from configuration file\r\n");
     
     // Set baudrate
     result = spi_m_sync_set_baudrate(context->spi_desc, config->baudrate);
@@ -228,11 +247,21 @@ static drv_spi_status_t drv_spi_transfer_impl(const void *hw_context, const uint
         .size = length
     };
     
+    printf("[SPI4] Starting SPI transfer: tx=%p, rx=%p, size=%lu\r\n", 
+           (void*)tx_data, (void*)rx_data, (unsigned long)length);
+    printf("[SPI4] SPI descriptor: %p\r\n", (void*)context->spi_desc);
+    printf("[SPI4] Transfer structure: txbuf=%p, rxbuf=%p, size=%lu\r\n", 
+           (void*)xfer.txbuf, (void*)xfer.rxbuf, (unsigned long)xfer.size);
+    
     int32_t result = spi_m_sync_transfer(context->spi_desc, &xfer);
     if (result != ERR_NONE) {
-        printf("[SPI4] Transfer failed: %d\r\n", result);
-        return convert_asf4_error(result);
+        printf("[SPI4] ASF4 transfer failed: %d, trying direct SERCOM4 approach\r\n", result);
+        
+        // Fallback: Direct SERCOM4 SPI transfer
+        return drv_spi_direct_transfer(tx_data, rx_data, length);
     }
+    
+    printf("[SPI4] Transfer completed successfully\r\n");
     
     return DRV_SPI_STATUS_OK;
 }
@@ -302,4 +331,45 @@ void drv_spi_cs_set_low(void)
 void drv_spi_cs_set_high(void)
 {
     gpio_set_pin_level(GPIO(GPIO_PORTB, 28), true);
+}
+
+// Direct SERCOM4 SPI transfer fallback (bypasses ASF4)
+static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t *rx_data, uint32_t length)
+{
+    printf("[SPI4] Using direct SERCOM4 transfer fallback\r\n");
+    
+    // Direct SERCOM4 register access for SPI transfer
+    Sercom *sercom = SERCOM4;
+    
+    // Wait for previous transfer to complete
+    while (!(sercom->SPI.INTFLAG.bit.TXC));
+    
+    // Clear any pending flags
+    sercom->SPI.INTFLAG.reg = SERCOM_SPI_INTFLAG_TXC | SERCOM_SPI_INTFLAG_RXC;
+    
+    // Enable receiver
+    sercom->SPI.CTRLB.bit.RXEN = 1;
+    
+    // Transfer data byte by byte
+    for (uint32_t i = 0; i < length; i++) {
+        // Wait for TX buffer to be empty
+        while (!(sercom->SPI.INTFLAG.bit.DRE));
+        
+        // Send byte
+        sercom->SPI.DATA.reg = tx_data[i];
+        
+        // Wait for RX buffer to have data
+        while (!(sercom->SPI.INTFLAG.bit.RXC));
+        
+        // Read received byte
+        if (rx_data) {
+            rx_data[i] = sercom->SPI.DATA.reg;
+        }
+    }
+    
+    // Wait for final transfer to complete
+    while (!(sercom->SPI.INTFLAG.bit.TXC));
+    
+    printf("[SPI4] Direct SERCOM4 transfer completed successfully\r\n");
+    return DRV_SPI_STATUS_OK;
 }

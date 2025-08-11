@@ -8,6 +8,10 @@ PROJECT = AtmelStart
 MCU_NAME = same54p20a
 BUILD_DIR = build
 
+# Network Interface Selection
+# Set NETWORK_INTERFACE to GMAC or KSZ8851SNL (default)
+NETWORK_INTERFACE ?= KSZ8851SNL
+
 # Library Paths - Change these to point to different library versions
 # 
 # To use different library versions, simply modify these paths:
@@ -69,7 +73,7 @@ C_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 ASM_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 
 # MCU Definitions
-DEFINES = -D__SAME54P20A__
+DEFINES = -D__SAME54P20A__ -DCONF_SERCOM_4_SPI_ENABLE=1 -DCONF_SERCOM_4_SPI_MODE=0x03 -DCONF_SERCOM_4_SPI_BAUD=12000000 -DCONF_SERCOM_4_SPI_RXPO=3 -DCONF_SERCOM_4_SPI_TXPO=0
 
 # Linker Options
 LINKER_SCRIPT = $(ASF4_DIR)/ld/same54p20a_flash.ld
@@ -198,16 +202,34 @@ $(ASF4_DIR)/hal/src/hal_cache.c
 # DOIP Configuration - Set to 1 for raw lwIP, 0 for socket implementation
 DOIP_USE_RAW_LWIP ?= 1
 
-# Driver Files
+# Common Driver Files
 DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
+$(DRIVERS_DIR)/driver_doip.c \
+$(BSP_DRIVERS_DIR)/bsp_led.c
+
+# Network Interface Selection
+ifeq ($(NETWORK_INTERFACE), KSZ8851SNL)
+DRIVER_CFILES += \
+$(DRIVERS_DIR)/driver_spi.c \
+$(DRIVERS_DIR)/driver_ksz8851snl.c \
+$(BSP_DRIVERS_DIR)/bsp_spi.c \
+$(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
+$(LWIP_DIR)/port/ethif_ksz8851snl.c
+DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
+ASF4_CFILES += $(ASF4_DIR)/hal/src/hal_spi_m_sync.c
+DIR_INCLUDES += -I"$(LWIP_DIR)/port/include"
+$(info Building with KSZ8851SNL SPI-Ethernet interface)
+else
+DRIVER_CFILES += \
 $(DRIVERS_DIR)/driver_ethernet.c \
 $(DRIVERS_DIR)/driver_net.c \
 $(DRIVERS_DIR)/driver_net_lwip.c \
-$(DRIVERS_DIR)/driver_doip.c \
-$(BSP_DRIVERS_DIR)/bsp_led.c \
 $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
 $(BSP_DRIVERS_DIR)/bsp_net.c
+DEFINES += -DUSE_GMAC_INTERFACE=1
+$(info Building with GMAC Ethernet interface)
+endif
 
 # DOIP BSP Implementation Selection
 ifeq ($(DOIP_USE_RAW_LWIP), 1)
@@ -277,7 +299,7 @@ OUTPUT_FILE_PATH := $(BUILD_DIR)/$(PROJECT).elf
 QUOTE := "
 
 # Phony targets
-.PHONY: all clean distclean rebuild size help init
+.PHONY: all clean distclean rebuild size help init gmac ksz8851 clean-switch-interface switch-status
 
 # Default target
 all: init $(OUTPUT_FILE_PATH)
@@ -293,6 +315,12 @@ help:
 	@echo "  rebuild   - Clean and build"
 	@echo "  size      - Show memory usage"
 	@echo "  help      - Show this help message"
+	@echo ""
+	@echo "Network Interface Selection:"
+	@echo "  ksz8851   - Build with KSZ8851SNL SPI-Ethernet interface (default)"
+	@echo "  gmac      - Build with GMAC Ethernet interface"
+	@echo "  clean-switch-interface - Clean for interface switch"
+	@echo "  switch-status - Show current interface configuration"
 
 # Size target with enhanced reporting
 size: $(OUTPUT_FILE_PATH)
@@ -367,3 +395,28 @@ clean:
 distclean: clean
 	@echo "Removing all generated files..."
 	@echo "Distclean completed."
+
+# Network Interface Selection Targets
+.PHONY: gmac ksz8851 clean-switch-interface switch-status
+
+gmac:
+	@echo "Building with GMAC Ethernet interface..."
+	$(MAKE) clean
+	$(MAKE) NETWORK_INTERFACE=GMAC all
+
+ksz8851:
+	@echo "Building with KSZ8851SNL SPI-Ethernet interface..."
+	$(MAKE) clean
+	$(MAKE) NETWORK_INTERFACE=KSZ8851SNL all
+
+clean-switch-interface:
+	@echo "Cleaning for network interface switch..."
+	@$(RM) $(BUILD_DIR)
+	@echo "Ready for network interface switch. Use 'make gmac' or 'make ksz8851'"
+
+switch-status:
+	@echo "Current network interface: $(NETWORK_INTERFACE)"
+	@echo "Available options:"
+	@echo "  make ksz8851  - Build with KSZ8851SNL SPI-Ethernet interface (default)"
+	@echo "  make gmac     - Build with GMAC Ethernet interface"
+	@echo "  make clean-switch-interface - Clean for interface switch"
