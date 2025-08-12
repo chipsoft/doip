@@ -197,7 +197,9 @@ $(ASF4_DIR)/hpl/gmac/hpl_gmac.c \
 $(ASF4_DIR)/hpl/ramecc/hpl_ramecc.c \
 $(ASF4_DIR)/hal/utils/src/utils_assert.c \
 $(ASF4_DIR)/hpl/mclk/hpl_mclk.c \
-$(ASF4_DIR)/hal/src/hal_cache.c
+$(ASF4_DIR)/hal/src/hal_cache.c \
+$(ASF4_DIR)/hal/src/hal_ext_irq.c \
+$(ASF4_DIR)/hpl/eic/hpl_eic.c
 
 # DOIP Configuration - Set to 1 for raw lwIP, 0 for socket implementation
 DOIP_USE_RAW_LWIP ?= 1

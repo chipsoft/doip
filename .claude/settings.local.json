@@ -26,7 +26,8 @@
       "Bash(sed:*)",
       "Bash(perl:*)",
       "Bash(git push:*)",
-      "Bash(wait)"
+      "Bash(wait)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": []
   }

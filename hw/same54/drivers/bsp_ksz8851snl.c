@@ -6,9 +6,14 @@
 #include "printf.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
 
 #include <hal_gpio.h>
 #include <hal_delay.h>
+#include <hal_ext_irq.h>
+#include <hri_gclk_e54.h>
+#include <hri_mclk_e54.h>
+#include <peripheral_clk_config.h>
 #include <string.h>
 
 // Include existing register definitions
@@ -41,6 +46,132 @@ static drv_ksz8851snl_hw_context_t drv_ksz8851snl_hw_context_0 = {
     .tx_errors = 0,
 };
 
+// Interrupt handling variables
+static SemaphoreHandle_t ksz8851snl_interrupt_semaphore = NULL;
+static bool ksz8851snl_irq_initialized = false;
+
+// Interrupt statistics and debugging
+typedef struct {
+    uint32_t total_interrupts;
+    uint32_t rx_interrupts;
+    uint32_t tx_interrupts;
+    uint32_t phy_interrupts;
+    uint32_t unknown_interrupts;
+    uint32_t empty_interrupts;
+    uint32_t semaphore_timeouts;
+    uint32_t last_interrupt_status;
+    uint32_t gpio_pin_state;
+    TickType_t last_interrupt_time;
+} ksz8851snl_irq_stats_t;
+
+static ksz8851snl_irq_stats_t irq_stats = {0};
+
+// KSZ8851SNL interrupt handler callback
+static void ksz8851snl_irq_handler(void)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    
+    // Update interrupt statistics (ISR-safe operations only)
+    irq_stats.total_interrupts++;
+    irq_stats.last_interrupt_time = xTaskGetTickCountFromISR();
+    irq_stats.gpio_pin_state = gpio_get_pin_level(KSZ8851SNL_INT_PIN);
+    
+    // Visual indication that interrupt occurred (toggle LED if available)
+    // This helps confirm the interrupt handler is actually being called
+    
+    // Read interrupt status from KSZ8851SNL (quick ISR-safe operation)
+    // Note: We can't use SPI operations in ISR context with ASF4, so we just signal
+    // the task to handle the interrupt. The actual interrupt status reading will
+    // be done in task context.
+    
+    // Signal that an interrupt has occurred
+    if (ksz8851snl_interrupt_semaphore != NULL) {
+        if (xSemaphoreGiveFromISR(ksz8851snl_interrupt_semaphore, &xHigherPriorityTaskWoken) != pdTRUE) {
+            irq_stats.semaphore_timeouts++;
+        }
+    }
+    
+    // Request context switch if higher priority task was woken
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+// Forward declarations (implementations after SPI functions)
+static void ksz8851snl_process_interrupt(void);
+static void ksz8851snl_test_registers(void);
+static void ksz8851snl_print_irq_stats(void);
+static void ksz8851snl_gpio_test(void);
+static void ksz8851snl_force_interrupt_test(void);
+
+// KSZ8851SNL IRQ initialization function
+static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
+{
+    if (ksz8851snl_irq_initialized) {
+        return DRV_KSZ8851SNL_STATUS_OK;
+    }
+    
+    printf("[KSZ8851SNL] Initializing interrupt system\r\n");
+    printf("[KSZ8851SNL] PB7 pin level before setup: %s\r\n", 
+           gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
+    
+    // Create binary semaphore for interrupt signaling
+    ksz8851snl_interrupt_semaphore = xSemaphoreCreateBinary();
+    if (ksz8851snl_interrupt_semaphore == NULL) {
+        printf("[KSZ8851SNL] Failed to create interrupt semaphore\r\n");
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Enable EIC clocks
+    hri_gclk_write_PCHCTRL_reg(GCLK, EIC_GCLK_ID, CONF_GCLK_EIC_SRC | (1 << GCLK_PCHCTRL_CHEN_Pos));
+    hri_mclk_set_APBAMASK_EIC_bit(MCLK);
+    
+    // Configure PB7 as input with pull-up (KSZ8851SNL INT is active low)
+    gpio_set_pin_direction(KSZ8851SNL_INT_PIN, GPIO_DIRECTION_IN);
+    gpio_set_pin_pull_mode(KSZ8851SNL_INT_PIN, GPIO_PULL_UP);
+    
+    // Set pin function to EIC EXTINT7
+    gpio_set_pin_function(KSZ8851SNL_INT_PIN, PINMUX_PB07A_EIC_EXTINT7);
+    
+    // Initialize external IRQ system
+    int32_t result = ext_irq_init();
+    if (result != 0) {
+        printf("[KSZ8851SNL] Failed to initialize external IRQ system: %ld\r\n", result);
+        vSemaphoreDelete(ksz8851snl_interrupt_semaphore);
+        ksz8851snl_interrupt_semaphore = NULL;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Register interrupt handler
+    result = ext_irq_register(KSZ8851SNL_INT_PIN, ksz8851snl_irq_handler);
+    if (result != 0) {
+        printf("[KSZ8851SNL] Failed to register interrupt handler: %ld\r\n", result);
+        ext_irq_deinit();
+        vSemaphoreDelete(ksz8851snl_interrupt_semaphore);
+        ksz8851snl_interrupt_semaphore = NULL;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Enable external interrupt
+    result = ext_irq_enable(KSZ8851SNL_INT_PIN);
+    if (result != 0) {
+        printf("[KSZ8851SNL] Failed to enable external interrupt: %ld\r\n", result);
+        ext_irq_deinit();
+        vSemaphoreDelete(ksz8851snl_interrupt_semaphore);
+        ksz8851snl_interrupt_semaphore = NULL;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    ksz8851snl_irq_initialized = true;
+    printf("[KSZ8851SNL] Interrupt system initialized successfully\r\n");
+    printf("[KSZ8851SNL] PB7 pin level after setup: %s\r\n", 
+           gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
+    
+    // Initial register test
+    printf("[KSZ8851SNL] Running initial register test...\r\n");
+    ksz8851snl_test_registers();
+    
+    return DRV_KSZ8851SNL_STATUS_OK;
+}
+
 // Forward declarations
 static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, const drv_ksz8851snl_config_t *config);
 static drv_ksz8851snl_status_t drv_ksz8851snl_deinit_impl(const void *hw_context);
@@ -52,6 +183,10 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
 static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw_context, uint8_t *data, uint16_t *length);
 static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void *hw_context, bool *rx_available);
 static drv_ksz8851snl_status_t drv_ksz8851snl_register_callback_impl(const void *hw_context, drv_ksz8851snl_cb_type_t type, drv_ksz8851snl_callback_t callback);
+
+// SPI register access functions forward declarations
+static uint16_t ksz8851_reg_read(uint16_t reg);
+static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata);
 
 // Global driver instance
 drv_ksz8851snl_t ksz8851snl_0 = {
@@ -205,6 +340,155 @@ static void ksz8851_reg_clrbits(uint16_t reg, uint16_t bits_to_clr)
     ksz8851_reg_write(reg, temp);
 }
 
+// Process KSZ8851SNL interrupt in task context
+static void ksz8851snl_process_interrupt(void)
+{
+    // Read interrupt status register
+    uint16_t int_status = ksz8851_reg_read(REG_INT_STATUS);
+    
+    // Update statistics
+    irq_stats.last_interrupt_status = int_status;
+    
+    if (int_status == 0) {
+        irq_stats.empty_interrupts++;
+        printf("[KSZ8851SNL] Empty interrupt (status: 0x%04X)\r\n", int_status);
+        return; // No interrupts pending
+    }
+    
+    printf("[KSZ8851SNL] Interrupt status: 0x%04X (GPIO PB7: %s)\r\n", 
+           int_status, irq_stats.gpio_pin_state ? "HIGH" : "LOW");
+    
+    // Handle RX interrupt
+    if (int_status & INT_RX) {
+        irq_stats.rx_interrupts++;
+        printf("[KSZ8851SNL] RX interrupt - packet received\r\n");
+        // TODO: Signal network stack that packet is available
+        // This will be implemented when we update packet processing
+    }
+    
+    // Handle TX interrupt
+    if (int_status & INT_TX) {
+        irq_stats.tx_interrupts++;
+        printf("[KSZ8851SNL] TX interrupt - packet transmitted\r\n");
+        // TODO: Signal that TX buffer is available
+    }
+    
+    // Handle PHY link change interrupt
+    if (int_status & INT_PHY) {
+        irq_stats.phy_interrupts++;
+        printf("[KSZ8851SNL] PHY interrupt - link status changed\r\n");
+        // TODO: Update link status and notify network stack
+    }
+    
+    // Check for unknown interrupts
+    uint16_t known_interrupts = INT_RX | INT_TX | INT_PHY;
+    if (int_status & ~known_interrupts) {
+        irq_stats.unknown_interrupts++;
+        printf("[KSZ8851SNL] Unknown interrupt bits: 0x%04X\r\n", int_status & ~known_interrupts);
+    }
+    
+    // Clear handled interrupts
+    ksz8851_reg_write(REG_INT_STATUS, int_status);
+}
+
+// Debug and test functions
+static void ksz8851snl_print_irq_stats(void)
+{
+    printf("\r\n=== KSZ8851SNL Interrupt Statistics ===\r\n");
+    printf("Total interrupts:     %lu\r\n", irq_stats.total_interrupts);
+    printf("RX interrupts:        %lu\r\n", irq_stats.rx_interrupts);
+    printf("TX interrupts:        %lu\r\n", irq_stats.tx_interrupts);
+    printf("PHY interrupts:       %lu\r\n", irq_stats.phy_interrupts);
+    printf("Unknown interrupts:   %lu\r\n", irq_stats.unknown_interrupts);
+    printf("Empty interrupts:     %lu\r\n", irq_stats.empty_interrupts);
+    printf("Semaphore timeouts:   %lu\r\n", irq_stats.semaphore_timeouts);
+    printf("Last interrupt status: 0x%04lX\r\n", irq_stats.last_interrupt_status);
+    printf("Last GPIO PB7 state:  %s\r\n", irq_stats.gpio_pin_state ? "HIGH" : "LOW");
+    printf("Last interrupt time:   %lu ticks\r\n", irq_stats.last_interrupt_time);
+    printf("Current GPIO PB7:     %s\r\n", gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
+    printf("========================================\r\n\r\n");
+}
+
+static void ksz8851snl_test_registers(void)
+{
+    printf("\r\n=== KSZ8851SNL Register Test ===\r\n");
+    
+    // Read chip ID
+    uint16_t chip_id = ksz8851_reg_read(REG_CHIP_ID);
+    printf("Chip ID (0xC0):        0x%04X\r\n", chip_id);
+    
+    // Read interrupt mask
+    uint16_t int_mask = ksz8851_reg_read(REG_INT_MASK);
+    printf("Interrupt Mask (0x90): 0x%04X\r\n", int_mask);
+    printf("  RX enabled:    %s\r\n", (int_mask & INT_RX) ? "YES" : "NO");
+    printf("  TX enabled:    %s\r\n", (int_mask & INT_TX) ? "YES" : "NO");
+    printf("  PHY enabled:   %s\r\n", (int_mask & INT_PHY) ? "YES" : "NO");
+    
+    // Read interrupt status
+    uint16_t int_status = ksz8851_reg_read(REG_INT_STATUS);
+    printf("Interrupt Status (0x92): 0x%04X\r\n", int_status);
+    printf("  RX pending:    %s\r\n", (int_status & INT_RX) ? "YES" : "NO");
+    printf("  TX pending:    %s\r\n", (int_status & INT_TX) ? "YES" : "NO");
+    printf("  PHY pending:   %s\r\n", (int_status & INT_PHY) ? "YES" : "NO");
+    
+    // Read PHY status
+    uint16_t phy_status = ksz8851_reg_read(0xE6);
+    printf("PHY Status (0xE6):     0x%04X\r\n", phy_status);
+    
+    // Read port status
+    uint16_t port_status = ksz8851_reg_read(0xF8);
+    printf("Port Status (0xF8):    0x%04X\r\n", port_status);
+    
+    printf("================================\r\n\r\n");
+}
+
+static void ksz8851snl_gpio_test(void)
+{
+    printf("\r\n=== GPIO Pin Configuration Test ===\r\n");
+    
+    // Check GPIO pin states
+    printf("PB7 (INT) pin level:    %s\r\n", gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
+    printf("PA6 (RESET) pin level:  %s\r\n", gpio_get_pin_level(KSZ8851SNL_RESET_PIN) ? "HIGH" : "LOW");
+    printf("PA27 (CE) pin level:    %s\r\n", gpio_get_pin_level(KSZ8851SNL_CE_PIN) ? "HIGH" : "LOW");
+    printf("PB28 (CS) pin level:    %s\r\n", gpio_get_pin_level(KSZ8851SNL_CS_PIN) ? "HIGH" : "LOW");
+    
+    // Check if EIC is initialized
+    printf("EIC initialized:        %s\r\n", ksz8851snl_irq_initialized ? "YES" : "NO");
+    printf("Semaphore created:      %s\r\n", (ksz8851snl_interrupt_semaphore != NULL) ? "YES" : "NO");
+    
+    printf("====================================\r\n\r\n");
+}
+
+static void ksz8851snl_force_interrupt_test(void)
+{
+    printf("\r\n=== Force Interrupt Test ===\r\n");
+    
+    // Read current interrupt status
+    uint16_t int_status_before = ksz8851_reg_read(REG_INT_STATUS);
+    printf("Interrupt status before: 0x%04X\r\n", int_status_before);
+    
+    // Clear all pending interrupts to potentially trigger new ones
+    if (int_status_before != 0) {
+        printf("Clearing pending interrupts...\r\n");
+        ksz8851_reg_write(REG_INT_STATUS, int_status_before);
+        
+        // Wait a moment
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+    // Read status after clear
+    uint16_t int_status_after = ksz8851_reg_read(REG_INT_STATUS);
+    printf("Interrupt status after:  0x%04X\r\n", int_status_after);
+    
+    // Try to trigger PHY interrupt by reading PHY registers
+    printf("Reading PHY registers to potentially trigger events...\r\n");
+    uint16_t phy_status = ksz8851_reg_read(0xE6);
+    uint16_t port_status = ksz8851_reg_read(0xF8);
+    printf("PHY Status: 0x%04X, Port Status: 0x%04X\r\n", phy_status, port_status);
+    
+    printf("==============================\r\n\r\n");
+}
+
 static void drv_ksz8851snl_configure_pins(void)
 {
     // Configure control pins
@@ -286,6 +570,25 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     }
     
     printf("[KSZ8851SNL] Chip ID verified: 0x%04X\r\n", id_info.chip_id);
+    
+    // Initialize interrupt system
+    drv_ksz8851snl_status_t irq_status = ksz8851snl_irq_init();
+    if (irq_status != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[KSZ8851SNL] Interrupt initialization failed\r\n");
+        return irq_status;
+    }
+    
+    // Configure KSZ8851SNL chip interrupts
+    printf("[KSZ8851SNL] Configuring chip interrupts\r\n");
+    
+    // Clear any pending interrupt status
+    ksz8851_reg_write(REG_INT_STATUS, 0xFFFF);
+    
+    // Enable RX, TX, and PHY link interrupts
+    uint16_t interrupt_mask = INT_RX | INT_TX | INT_PHY;
+    ksz8851_reg_write(REG_INT_MASK, interrupt_mask);
+    
+    printf("[KSZ8851SNL] Interrupts enabled: RX, TX, PHY (mask: 0x%04X)\r\n", interrupt_mask);
     
     // TODO: Add full initialization sequence from existing FreeRTOS driver
     // This would include MAC address setup, TX/RX configuration, etc.
@@ -611,8 +914,25 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void
     ASSERT(hw_context != NULL);
     ASSERT(rx_available != NULL);
     
-    // TODO: Check interrupt status or RX FIFO status
     *rx_available = false;
+    
+    // Check if interrupt semaphore is available (interrupt occurred)
+    if (ksz8851snl_interrupt_semaphore != NULL) {
+        // Try to take semaphore without blocking
+        if (xSemaphoreTake(ksz8851snl_interrupt_semaphore, 0) == pdTRUE) {
+            // Process the interrupt
+            ksz8851snl_process_interrupt();
+            
+            // Check if RX data is actually available by reading RX frame count
+            uint16_t rx_status = ksz8851_reg_read(REG_RXQ_CMD);
+            uint8_t rx_frame_count = (rx_status & RXQ_CMD_CNTL) >> 8;
+            
+            if (rx_frame_count > 0) {
+                *rx_available = true;
+                printf("[KSZ8851SNL] RX available: %d frame(s) pending\r\n", rx_frame_count);
+            }
+        }
+    }
     
     return DRV_KSZ8851SNL_STATUS_OK;
 }
@@ -641,4 +961,25 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_register_callback_impl(const void 
     }
     
     return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+// Public debug and test functions
+void ksz8851snl_debug_print_irq_stats(void)
+{
+    ksz8851snl_print_irq_stats();
+}
+
+void ksz8851snl_debug_test_registers(void)
+{
+    ksz8851snl_test_registers();
+}
+
+void ksz8851snl_debug_gpio_test(void)
+{
+    ksz8851snl_gpio_test();
+}
+
+void ksz8851snl_debug_force_interrupt_test(void)
+{
+    ksz8851snl_force_interrupt_test();
 }
