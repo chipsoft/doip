@@ -63,9 +63,15 @@ drv_spi_t spi_4 = {
     .register_callback = drv_spi_register_callback_impl,
 };
 
-static drv_spi_status_t convert_asf4_error(int32_t asf4_error)
+static drv_spi_status_t convert_asf4_error(int32_t asf4_result)
 {
-    switch (asf4_error) {
+    // For ASF4 functions that return number of bytes on success or negative error codes
+    if (asf4_result >= 0) {
+        return DRV_SPI_STATUS_OK;  // Positive values indicate success (bytes transferred)
+    }
+    
+    // Negative values are error codes
+    switch (asf4_result) {
         case ERR_NONE:
             return DRV_SPI_STATUS_OK;
         case ERR_BUSY:
@@ -254,16 +260,21 @@ static drv_spi_status_t drv_spi_transfer_impl(const void *hw_context, const uint
            (void*)xfer.txbuf, (void*)xfer.rxbuf, (unsigned long)xfer.size);
     
     int32_t result = spi_m_sync_transfer(context->spi_desc, &xfer);
-    if (result != ERR_NONE) {
-        printf("[SPI4] ASF4 transfer failed: %d, trying direct SERCOM4 approach\r\n", result);
-        
+    
+    // spi_m_sync_transfer returns number of bytes transferred on success, negative error code on failure
+    if (result == (int32_t)length) {
+        printf("[SPI4] ASF4 transfer completed successfully: %d bytes transferred\r\n", result);
+        return DRV_SPI_STATUS_OK;
+    } else if (result < 0) {
+        printf("[SPI4] ASF4 transfer failed with error: %d, trying direct SERCOM4 approach\r\n", result);
+        // Fallback: Direct SERCOM4 SPI transfer
+        return drv_spi_direct_transfer(tx_data, rx_data, length);
+    } else {
+        printf("[SPI4] ASF4 partial transfer: %d bytes of %lu transferred, trying direct SERCOM4 approach\r\n", 
+               result, (unsigned long)length);
         // Fallback: Direct SERCOM4 SPI transfer
         return drv_spi_direct_transfer(tx_data, rx_data, length);
     }
-    
-    printf("[SPI4] Transfer completed successfully\r\n");
-    
-    return DRV_SPI_STATUS_OK;
 }
 
 static drv_spi_status_t drv_spi_transfer_async_impl(const void *hw_context, const uint8_t *tx_data, 

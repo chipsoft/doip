@@ -29,10 +29,11 @@
 #define KSZ8851SNL_REG_MAC_ADDR_2       0x12          // MARM - MAC address register 2 (middle)
 #define KSZ8851SNL_REG_MAC_ADDR_4       0x14          // MARH - MAC address register 4 (high)
 
-// Expected Chip ID Values (from existing register definitions)
-#define KSZ8851SNL_CHIP_ID_EXPECTED     0x8870        // KS8851-16/32MQL chip ID
-#define KSZ8851SNL_CHIP_ID_MASK         0xFFF0        // Family ID and chip ID mask
-#define KSZ8851SNL_FAMILY_ID            0x8851        // Family ID for validation
+// Expected Chip ID Values (matching KSZ8851SNL register definitions)
+#define KSZ8851SNL_CHIP_ID_EXPECTED     0x8870        // KS8851-16/32MQL chip ID (matches CHIP_ID_8851_16)
+#define KSZ8851SNL_CHIP_ID_MASK         0xFFF0        // Family ID and chip ID mask (exclude revision bits)
+#define KSZ8851SNL_FAMILY_ID            0x8870        // Family ID for validation  
+#define KSZ8851SNL_REVISION_MASK        0x000F        // Revision mask (lower 4 bits)
 
 // Default MAC Address
 #define KSZ8851SNL_DEFAULT_MAC_ADDR     {0x00, 0x04, 0x25, 0x1C, 0xA0, 0x02}

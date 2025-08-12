@@ -97,6 +97,10 @@ static void network_init_task(void *pvParameters)
 		.full_duplex = true
 	};
 	
+	printf("[MAIN] ================================================\r\n");
+	printf("[MAIN] KSZ8851SNL Ethernet Controller Initialization\r\n");
+	printf("[MAIN] ================================================\r\n");
+	
 	drv_ksz8851snl_status_t init_status = hw_ksz8851snl_init(&ksz8851snl_0, &ksz_config);
 	if (init_status != DRV_KSZ8851SNL_STATUS_OK) {
 		printf("[MAIN] KSZ8851SNL initialization failed: %d\r\n", init_status);
@@ -105,18 +109,50 @@ static void network_init_task(void *pvParameters)
 	} else {
 		printf("[MAIN] KSZ8851SNL driver initialized successfully\r\n");
 		
-		// Now test chip ID (SPI communication test)
+		// Now test chip ID (comprehensive SPI communication test)
 		drv_ksz8851snl_id_info_t id_info;
 		drv_ksz8851snl_status_t chip_status = hw_ksz8851snl_get_chip_id(&ksz8851snl_0, &id_info);
 		
 		if (chip_status == DRV_KSZ8851SNL_STATUS_OK && id_info.chip_detected) {
-			printf("[MAIN] KSZ8851SNL Chip ID: 0x%04X, Revision: %d\r\n", 
+			printf("[MAIN] ✓ KSZ8851SNL Chip ID: 0x%04X, Revision: %d\r\n", 
 			       id_info.chip_id, id_info.revision_id);
-			printf("[MAIN] SPI Communication: %s\r\n", 
+			printf("[MAIN] ✓ SPI Communication: %s\r\n", 
 			       id_info.spi_communication_ok ? "OK" : "FAILED");
+			
+			// Enable the KSZ8851SNL and test link status
+			hw_ksz8851snl_enable(&ksz8851snl_0);
+			
+			// Give some time for link negotiation
+			vTaskDelay(pdMS_TO_TICKS(2000));
+			
+			// Test link status detection
+			drv_ksz8851snl_status_info_t status_info;
+			drv_ksz8851snl_status_t status_result = hw_ksz8851snl_get_status(&ksz8851snl_0, &status_info);
+			
+			if (status_result == DRV_KSZ8851SNL_STATUS_OK) {
+				printf("[MAIN] ✓ Link Status: %s\r\n", status_info.link_up ? "UP" : "DOWN");
+				if (status_info.link_up) {
+					printf("[MAIN] ✓ Link Speed: %d Mbps\r\n", status_info.link_speed);
+					printf("[MAIN] ✓ Duplex Mode: %s\r\n", status_info.full_duplex ? "Full" : "Half");
+				}
+			} else {
+				printf("[MAIN] ✗ Failed to read link status: %d\r\n", status_result);
+			}
+			
+			printf("[MAIN] ================================================\r\n");
+			printf("[MAIN] KSZ8851SNL initialization and testing COMPLETE\r\n");
+			printf("[MAIN] ================================================\r\n");
+			
 		} else {
-			printf("[MAIN] KSZ8851SNL chip detection failed: %d\r\n", chip_status);
+			printf("[MAIN] ✗ KSZ8851SNL chip detection failed: %d\r\n", chip_status);
 			printf("[MAIN] Check SPI wiring and connections\r\n");
+			printf("[MAIN] Expected connections:\r\n");
+			printf("[MAIN] - SCK:  PB26 -> KSZ8851SNL SCK\r\n");
+			printf("[MAIN] - MOSI: PB27 -> KSZ8851SNL SI\r\n");
+			printf("[MAIN] - MISO: PB29 -> KSZ8851SNL SO\r\n");
+			printf("[MAIN] - CS:   PB28 -> KSZ8851SNL CS#\r\n");
+			printf("[MAIN] - RST:  PA6  -> KSZ8851SNL RST#\r\n");
+			printf("[MAIN] - INT:  PB7  -> KSZ8851SNL INT#\r\n");
 		}
 	}
 #else
