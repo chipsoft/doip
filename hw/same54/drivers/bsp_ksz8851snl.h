@@ -12,6 +12,7 @@ extern drv_ksz8851snl_t ksz8851snl_0;
 // Debug and test functions
 void ksz8851snl_debug_test_registers(void);
 void ksz8851snl_debug_gpio_test(void);
+void ksz8851snl_debug_test_packet_transmission(void);
 
 #ifdef __cplusplus
 }

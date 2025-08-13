@@ -806,14 +806,21 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_status_impl(const void *hw_con
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
-// FIFO read/write helper functions
+// FIFO read/write helper functions with proper CS control
 static void ksz8851_fifo_write_data(const uint8_t *data, uint16_t length)
 {
-    // Send FIFO write command
-    uint16_t cmd = FIFO_WRITE;
-    drv_spi_status_t status = hw_spi_transfer(&spi_4, (uint8_t*)&cmd, NULL, 2);
+    // Assert CS before FIFO operation
+    drv_spi_cs_set_low();
+    
+    // Send FIFO write command (big-endian for KSZ8851SNL)
+    uint8_t cmd[2];
+    cmd[0] = FIFO_WRITE;  // 0xC0
+    cmd[1] = 0x00;
+    
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, cmd, NULL, 2);
     if (status != DRV_SPI_STATUS_OK) {
         printf("[KSZ8851SNL] FIFO write command failed\r\n");
+        drv_spi_cs_set_high();
         return;
     }
     
@@ -822,15 +829,25 @@ static void ksz8851_fifo_write_data(const uint8_t *data, uint16_t length)
     if (status != DRV_SPI_STATUS_OK) {
         printf("[KSZ8851SNL] FIFO data write failed\r\n");
     }
+    
+    // Deassert CS after FIFO operation
+    drv_spi_cs_set_high();
 }
 
 static void ksz8851_fifo_read_data(uint8_t *data, uint16_t length)
 {
-    // Send FIFO read command
-    uint16_t cmd = FIFO_READ;
-    drv_spi_status_t status = hw_spi_transfer(&spi_4, (uint8_t*)&cmd, NULL, 2);
+    // Assert CS before FIFO operation
+    drv_spi_cs_set_low();
+    
+    // Send FIFO read command (big-endian for KSZ8851SNL)
+    uint8_t cmd[2];
+    cmd[0] = FIFO_READ;   // 0x80
+    cmd[1] = 0x00;
+    
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, cmd, NULL, 2);
     if (status != DRV_SPI_STATUS_OK) {
         printf("[KSZ8851SNL] FIFO read command failed\r\n");
+        drv_spi_cs_set_high();
         return;
     }
     
@@ -839,9 +856,12 @@ static void ksz8851_fifo_read_data(uint8_t *data, uint16_t length)
     if (status != DRV_SPI_STATUS_OK) {
         printf("[KSZ8851SNL] FIFO data read failed\r\n");
     }
+    
+    // Deassert CS after FIFO operation
+    drv_spi_cs_set_high();
 }
 
-// Placeholder implementations for packet operations
+// Fixed packet transmission implementation following KSZ8851SNL datasheet
 static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length)
 {
     ASSERT(hw_context != NULL);
@@ -850,35 +870,48 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     
     printf("[KSZ8851SNL] Send packet - length: %d\r\n", length);
     
-    // Check if TX memory is available
+    // Step 1: Check if TX memory is available
     uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
     uint16_t available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
     
+    // Need space for frame + 4-byte header + overhead
     if (available_mem < (length + 8)) {
         printf("[KSZ8851SNL] Not enough TX memory: need %d, have %d\r\n", length + 8, available_mem);
         return DRV_KSZ8851SNL_STATUS_BUSY;
     }
     
-    // Enable TXQ write access
-    ksz8851_reg_write(REG_TXQ_CMD, TXQ_ENQUEUE);
+    printf("[KSZ8851SNL] TX memory available: %d bytes\r\n", available_mem);
     
-    // Prepare frame header for transmission
+    // Step 2: Disable interrupts during transmission
+    uint16_t saved_int_mask = ksz8851_reg_read(REG_INT_MASK);
+    ksz8851_reg_write(REG_INT_MASK, 0);
+    
+    // Step 3: Enable TXQ write access (start QMU operation)
+    ksz8851_reg_write(REG_RXQ_CMD, RXQ_START);
+    
+    // Step 4: Write frame control header (4 bytes)
     uint8_t frame_header[4];
-    frame_header[0] = 0x00;  // Control word
-    frame_header[1] = 0x00;
-    frame_header[2] = length & 0xFF;      // Frame length low byte
-    frame_header[3] = (length >> 8) & 0xFF; // Frame length high byte
+    frame_header[0] = 0x00;                    // Frame control word (low byte)
+    frame_header[1] = 0x00;                    // Frame control word (high byte) 
+    frame_header[2] = length & 0xFF;           // Frame byte count (low byte)
+    frame_header[3] = (length >> 8) & 0xFF;   // Frame byte count (high byte)
     
-    // Write frame header using FIFO write
+    // Step 5: Write frame header to FIFO
     ksz8851_fifo_write_data(frame_header, 4);
     
-    // Write actual packet data
+    // Step 6: Write actual packet data to FIFO
     ksz8851_fifo_write_data(data, length);
     
-    // Enable frame transmission
+    // Step 7: End QMU write operation
+    ksz8851_reg_write(REG_RXQ_CMD, 0);
+    
+    // Step 8: Start frame transmission
     ksz8851_reg_write(REG_TXQ_CMD, TXQ_ENQUEUE);
     
-    printf("[KSZ8851SNL] Packet sent successfully\r\n");
+    // Step 9: Restore interrupt mask
+    ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
+    
+    printf("[KSZ8851SNL] Packet transmission initiated successfully\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
@@ -1000,4 +1033,70 @@ void ksz8851snl_debug_test_registers(void)
 void ksz8851snl_debug_gpio_test(void)
 {
     ksz8851snl_gpio_test();
+}
+
+void ksz8851snl_debug_test_packet_transmission(void)
+{
+    printf("[KSZ8851SNL] === Packet Transmission Test ===\r\n");
+    
+    // Create a simple UDP packet for testing
+    uint8_t test_packet[] = {
+        // Ethernet header (14 bytes)
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Destination MAC (broadcast)
+        0x00, 0x00, 0x00, 0x00, 0x20, 0x76, // Source MAC
+        0x08, 0x00,                         // EtherType (IPv4)
+        
+        // IPv4 header (20 bytes)
+        0x45, 0x00, 0x00, 0x1C,             // Version, IHL, ToS, Total Length (28 bytes)
+        0x00, 0x01, 0x00, 0x00,             // ID, Flags, Fragment Offset
+        0x40, 0x11, 0x00, 0x00,             // TTL (64), Protocol (UDP), Header Checksum
+        0xC0, 0xA8, 0x64, 0x02,             // Source IP (192.168.100.2)
+        0xFF, 0xFF, 0xFF, 0xFF,             // Destination IP (broadcast)
+        
+        // UDP header (8 bytes)
+        0x13, 0x89, 0x13, 0x89,             // Source Port (5001), Dest Port (5001)
+        0x00, 0x08, 0x00, 0x00,             // Length (8 bytes), Checksum
+    };
+    
+    printf("[KSZ8851SNL] Sending test packet (%zu bytes)...\r\n", sizeof(test_packet));
+    
+    // Show packet details
+    printf("[KSZ8851SNL] Test packet contents:\r\n");
+    for (size_t i = 0; i < sizeof(test_packet); i++) {
+        if (i % 16 == 0) printf("[KSZ8851SNL] %04zX: ", i);
+        printf("%02X ", test_packet[i]);
+        if (i % 16 == 15) printf("\r\n");
+    }
+    if (sizeof(test_packet) % 16 != 0) printf("\r\n");
+    
+    // Get TX buffer space before transmission
+    uint16_t tx_space_before = ksz8851_reg_read(REG_TX_MEM_INFO) & TX_MEM_AVAILABLE_MASK;
+    printf("[KSZ8851SNL] TX buffer space before: %d bytes\r\n", tx_space_before);
+    
+    // Transmit the packet
+    drv_ksz8851snl_status_t result = hw_ksz8851snl_send_packet(&ksz8851snl_0, test_packet, sizeof(test_packet));
+    
+    // Get TX buffer space after transmission
+    uint16_t tx_space_after = ksz8851_reg_read(REG_TX_MEM_INFO) & TX_MEM_AVAILABLE_MASK;
+    printf("[KSZ8851SNL] TX buffer space after: %d bytes\r\n", tx_space_after);
+    
+    // Check interrupt status
+    uint16_t int_status = ksz8851_reg_read(REG_INT_STATUS);
+    printf("[KSZ8851SNL] Interrupt status: 0x%04X\r\n", int_status);
+    
+    if (result == DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[KSZ8851SNL] ✓ Test packet transmission reported SUCCESS\r\n");
+        printf("[KSZ8851SNL] Buffer space change: %d bytes\r\n", tx_space_before - tx_space_after);
+        
+        if (tx_space_before != tx_space_after) {
+            printf("[KSZ8851SNL] ✓ TX buffer space changed - packet likely transmitted\r\n");
+        } else {
+            printf("[KSZ8851SNL] ⚠ TX buffer space unchanged - check transmission\r\n");
+        }
+    } else {
+        printf("[KSZ8851SNL] ✗ Test packet transmission FAILED: %d\r\n", result);
+    }
+    
+    printf("[KSZ8851SNL] === Packet Transmission Test Complete ===\r\n");
+    printf("[KSZ8851SNL] NOTE: Check Wireshark or Python server for actual packet reception\r\n");
 }

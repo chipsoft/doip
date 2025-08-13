@@ -219,6 +219,9 @@ static void network_init_task(void *pvParameters)
 			// Run register test
 			ksz8851snl_debug_test_registers();
 			
+			// Run packet transmission test to validate fixes
+			ksz8851snl_debug_test_packet_transmission();
+			
 			printf("[MAIN] ================================================\r\n");
 			printf("[MAIN] KSZ8851SNL initialization and testing COMPLETE\r\n");
 			printf("[MAIN] ================================================\r\n");
