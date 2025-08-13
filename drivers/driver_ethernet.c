@@ -264,3 +264,56 @@ drv_eth_status_t hw_eth_stop_link_monitor(drv_eth_t *handle)
     
     return handle->stop_link_monitor(handle->hw_context);
 }
+
+drv_eth_status_t hw_eth_send_packet(drv_eth_t *handle, const uint8_t *data, uint16_t length)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->send_packet != NULL);
+    ASSERT(data != NULL);
+    
+    if (!handle->is_init || !handle->is_enabled) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->send_packet(handle->hw_context, data, length);
+}
+
+drv_eth_status_t hw_eth_receive_packet(drv_eth_t *handle, uint8_t *data, uint16_t *length)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->receive_packet != NULL);
+    ASSERT(data != NULL);
+    ASSERT(length != NULL);
+    
+    if (!handle->is_init || !handle->is_enabled) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->receive_packet(handle->hw_context, data, length);
+}
+
+drv_eth_status_t hw_eth_check_rx_available(drv_eth_t *handle, bool *available)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->check_rx_available != NULL);
+    ASSERT(available != NULL);
+    
+    if (!handle->is_init || !handle->is_enabled) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->check_rx_available(handle->hw_context, available);
+}
+
+drv_eth_status_t hw_eth_get_config(drv_eth_t *handle, drv_ethernet_config_t *config)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_config != NULL);
+    ASSERT(config != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->get_config(handle->hw_context, config);
+}

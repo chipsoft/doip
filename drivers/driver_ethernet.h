@@ -12,11 +12,30 @@ typedef enum
     DRV_ETH_STATUS_TIMEOUT = 3, ///< Operation timeout
 } drv_eth_status_t;
 
+// Alias for compatibility with network interface drivers
+typedef drv_eth_status_t drv_ethernet_status_t;
+#define DRV_ETHERNET_STATUS_OK DRV_ETH_STATUS_OK
+#define DRV_ETHERNET_STATUS_ERROR DRV_ETH_STATUS_ERROR
+#define DRV_ETHERNET_STATUS_BUSY DRV_ETH_STATUS_BUSY
+#define DRV_ETHERNET_STATUS_TIMEOUT DRV_ETH_STATUS_TIMEOUT
+
 typedef enum
 {
     DRV_ETH_CB_RECEIVE = 0,   ///< Receive callback
     DRV_ETH_CB_TRANSMIT = 1,  ///< Transmit callback
 } drv_eth_cb_type_t;
+
+// Alias for compatibility with network interface drivers
+typedef drv_eth_cb_type_t drv_ethernet_cb_type_t;
+#define DRV_ETHERNET_CB_RX_COMPLETE DRV_ETH_CB_RECEIVE
+#define DRV_ETHERNET_CB_TX_COMPLETE DRV_ETH_CB_TRANSMIT
+
+typedef drv_eth_callback_t drv_ethernet_callback_t;
+
+// Configuration structure for ethernet driver
+typedef struct {
+    uint8_t mac_addr[6];  ///< MAC address
+} drv_ethernet_config_t;
 
 typedef void (*drv_eth_callback_t)(void);
 typedef void (*drv_eth_tcpip_init_done_fn)(void *arg);
@@ -57,6 +76,12 @@ typedef struct
     
     // Data operations
     drv_eth_status_t (*write)(const void *hw_context, const uint8_t *data, uint32_t length);
+    
+    // Network packet operations (for LWIP integration)
+    drv_eth_status_t (*send_packet)(const void *hw_context, const uint8_t *data, uint16_t length);
+    drv_eth_status_t (*receive_packet)(const void *hw_context, uint8_t *data, uint16_t *length);
+    drv_eth_status_t (*check_rx_available)(const void *hw_context, bool *available);
+    drv_eth_status_t (*get_config)(const void *hw_context, drv_ethernet_config_t *config);
     
     // TCP/IP stack initialization
     drv_eth_tcpip_init_done_fn (*get_tcpip_init_done_fn)(const void *hw_context);
@@ -101,6 +126,22 @@ drv_eth_status_t hw_eth_register_callback(drv_eth_t *handle, drv_eth_cb_type_t t
 
 // Data operations
 drv_eth_status_t hw_eth_write(drv_eth_t *handle, const uint8_t *data, uint32_t length);
+
+// Network packet operations (for LWIP integration)
+drv_eth_status_t hw_eth_send_packet(drv_eth_t *handle, const uint8_t *data, uint16_t length);
+drv_eth_status_t hw_eth_receive_packet(drv_eth_t *handle, uint8_t *data, uint16_t *length);
+drv_eth_status_t hw_eth_check_rx_available(drv_eth_t *handle, bool *available);
+drv_eth_status_t hw_eth_get_config(drv_eth_t *handle, drv_ethernet_config_t *config);
+
+// Network interface compatibility aliases
+#define hw_ethernet_init hw_eth_init
+#define hw_ethernet_enable hw_eth_enable
+#define hw_ethernet_disable hw_eth_disable
+#define hw_ethernet_send_packet hw_eth_send_packet
+#define hw_ethernet_receive_packet hw_eth_receive_packet
+#define hw_ethernet_check_rx_available hw_eth_check_rx_available
+#define hw_ethernet_register_callback hw_eth_register_callback
+#define hw_ethernet_get_config hw_eth_get_config
 
 // TCP/IP stack initialization
 drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle);

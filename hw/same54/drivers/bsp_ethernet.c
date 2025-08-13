@@ -6,6 +6,7 @@
 #include "semphr.h"
 #include "eth_ipstack_main.h"
 #include "ethif_mac.h"
+#include "ethernetif.h"
 
 #include "bsp_ethernet.h"
 #include "hal_mac_async.h"
@@ -91,6 +92,16 @@ typedef struct tag_gmac_device {
 /* External peripheral descriptors declaration (will be integrated) */
 extern struct mac_async_descriptor COMMUNICATION_IO;
 
+// Forward declarations for new ethernet driver interface bridge functions
+static drv_ethernet_status_t drv_eth_to_ethernet_init(const void *hw_context);
+static drv_ethernet_status_t drv_eth_to_ethernet_enable(const void *hw_context);
+static drv_ethernet_status_t drv_eth_to_ethernet_disable(const void *hw_context);
+static drv_ethernet_status_t drv_eth_to_ethernet_send_packet(const void *hw_context, const uint8_t *data, uint16_t length);
+static drv_ethernet_status_t drv_eth_to_ethernet_receive_packet(const void *hw_context, uint8_t *data, uint16_t *length);
+static drv_ethernet_status_t drv_eth_to_ethernet_check_rx_available(const void *hw_context, bool *available);
+static drv_ethernet_status_t drv_eth_to_ethernet_register_callback(const void *hw_context, drv_ethernet_cb_type_t type, drv_ethernet_callback_t callback);
+static drv_ethernet_status_t drv_eth_to_ethernet_get_config(const void *hw_context, drv_ethernet_config_t *config);
+
 /* Network interface variables - now part of driver context */
 
 // Convert ASF4 error codes to driver status
@@ -166,6 +177,10 @@ static drv_eth_status_t drv_eth_set_phy_reg_bit(const void *hw_context, uint16_t
 static drv_eth_status_t drv_eth_clear_phy_reg_bit(const void *hw_context, uint16_t reg, uint16_t value);
 static drv_eth_status_t drv_eth_register_callback(const void *hw_context, drv_eth_cb_type_t type, drv_eth_callback_t callback);
 static drv_eth_status_t drv_eth_write(const void *hw_context, const uint8_t *data, uint32_t length);
+static drv_eth_status_t drv_eth_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length);
+static drv_eth_status_t drv_eth_receive_packet_impl(const void *hw_context, uint8_t *data, uint16_t *length);
+static drv_eth_status_t drv_eth_check_rx_available_impl(const void *hw_context, bool *available);
+static drv_eth_status_t drv_eth_get_config_impl(const void *hw_context, drv_ethernet_config_t *config);
 static drv_eth_tcpip_init_done_fn drv_eth_get_tcpip_init_done_fn_impl(const void *hw_context);
 static drv_eth_status_t drv_eth_start_link_monitor_impl(const void *hw_context);
 static drv_eth_status_t drv_eth_stop_link_monitor_impl(const void *hw_context);
@@ -192,6 +207,10 @@ drv_eth_t eth_communication = {
     .clear_phy_reg_bit = drv_eth_clear_phy_reg_bit,
     .register_callback = drv_eth_register_callback,
     .write = drv_eth_write,
+    .send_packet = drv_eth_send_packet_impl,
+    .receive_packet = drv_eth_receive_packet_impl,
+    .check_rx_available = drv_eth_check_rx_available_impl,
+    .get_config = drv_eth_get_config_impl,
     .get_tcpip_init_done_fn = drv_eth_get_tcpip_init_done_fn_impl,
     .start_link_monitor = drv_eth_start_link_monitor_impl,
     .stop_link_monitor = drv_eth_stop_link_monitor_impl,
@@ -477,6 +496,9 @@ static void gmac_handler_cb(void)
     drv_eth_hw_context_t *context = &drv_eth_hw_context_communication;
     BaseType_t xGMACTaskWoken = pdFALSE;
     
+    /* Set receive flag to indicate packets are available */
+    context->recv_flag = true;
+    
     /* Use ISR-safe semaphore give function */
     xSemaphoreGiveFromISR(context->gmac_dev.rx_sem.sem, &xGMACTaskWoken);
     
@@ -496,7 +518,7 @@ static void gmac_task(void *pvParameters)
         /* Wait for the counting RX notification semaphore. */
         sys_sem_wait(&ps_gmac_dev->rx_sem);
 
-        /* Process the incoming packet. */
+        /* Process the incoming packet using new GMAC LWIP interface. */
         ethernetif_mac_input(ps_gmac_dev->netif);
     }
 }
@@ -623,8 +645,9 @@ static void eth_tcpip_init_done(void *arg)
     NVIC_EnableIRQ(GMAC_IRQn);
     mac_async_enable(context->mac_desc);
 
-    printf("[INIT] Initializing network interface...\r\n");
-    TCPIP_STACK_INTERFACE_0_init(mac);
+    printf("[INIT] Initializing network interface using new GMAC LWIP interface...\r\n");
+    // Network interface initialization is now handled by eth_ipstack_main.c
+    // which will call either ethif_gmac_init or ethif_ksz8851snl_init based on build config
 
     TCPIP_STACK_INTERFACE_0_desc.input = tcpip_input;
 
@@ -721,6 +744,58 @@ static drv_eth_status_t drv_eth_stop_link_monitor_impl(const void *hw_context)
         context->link_monitor_task = NULL;
         printf("[ETH] Link monitor task stopped\r\n");
     }
+    
+    return DRV_ETH_STATUS_OK;
+}
+
+static drv_eth_status_t drv_eth_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(data != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    int32_t result = mac_async_write(context->mac_desc, (uint8_t *)data, length);
+    return convert_error_code(result);
+}
+
+static drv_eth_status_t drv_eth_receive_packet_impl(const void *hw_context, uint8_t *data, uint16_t *length)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(data != NULL);
+    ASSERT(length != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    uint32_t read_length = *length;
+    int32_t result = mac_async_read(context->mac_desc, data, read_length);
+    *length = (uint16_t)read_length;
+    
+    return convert_error_code(result);
+}
+
+static drv_eth_status_t drv_eth_check_rx_available_impl(const void *hw_context, bool *available)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(available != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    // Check if receive flag is set (this is a simplified implementation)
+    // In a more complete implementation, you would check the MAC's receive status
+    *available = context->recv_flag;
+    context->recv_flag = false; // Clear flag after reading
+    
+    return DRV_ETH_STATUS_OK;
+}
+
+static drv_eth_status_t drv_eth_get_config_impl(const void *hw_context, drv_ethernet_config_t *config)
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(config != NULL);
+    drv_eth_hw_context_t *context = (drv_eth_hw_context_t *)hw_context;
+    
+    // Get MAC address from the MAC descriptor
+    // This is a simplified implementation - in reality you might read from EEPROM or other storage
+    uint8_t default_mac[] = {0x00, 0x04, 0x25, 0x12, 0x34, 0x56};
+    memcpy(config->mac_addr, default_mac, 6);
     
     return DRV_ETH_STATUS_OK;
 }

@@ -108,6 +108,7 @@ DIR_INCLUDES = \
 -I"$(LWIP_DIR)/contrib/ports/freertos/include" \
 -I"$(LWIP_DIR)/port" \
 -I"$(LWIP_DIR)/port/include" \
+-I"network/include" \
 -I"$(ETHERNET_PHY_DIR)" \
 -I"CMSIS/Core/Include" \
 -I"include" \
@@ -217,7 +218,7 @@ $(DRIVERS_DIR)/driver_spi.c \
 $(DRIVERS_DIR)/driver_ksz8851snl.c \
 $(BSP_DRIVERS_DIR)/bsp_spi.c \
 $(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
-$(LWIP_DIR)/port/ethif_ksz8851snl.c
+network/interfaces/ethif_ksz8851snl.c
 DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
 ASF4_CFILES += $(ASF4_DIR)/hal/src/hal_spi_m_sync.c
 DIR_INCLUDES += -I"$(LWIP_DIR)/port/include"
@@ -228,7 +229,8 @@ $(DRIVERS_DIR)/driver_ethernet.c \
 $(DRIVERS_DIR)/driver_net.c \
 $(DRIVERS_DIR)/driver_net_lwip.c \
 $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
-$(BSP_DRIVERS_DIR)/bsp_net.c
+$(BSP_DRIVERS_DIR)/bsp_net.c \
+network/interfaces/ethif_gmac.c
 DEFINES += -DUSE_GMAC_INTERFACE=1
 $(info Building with GMAC Ethernet interface)
 endif

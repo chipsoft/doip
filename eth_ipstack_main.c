@@ -12,6 +12,7 @@
 extern struct mac_async_descriptor COMMUNICATION_IO;
 #include <lwip_macif_config.h>
 #include <ethif_mac.h>
+#include "ethernetif.h"
 #include <netif/etharp.h>
 #include <lwip/dhcp.h>
 #include <string.h>
@@ -19,7 +20,8 @@ extern struct mac_async_descriptor COMMUNICATION_IO;
 // Conditional includes based on network interface selection
 #ifdef USE_KSZ8851SNL_INTERFACE
 #include "bsp_ksz8851snl.h"
-#include "ethernetif.h"
+#elif defined(USE_GMAC_INTERFACE)
+#include "bsp_ethernet.h"
 #endif
 
 void TCPIP_STACK_init(void)
@@ -94,14 +96,14 @@ void TCPIP_STACK_INTERFACE_0_init(u8_t hwaddr[6])
 	          ethif_ksz8851snl_init,           // KSZ init function
 	          tcpip_input);                    // Threading input
 #elif defined(USE_GMAC_INTERFACE)
-	// GMAC Ethernet interface  
+	// GMAC Ethernet interface using new unified interface
 	netif_add(&TCPIP_STACK_INTERFACE_0_desc,
 	          &ip,
 	          &nm,
 	          &gw,
-	          (void *)&COMMUNICATION_IO,       // MAC descriptor
-	          TCPIP_STACK_INTERFACE_0_stack_init, // GMAC init function
-	          ethernet_input);                 // Direct input
+	          (void *)&eth_communication,      // GMAC driver instance
+	          ethif_gmac_init,                 // GMAC init function
+	          tcpip_input);                    // Threading input
 #else
 	#error "No network interface selected. Define USE_KSZ8851SNL_INTERFACE or USE_GMAC_INTERFACE"
 #endif
