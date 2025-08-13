@@ -51,6 +51,13 @@
 #ifdef USE_KSZ8851SNL_INTERFACE
 #include "bsp_ksz8851snl.h"
 #include "ksz8851snl_config.h"
+#include "lwip/netif.h"
+#include "lwip/tcpip.h"
+#include "lwip/ip_addr.h"
+#include "lwip/dhcp.h"
+#include "netif/ethernet.h"
+#include "ethif_ksz8851snl.h"
+#include "lwip_macif_config.h"
 #else
 #include <hal_mac_async.h>
 #include "bsp_ethernet.h"
@@ -64,6 +71,11 @@ extern void rtt_printf_init(void);
 struct mac_async_descriptor COMMUNICATION_IO;
 #endif
 
+#ifdef USE_KSZ8851SNL_INTERFACE
+/* KSZ8851SNL LwIP network interface */
+struct netif ksz8851snl_netif;
+#endif
+
 /* Task handles */
 // static TaskHandle_t xCreatedEthernetBasicTask; // Removed - not used anymore
 
@@ -73,12 +85,73 @@ struct mac_async_descriptor COMMUNICATION_IO;
 void print_ipaddress(void)
 {
 	static char tmp_buff[16];
+#ifdef USE_KSZ8851SNL_INTERFACE
+	printf("IP_ADDR    : %s\r\n",
+	       ipaddr_ntoa_r(netif_ip4_addr(&ksz8851snl_netif), tmp_buff, 16));
+	printf("NET_MASK   : %s\r\n",
+	       ipaddr_ntoa_r(netif_ip4_netmask(&ksz8851snl_netif), tmp_buff, 16));
+	printf("GATEWAY_IP : %s\r\n", ipaddr_ntoa_r(netif_ip4_gw(&ksz8851snl_netif), tmp_buff, 16));
+#else
 	printf("IP_ADDR    : %s\r\n",
 	       ipaddr_ntoa_r((const ip_addr_t *)&(TCPIP_STACK_INTERFACE_0_desc.ip_addr), tmp_buff, 16));
 	printf("NET_MASK   : %s\r\n",
 	       ipaddr_ntoa_r((const ip_addr_t *)&(TCPIP_STACK_INTERFACE_0_desc.netmask), tmp_buff, 16));
 	printf("GATEWAY_IP : %s\r\n", ipaddr_ntoa_r((const ip_addr_t *)&(TCPIP_STACK_INTERFACE_0_desc.gw), tmp_buff, 16));
+#endif
 }
+
+#ifdef USE_KSZ8851SNL_INTERFACE
+// Packet reception task for KSZ8851SNL interface
+static void ksz8851snl_packet_task(void *pvParameters)
+{
+	(void)pvParameters;
+	
+	printf("KSZ8851SNL packet reception task started\r\n");
+	
+	while (1) {
+		// Check for incoming packets and process them
+		ethif_ksz8851snl_input(&ksz8851snl_netif);
+		
+		// Yield to other tasks - polling interval of 1ms
+		vTaskDelay(pdMS_TO_TICKS(1));
+	}
+}
+
+// Link monitoring task for KSZ8851SNL interface
+static void ksz8851snl_link_monitor_task(void *pvParameters)
+{
+	(void)pvParameters;
+	
+	printf("KSZ8851SNL link monitoring task started\r\n");
+	
+	bool previous_link_state = false;
+	
+	while (1) {
+		// Check link status
+		drv_ksz8851snl_status_info_t status_info;
+		drv_ksz8851snl_status_t result = hw_ksz8851snl_get_status(&ksz8851snl_0, &status_info);
+		
+		if (result == DRV_KSZ8851SNL_STATUS_OK) {
+			// Update network interface link status
+			if (status_info.link_up != previous_link_state) {
+				if (status_info.link_up) {
+					printf("[LINK] Link UP - %d Mbps %s duplex\r\n", 
+					       status_info.link_speed, 
+					       status_info.full_duplex ? "Full" : "Half");
+					netif_set_link_up(&ksz8851snl_netif);
+				} else {
+					printf("[LINK] Link DOWN\r\n");
+					netif_set_link_down(&ksz8851snl_netif);
+				}
+				previous_link_state = status_info.link_up;
+			}
+		}
+		
+		// Check link status every 500ms
+		vTaskDelay(pdMS_TO_TICKS(500));
+	}
+}
+#endif
 
 // Network initialization task - runs after scheduler starts
 static void network_init_task(void *pvParameters)
@@ -183,12 +256,84 @@ static void network_init_task(void *pvParameters)
 	printf("Initializing network stack...\r\n");
 	
 #ifdef USE_KSZ8851SNL_INTERFACE
-	// For KSZ8851SNL: simplified initialization (TODO: implement proper network stack)
-	printf("KSZ8851SNL network initialization - simplified version\r\n");
-	printf("TODO: Implement full network stack integration for KSZ8851SNL\r\n");
+	// For KSZ8851SNL: Initialize LwIP network stack with KSZ8851SNL interface
+	printf("KSZ8851SNL network initialization starting...\r\n");
 	
-	// For now, just verify that our drivers can be accessed
-	printf("Network stack placeholder initialized\r\n");
+	// Initialize LwIP stack
+	eth_ipstack_init();
+	
+	// Configure IP addresses
+	ip4_addr_t ipaddr, netmask, gateway;
+	
+#if CONF_TCPIP_STACK_INTERFACE_0_DHCP
+	// Use DHCP
+	ip4_addr_set_zero(&ipaddr);
+	ip4_addr_set_zero(&netmask);
+	ip4_addr_set_zero(&gateway);
+	printf("Using DHCP for IP configuration\r\n");
+#else
+	// Use static IP configuration
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_IP, &ipaddr);
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_NETMASK, &netmask);
+	ip4addr_aton(CONF_TCPIP_STACK_INTERFACE_0_GATEWAY, &gateway);
+	printf("Using static IP: %s\r\n", CONF_TCPIP_STACK_INTERFACE_0_IP);
+	printf("Netmask: %s, Gateway: %s\r\n", CONF_TCPIP_STACK_INTERFACE_0_NETMASK, CONF_TCPIP_STACK_INTERFACE_0_GATEWAY);
+#endif
+	
+	// Add network interface with KSZ8851SNL driver
+	struct netif *netif_result = netif_add(&ksz8851snl_netif,
+	                                       &ipaddr, &netmask, &gateway,
+	                                       NULL,  // No state data needed
+	                                       ethif_ksz8851snl_init,  // KSZ8851SNL init function
+	                                       ethernet_input);        // Standard ethernet input
+	
+	if (netif_result == NULL) {
+		printf("Failed to add KSZ8851SNL network interface\r\n");
+		vTaskDelete(NULL);
+		return;
+	}
+	
+	// Set as default interface
+	netif_set_default(&ksz8851snl_netif);
+	
+	// Bring interface up
+	netif_set_up(&ksz8851snl_netif);
+	
+#if CONF_TCPIP_STACK_INTERFACE_0_DHCP
+	// Start DHCP if enabled
+	dhcp_start(&ksz8851snl_netif);
+	printf("DHCP client started\r\n");
+	
+	// Wait for DHCP to assign an IP (with timeout)
+	uint32_t dhcp_timeout = 30000; // 30 seconds
+	uint32_t dhcp_start_time = xTaskGetTickCount();
+	
+	while (!netif_is_up(&ksz8851snl_netif) || ip4_addr_isany(netif_ip4_addr(&ksz8851snl_netif))) {
+		vTaskDelay(pdMS_TO_TICKS(100));
+		if ((xTaskGetTickCount() - dhcp_start_time) > pdMS_TO_TICKS(dhcp_timeout)) {
+			printf("DHCP timeout - using link-local address\r\n");
+			break;
+		}
+	}
+#endif
+	
+	printf("KSZ8851SNL network stack initialized successfully\r\n");
+	
+	// Print network configuration
+	print_ipaddress();
+	
+	// Create packet reception task for KSZ8851SNL
+	if (xTaskCreate(ksz8851snl_packet_task,
+	                "KSZ_RX",
+	                512,  // Stack size
+	                NULL,
+	                (tskIDLE_PRIORITY + 2),  // Medium priority
+	                NULL)
+	    != pdPASS) {
+		printf("Failed to create KSZ8851SNL packet reception task\r\n");
+	} else {
+		printf("KSZ8851SNL packet reception task created\r\n");
+	}
 #else
 	// For GMAC: use universal network driver
 	drv_net_status_t net_result = hw_net_init(&lwip_network_0);
@@ -261,8 +406,18 @@ int main(void)
 	
 	/* Start Ethernet link monitoring through driver API */
 #ifdef USE_KSZ8851SNL_INTERFACE
-	// TODO: Implement link monitoring for KSZ8851SNL
-	printf("KSZ8851SNL link monitoring not yet implemented\r\n");
+	// Create KSZ8851SNL link monitoring task
+	if (xTaskCreate(ksz8851snl_link_monitor_task,
+	                "KSZ_LINK",
+	                256,  // Stack size
+	                NULL,
+	                (tskIDLE_PRIORITY + 1),  // Low priority
+	                NULL)
+	    != pdPASS) {
+		printf("Failed to create KSZ8851SNL link monitoring task\r\n");
+	} else {
+		printf("KSZ8851SNL link monitoring task created\r\n");
+	}
 #else
 	hw_eth_start_link_monitor(&eth_communication);
 #endif

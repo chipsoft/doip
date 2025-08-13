@@ -806,6 +806,41 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_status_impl(const void *hw_con
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
+// FIFO read/write helper functions
+static void ksz8851_fifo_write_data(const uint8_t *data, uint16_t length)
+{
+    // Send FIFO write command
+    uint16_t cmd = FIFO_WRITE;
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, (uint8_t*)&cmd, NULL, 2);
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] FIFO write command failed\r\n");
+        return;
+    }
+    
+    // Write data to FIFO
+    status = hw_spi_transfer(&spi_4, data, NULL, length);
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] FIFO data write failed\r\n");
+    }
+}
+
+static void ksz8851_fifo_read_data(uint8_t *data, uint16_t length)
+{
+    // Send FIFO read command
+    uint16_t cmd = FIFO_READ;
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, (uint8_t*)&cmd, NULL, 2);
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] FIFO read command failed\r\n");
+        return;
+    }
+    
+    // Read data from FIFO
+    status = hw_spi_transfer(&spi_4, NULL, data, length);
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] FIFO data read failed\r\n");
+    }
+}
+
 // Placeholder implementations for packet operations
 static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length)
 {
@@ -813,9 +848,37 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     ASSERT(data != NULL);
     ASSERT(length > 0);
     
-    // TODO: Implement packet transmission using existing FIFO write functions
-    printf("[KSZ8851SNL] Send packet - length: %d (TODO: implement)\r\n", length);
+    printf("[KSZ8851SNL] Send packet - length: %d\r\n", length);
     
+    // Check if TX memory is available
+    uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
+    uint16_t available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
+    
+    if (available_mem < (length + 8)) {
+        printf("[KSZ8851SNL] Not enough TX memory: need %d, have %d\r\n", length + 8, available_mem);
+        return DRV_KSZ8851SNL_STATUS_BUSY;
+    }
+    
+    // Enable TXQ write access
+    ksz8851_reg_write(REG_TXQ_CMD, TXQ_ENQUEUE);
+    
+    // Prepare frame header for transmission
+    uint8_t frame_header[4];
+    frame_header[0] = 0x00;  // Control word
+    frame_header[1] = 0x00;
+    frame_header[2] = length & 0xFF;      // Frame length low byte
+    frame_header[3] = (length >> 8) & 0xFF; // Frame length high byte
+    
+    // Write frame header using FIFO write
+    ksz8851_fifo_write_data(frame_header, 4);
+    
+    // Write actual packet data
+    ksz8851_fifo_write_data(data, length);
+    
+    // Enable frame transmission
+    ksz8851_reg_write(REG_TXQ_CMD, TXQ_ENQUEUE);
+    
+    printf("[KSZ8851SNL] Packet sent successfully\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
@@ -825,10 +888,52 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
     ASSERT(data != NULL);
     ASSERT(length != NULL);
     
-    // TODO: Implement packet reception using existing FIFO read functions
-    printf("[KSZ8851SNL] Receive packet (TODO: implement)\r\n");
+    // Check if there are frames in the receive queue
+    uint16_t rx_status = ksz8851_reg_read(REG_RXQ_CMD);
+    uint8_t rx_frame_count = (rx_status & RXQ_CMD_CNTL) >> 8;
     
-    *length = 0;
+    if (rx_frame_count == 0) {
+        *length = 0;
+        return DRV_KSZ8851SNL_STATUS_OK; // No frames available
+    }
+    
+    // Check frame header status
+    uint16_t fhr_status = ksz8851_reg_read(REG_RX_FHR_STATUS);
+    if ((fhr_status & RX_VALID) == 0) {
+        printf("[KSZ8851SNL] Invalid frame in RX queue\r\n");
+        *length = 0;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Get frame length from frame header
+    uint16_t frame_len = (fhr_status & 0x07FF); // Lower 11 bits contain frame length
+    
+    if (frame_len > *length) {
+        printf("[KSZ8851SNL] Frame too large: %d > %d\r\n", frame_len, *length);
+        *length = 0;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    printf("[KSZ8851SNL] Receiving packet - length: %d\r\n", frame_len);
+    
+    // Enable RXQ read access
+    ksz8851_reg_write(REG_RXQ_CMD, RXQ_START);
+    
+    // Read frame header (4 bytes) - we'll discard this
+    uint8_t frame_header[4];
+    ksz8851_fifo_read_data(frame_header, 4);
+    
+    // Read actual frame data
+    ksz8851_fifo_read_data(data, frame_len);
+    
+    // End RXQ read access
+    ksz8851_reg_write(REG_RXQ_CMD, 0);
+    
+    // Free the received frame
+    ksz8851_reg_write(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
+    
+    *length = frame_len;
+    printf("[KSZ8851SNL] Packet received successfully\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
