@@ -140,42 +140,11 @@ static void network_init_task(void *pvParameters)
 				printf("[MAIN] ✗ Failed to read link status: %d\r\n", status_result);
 			}
 			
-			// Test interrupt system
-			printf("[MAIN] ================================================\r\n");
-			printf("[MAIN] KSZ8851SNL Interrupt System Testing\r\n");
-			printf("[MAIN] ================================================\r\n");
-			
 			// Run GPIO test
 			ksz8851snl_debug_gpio_test();
 			
 			// Run register test
 			ksz8851snl_debug_test_registers();
-			
-			// Print initial interrupt statistics
-			ksz8851snl_debug_print_irq_stats();
-			
-			// Run force interrupt test
-			ksz8851snl_debug_force_interrupt_test();
-			
-			// Test interrupt detection by monitoring for 10 seconds
-			printf("[MAIN] ================================================\r\n");
-			printf("[MAIN] Testing Interrupt Detection (10 seconds)...\r\n");
-			printf("[MAIN] ================================================\r\n");
-			
-			for (int i = 0; i < 10; i++) {
-				printf("[MAIN] Test %d/10: Waiting 1 second...\r\n", i+1);
-				vTaskDelay(pdMS_TO_TICKS(1000));
-				
-				// Check for any new interrupts
-				ksz8851snl_debug_print_irq_stats();
-				
-				// Also manually check if RX is available (this will process pending interrupts)
-				bool rx_available = false;
-				hw_ksz8851snl_check_rx_available(&ksz8851snl_0, &rx_available);
-				if (rx_available) {
-					printf("[MAIN] *** RX data available detected! ***\r\n");
-				}
-			}
 			
 			printf("[MAIN] ================================================\r\n");
 			printf("[MAIN] KSZ8851SNL initialization and testing COMPLETE\r\n");

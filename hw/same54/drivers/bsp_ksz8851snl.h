@@ -10,10 +10,8 @@ extern "C" {
 extern drv_ksz8851snl_t ksz8851snl_0;
 
 // Debug and test functions
-void ksz8851snl_debug_print_irq_stats(void);
 void ksz8851snl_debug_test_registers(void);
 void ksz8851snl_debug_gpio_test(void);
-void ksz8851snl_debug_force_interrupt_test(void);
 
 #ifdef __cplusplus
 }
