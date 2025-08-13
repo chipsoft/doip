@@ -16,6 +16,12 @@ extern struct mac_async_descriptor COMMUNICATION_IO;
 #include <lwip/dhcp.h>
 #include <string.h>
 
+// Conditional includes based on network interface selection
+#ifdef USE_KSZ8851SNL_INTERFACE
+#include "bsp_ksz8851snl.h"
+#include "ethernetif.h"
+#endif
+
 void TCPIP_STACK_init(void)
 {
 	lwip_init();
@@ -77,13 +83,28 @@ void TCPIP_STACK_INTERFACE_0_init(u8_t hwaddr[6])
 #endif
 	memcpy(TCPIP_STACK_INTERFACE_0_hwaddr, hwaddr, 6);
 
+	// Network interface selection based on build configuration
+#ifdef USE_KSZ8851SNL_INTERFACE
+	// KSZ8851SNL SPI-Ethernet interface
 	netif_add(&TCPIP_STACK_INTERFACE_0_desc,
 	          &ip,
 	          &nm,
 	          &gw,
-	          (void *)&COMMUNICATION_IO,
-	          TCPIP_STACK_INTERFACE_0_stack_init,
-	          ethernet_input);
+	          (void *)&ksz8851snl_0,           // KSZ driver instance
+	          ethif_ksz8851snl_init,           // KSZ init function
+	          tcpip_input);                    // Threading input
+#elif defined(USE_GMAC_INTERFACE)
+	// GMAC Ethernet interface  
+	netif_add(&TCPIP_STACK_INTERFACE_0_desc,
+	          &ip,
+	          &nm,
+	          &gw,
+	          (void *)&COMMUNICATION_IO,       // MAC descriptor
+	          TCPIP_STACK_INTERFACE_0_stack_init, // GMAC init function
+	          ethernet_input);                 // Direct input
+#else
+	#error "No network interface selected. Define USE_KSZ8851SNL_INTERFACE or USE_GMAC_INTERFACE"
+#endif
 }
 
 void eth_ipstack_init(void)

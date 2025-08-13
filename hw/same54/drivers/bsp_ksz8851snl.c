@@ -140,6 +140,12 @@ static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
     
+    // Set interrupt priority for FreeRTOS compatibility
+    // Priority 5 is safe for FreeRTOS API calls (between configMAX_SYSCALL_INTERRUPT_PRIORITY=4 and configLIBRARY_LOWEST_INTERRUPT_PRIORITY=7)
+    NVIC_SetPriority(EIC_7_IRQn, 5);
+    uint32_t actual_priority = NVIC_GetPriority(EIC_7_IRQn);
+    printf("[KSZ8851SNL] Set EIC_7_IRQn priority to 5, actual priority: %lu\r\n", actual_priority);
+    
     // Register interrupt handler
     result = ext_irq_register(KSZ8851SNL_INT_PIN, ksz8851snl_irq_handler);
     if (result != 0) {
