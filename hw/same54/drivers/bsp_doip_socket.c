@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <errno.h> // Required for errno
 
 
 // Hardware context structure
@@ -291,16 +292,25 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     doip_message_t request_msg, response_msg;
     int result;
     
+    printf("🔍 [DEBUG] drv_doip_connect_to_vehicle_impl() called:\n");
+    printf("   Vehicle IP: 0x%08X\n", vehicle_info->ip_address);
+    printf("   Vehicle port: %d\n", vehicle_info->tcp_port);
+    printf("   Logical address: 0x%04X\n", vehicle_info->logical_address);
+    printf("   Current state: %d\n", context->current_state);
+    
     printf("DOIP Client: Connecting to vehicle via socket\r\n");
     context->current_state = DRV_DOIP_STATE_CONNECTING;
     
     // Create TCP socket
+    printf("🔍 [DEBUG] Creating TCP socket...\n");
     context->tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (context->tcp_socket < 0) {
-        printf("DOIP Client: Failed to create TCP socket\r\n");
+        printf("❌ [DEBUG] Failed to create TCP socket (error: %d)\n", context->tcp_socket);
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
+    
+    printf("✅ [DEBUG] TCP socket created successfully: %d\n", context->tcp_socket);
     
     // Note: lwIP socket timeouts are not supported, we'll handle timeouts manually
     
@@ -310,6 +320,11 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     server_addr.sin_port = htons(vehicle_info->tcp_port);
     server_addr.sin_addr.s_addr = htonl(vehicle_info->ip_address);
     
+    printf("🔍 [DEBUG] Server address prepared:\n");
+    printf("   Family: %d\n", server_addr.sin_family);
+    printf("   Port: %d (host: %d)\n", server_addr.sin_port, vehicle_info->tcp_port);
+    printf("   IP: 0x%08X (host: 0x%08X)\n", server_addr.sin_addr.s_addr, vehicle_info->ip_address);
+    
     // Connect to server
     printf("DOIP Client: Attempting to connect to %u.%u.%u.%u:%d\r\n",
            (unsigned)((vehicle_info->ip_address >> 24) & 0xFF),
@@ -318,8 +333,36 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
            (unsigned)(vehicle_info->ip_address & 0xFF),
            vehicle_info->tcp_port);
     
+    printf("🔍 [DEBUG] Calling connect() function...\n");
     result = connect(context->tcp_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    
     if (result < 0) {
+        printf("❌ [DEBUG] connect() failed:\n");
+        printf("   Return value: %d\n", result);
+        printf("   errno: %d\n", errno);
+        
+        // Common errno values for connect failures
+        switch (errno) {
+            case ECONNREFUSED:
+                printf("   Error: ECONNREFUSED - Connection refused by server\n");
+                break;
+            case ETIMEDOUT:
+                printf("   Error: ETIMEDOUT - Connection timed out\n");
+                break;
+            case ENETUNREACH:
+                printf("   Error: ENETUNREACH - Network unreachable\n");
+                break;
+            case EHOSTUNREACH:
+                printf("   Error: EHOSTUNREACH - Host unreachable\n");
+                break;
+            case EINPROGRESS:
+                printf("   Error: EINPROGRESS - Connection in progress (non-blocking)\n");
+                break;
+            default:
+                printf("   Error: Unknown error code %d\n", errno);
+                break;
+        }
+        
         printf("DOIP Client: Failed to connect to vehicle (error: %d)\r\n", result);
         close(context->tcp_socket);
         context->tcp_socket = -1;
@@ -327,75 +370,105 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
         return DRV_DOIP_STATUS_ERROR;
     }
     
+    printf("✅ [DEBUG] connect() successful\n");
     printf("DOIP Client: TCP connection established successfully\r\n");
     
     // Send routing activation request to specific ECU
     printf("DOIP Client: Sending routing activation to ECU 0x%04X\r\n", vehicle_info->logical_address);
+    
+    // Build routing activation request
     doip_utils_create_header(&request_msg, DOIP_ROUTING_ACTIVATION_REQUEST, 7);
+    
+    // Add routing activation payload
     request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
     request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
-    request_msg.payload[2] = 0x00; // Activation type
-    request_msg.payload[3] = 0x00;
-    request_msg.payload[4] = 0x00;
-    request_msg.payload[5] = 0x00;
+    request_msg.payload[2] = (vehicle_info->logical_address >> 8) & 0xFF;
+    request_msg.payload[3] = vehicle_info->logical_address & 0xFF;
+    request_msg.payload[4] = 0x00; // Routing activation type
+    request_msg.payload[5] = 0x00; // Reserved
     request_msg.payload[6] = 0x00; // Reserved
     
+    printf("🔍 [DEBUG] Routing activation request built:\n");
+    printf("   Payload type: 0x%04X\n", request_msg.payload_type);
+    printf("   Payload length: %lu bytes\n", request_msg.payload_length);
+    printf("   Source address: 0x%04X\n", DOIP_CLIENT_SOURCE_ADDRESS);
+    printf("   Target address: 0x%04X\n", vehicle_info->logical_address);
+    
+    // Send routing activation request
+    printf("🔍 [DEBUG] Sending routing activation request...\n");
     if (!doip_send_tcp_message_socket(context->tcp_socket, &request_msg)) {
-        printf("DOIP Client: Failed to send routing activation request\r\n");
+        printf("❌ [DEBUG] Failed to send routing activation request\n");
         close(context->tcp_socket);
         context->tcp_socket = -1;
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
+    
+    printf("✅ [DEBUG] Routing activation request sent successfully\n");
     
     // Wait for routing activation response
+    printf("🔍 [DEBUG] Waiting for routing activation response...\n");
     if (!doip_receive_tcp_message_socket(context->tcp_socket, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
-        printf("DOIP Client: Failed to receive routing activation response\r\n");
+        printf("❌ [DEBUG] Failed to receive routing activation response\n");
         close(context->tcp_socket);
         context->tcp_socket = -1;
         context->current_state = DRV_DOIP_STATE_ERROR;
-        return DRV_DOIP_STATUS_ERROR;
+        return DRV_DOIP_STATUS_TIMEOUT;
     }
     
+    printf("✅ [DEBUG] Routing activation response received\n");
+    
+    // Check response type
     if (response_msg.payload_type != DOIP_ROUTING_ACTIVATION_RESPONSE) {
-        printf("DOIP Client: Unexpected response type: 0x%04X\r\n", response_msg.payload_type);
+        printf("❌ [DEBUG] Unexpected response type: 0x%04X (expected: 0x%04X)\n", 
+               response_msg.payload_type, DOIP_ROUTING_ACTIVATION_RESPONSE);
         close(context->tcp_socket);
         context->tcp_socket = -1;
         context->current_state = DRV_DOIP_STATE_ERROR;
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    // Debug: Print payload bytes
-    printf("DOIP Client: Routing activation response payload (%lu bytes): ", response_msg.payload_length);
-    for (uint32_t i = 0; i < response_msg.payload_length && i < 16; i++) {
-        printf("0x%02X ", response_msg.payload[i]);
-    }
-    printf("\r\n");
+    printf("✅ [DEBUG] Routing activation response type confirmed\n");
     
-    // Check activation response code - correct format
-    if (response_msg.payload_length >= 5) {
-        uint8_t response_code = response_msg.payload[4]; // Response code at 5th byte
-        printf("DOIP Client: Routing activation response code: 0x%02X\r\n", response_code);
-        
-        if (response_code == 0x10) {
-            printf("DOIP Client: Routing activation successful\r\n");
-            context->current_state = DRV_DOIP_STATE_ACTIVATED;
-            
-            // Store vehicle info
-            memcpy(&context->current_vehicle, vehicle_info, sizeof(drv_doip_vehicle_info_t));
-            
-            return DRV_DOIP_STATUS_OK;
-        } else {
-            printf("DOIP Client: Routing activation failed with response code: 0x%02X\r\n", response_code);
-        }
-    } else {
-        printf("DOIP Client: Routing activation response payload too short: %lu bytes (expected >= 5)\r\n", response_msg.payload_length);
+    // Check response payload length
+    if (response_msg.payload_length < 9) {
+        printf("❌ [DEBUG] Routing activation response too short: %lu bytes (expected: 9+)\n", 
+               response_msg.payload_length);
+        close(context->tcp_socket);
+        context->tcp_socket = -1;
+        context->current_state = DRV_DOIP_STATE_ERROR;
+        return DRV_DOIP_STATUS_ERROR;
     }
     
-    close(context->tcp_socket);
-    context->tcp_socket = -1;
-    context->current_state = DRV_DOIP_STATE_ERROR;
-    return DRV_DOIP_STATUS_ERROR;
+    printf("✅ [DEBUG] Routing activation response length confirmed: %lu bytes\n", response_msg.payload_length);
+    
+    // Check response code
+    uint8_t response_code = response_msg.payload[4];
+    printf("🔍 [DEBUG] Routing activation response code: 0x%02X\n", response_code);
+    
+    if (response_code != 0x10) { // 0x10 = Routing activation successful
+        printf("❌ [DEBUG] Routing activation failed with code: 0x%02X\n", response_code);
+        close(context->tcp_socket);
+        context->tcp_socket = -1;
+        context->current_state = DRV_DOIP_STATE_ERROR;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("✅ [DEBUG] Routing activation successful\n");
+    
+    // Store vehicle information
+    context->current_vehicle = *vehicle_info;
+    context->current_state = DRV_DOIP_STATE_ACTIVATED;
+    
+    printf("✅ [DEBUG] Connection established successfully:\n");
+    printf("   State: %d (ACTIVATED)\n", context->current_state);
+    printf("   TCP socket: %d\n", context->tcp_socket);
+    printf("   Vehicle IP: 0x%08X\n", context->current_vehicle.ip_address);
+    printf("   Vehicle port: %d\n", context->current_vehicle.tcp_port);
+    printf("   Logical address: 0x%04X\n", context->current_vehicle.logical_address);
+    
+    printf("DOIP Client: Connection to vehicle established successfully\r\n");
+    return DRV_DOIP_STATUS_OK;
 }
 
 static drv_doip_status_t drv_doip_disconnect_impl(const void *hw_context)
@@ -425,25 +498,40 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
     ASSERT(request_payload != NULL || request_payload_len == 0);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
+    printf("🔍 [DEBUG] drv_doip_send_diagnostic_request_impl() called:\n");
+    printf("   Service ID: 0x%02X\n", service_id);
+    printf("   Data ID: 0x%04X\n", data_id);
+    printf("   Request payload length: %zu bytes\n", request_payload_len);
+    printf("   Max response length: %zu bytes\n", max_response_len);
+    printf("   Current state: %d\n", context->current_state);
+    printf("   TCP socket: %d\n", context->tcp_socket);
+    
     if (context->current_state != DRV_DOIP_STATE_ACTIVATED) {
-        printf("DOIP Client: Not connected or activated\r\n");
+        printf("❌ [DEBUG] Not connected or activated (state: %d)\n", context->current_state);
         return DRV_DOIP_STATUS_ERROR;
     }
     
     // Calculate total payload size: addressing(4) + service_id(1) + data_id(2) + additional_payload
     uint32_t total_payload_size = 4 + 3 + request_payload_len;
     
+    printf("🔍 [DEBUG] Payload calculation:\n");
+    printf("   Addressing: 4 bytes\n");
+    printf("   Service ID: 1 byte\n");
+    printf("   Data ID: 2 bytes\n");
+    printf("   Additional payload: %zu bytes\n", request_payload_len);
+    printf("   Total payload size: %u bytes\n", total_payload_size);
+    
     printf("DOIP Socket: Unified diagnostic request - service=0x%02X, data_id=0x%04X, payload_len=%zu, total_size=%u\r\n",
            service_id, data_id, request_payload_len, (unsigned int)total_payload_size);
     
     // Determine if we need large message handling
     if (total_payload_size > DOIP_SMALL_PAYLOAD_SIZE) {
-        printf("DOIP Socket: Large message detected (%u bytes) - using dynamic allocation\r\n", (unsigned int)total_payload_size);
+        printf("🔍 [DEBUG] Large message detected (%u > %d)\n", total_payload_size, DOIP_SMALL_PAYLOAD_SIZE);
         
         // For large messages, we'll use a different approach
         doip_large_message_t *large_msg = doip_utils_alloc_large_message(total_payload_size);
         if (large_msg == NULL) {
-            printf("DOIP Socket: Failed to allocate large message structure\r\n");
+            printf("❌ [DEBUG] Failed to allocate large message structure\n");
             return DRV_DOIP_STATUS_ERROR;
         }
         
@@ -469,16 +557,26 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         }
         
         // TODO: Implement large message socket transmission
-        printf("DOIP Socket: Large message transmission needs full implementation\r\n");
+        printf("❌ [DEBUG] Large message socket transmission needs full implementation\n");
         
         doip_utils_free_large_message(large_msg);
         *actual_len = 0;
         return DRV_DOIP_STATUS_ERROR;
     }
     
+    printf("🔍 [DEBUG] Building small message...\n");
+    
     // Handle small messages using existing approach
     doip_message_t request_msg, response_msg;
     doip_utils_create_header(&request_msg, DOIP_DIAGNOSTIC_MESSAGE, total_payload_size);
+    
+    printf("🔍 [DEBUG] Message structure created:\n");
+    printf("   Protocol version: 0x%02X\n", request_msg.protocol_version);
+    printf("   Inverse protocol version: 0x%02X\n", request_msg.inverse_protocol_version);
+    printf("   Payload type: 0x%04X\n", request_msg.payload_type);
+    printf("   Payload length: %lu bytes\n", request_msg.payload_length);
+    
+    // Add addressing and diagnostic data
     request_msg.payload[0] = (DOIP_CLIENT_SOURCE_ADDRESS >> 8) & 0xFF;
     request_msg.payload[1] = DOIP_CLIENT_SOURCE_ADDRESS & 0xFF;
     request_msg.payload[2] = (context->current_vehicle.logical_address >> 8) & 0xFF;
@@ -487,43 +585,57 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
     request_msg.payload[5] = (data_id >> 8) & 0xFF;
     request_msg.payload[6] = data_id & 0xFF;
     
+    printf("🔍 [DEBUG] Addressing and diagnostic data added:\n");
+    printf("   Source address: 0x%04X\n", DOIP_CLIENT_SOURCE_ADDRESS);
+    printf("   Target address: 0x%04X\n", context->current_vehicle.logical_address);
+    printf("   Service ID: 0x%02X\n", service_id);
+    printf("   Data ID: 0x%04X\n", data_id);
+    
     // Add additional payload if provided (for small messages only)
     if (request_payload_len > 0 && request_payload != NULL) {
         if (request_payload_len <= DOIP_SMALL_PAYLOAD_SIZE - 7) { // Ensure we don't overflow
             memcpy(&request_msg.payload[7], request_payload, request_payload_len);
+            printf("🔍 [DEBUG] Additional payload copied (%zu bytes)\n", request_payload_len);
         } else {
-            printf("DOIP Socket: Additional payload too large for small message buffer\r\n");
+            printf("❌ [DEBUG] Additional payload too large for small message buffer\n");
             return DRV_DOIP_STATUS_ERROR;
         }
     }
     
+    printf("🔍 [DEBUG] About to send diagnostic request...\n");
+    
     // Send diagnostic request
     if (!doip_send_tcp_message_socket(context->tcp_socket, &request_msg)) {
-        printf("DOIP Client: Failed to send diagnostic request\r\n");
+        printf("❌ [DEBUG] Failed to send diagnostic request\n");
         return DRV_DOIP_STATUS_ERROR;
     }
     
+    printf("✅ [DEBUG] Diagnostic request sent successfully\n");
+    
     // Wait for response
+    printf("🔍 [DEBUG] Waiting for diagnostic response...\n");
     if (!doip_receive_tcp_message_socket(context->tcp_socket, &response_msg, DOIP_TCP_TIMEOUT_MS)) {
-        printf("DOIP Client: Failed to receive diagnostic response\r\n");
+        printf("❌ [DEBUG] Failed to receive diagnostic response\n");
         return DRV_DOIP_STATUS_TIMEOUT;
     }
+    
+    printf("✅ [DEBUG] Diagnostic response received successfully\n");
     
     // Check for negative ACK response first
     if (doip_utils_handle_negative_ack(response_msg.payload_type, response_msg.payload, 
                                        response_msg.payload_length, actual_len)) {
-        printf("DOIP Client: Request handled as negative ACK by ECU 0x%04X\r\n", 
+        printf("✅ [DEBUG] Request handled as negative ACK by ECU 0x%04X\n", 
                context->current_vehicle.logical_address);
         return DRV_DOIP_STATUS_OK; // Not an error - ECU doesn't support this request
     }
     
     // Check response type
     if (response_msg.payload_type != DOIP_DIAGNOSTIC_MESSAGE) {
-        printf("DOIP Client: Unexpected response type: 0x%04X\r\n", response_msg.payload_type);
+        printf("❌ [DEBUG] Unexpected response type: 0x%04X\n", response_msg.payload_type);
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP Client: Diagnostic response from ECU 0x%04X (%lu bytes)\r\n", 
+    printf("✅ [DEBUG] Diagnostic response from ECU 0x%04X (%lu bytes)\n", 
            context->current_vehicle.logical_address, response_msg.payload_length);
     
     // Extract diagnostic payload (skip DOIP header and addressing info)
@@ -534,9 +646,11 @@ static drv_doip_status_t drv_doip_send_diagnostic_request_impl(const void *hw_co
         memcpy(response_buffer, &response_msg.payload[4], copy_len);
         *actual_len = copy_len;
         
+        printf("✅ [DEBUG] Diagnostic payload extracted successfully (%zu bytes)\n", copy_len);
         return DRV_DOIP_STATUS_OK;
     }
     
+    printf("❌ [DEBUG] Response payload too short (%lu bytes)\n", response_msg.payload_length);
     *actual_len = 0;
     return DRV_DOIP_STATUS_ERROR;
 }
@@ -590,7 +704,7 @@ static drv_doip_status_t drv_doip_send_raw_message_impl(const void *hw_context, 
     
     // Determine if we need large message handling
     if (payload_length > DOIP_SMALL_PAYLOAD_SIZE) {
-        printf("DOIP Socket: Large raw message detected (%u bytes)\r\n", (unsigned int)payload_length);
+        printf("DOIP Socket: Large raw message detected (%u bytes) - using dynamic allocation\r\n", (unsigned int)payload_length);
         
         if (use_static_buffer) {
             // Use static buffer allocation
@@ -733,36 +847,99 @@ static bool doip_send_tcp_message_socket(int socket, const doip_message_t *msg)
     uint32_t total_length = DOIP_HEADER_SIZE + msg->payload_length;
     uint8_t *send_buffer;
     
+    // ENHANCED DEBUGGING: Log all function parameters and state
+    printf("🔍 [DEBUG] doip_send_tcp_message_socket() called:\n");
+    printf("   Socket: %d\n", socket);
+    printf("   Payload length: %lu bytes\n", msg->payload_length);
+    printf("   Total length: %lu bytes\n", total_length);
+    printf("   Protocol version: 0x%02X\n", msg->protocol_version);
+    printf("   Payload type: 0x%04X\n", msg->payload_type);
+    
+    // Validate socket
+    if (socket < 0) {
+        printf("❌ [DEBUG] Invalid socket: %d\n", socket);
+        return false;
+    }
+    
+    // Validate message
+    if (msg == NULL) {
+        printf("❌ [DEBUG] NULL message pointer\n");
+        return false;
+    }
+    
     // Choose buffer based on message size
     if (msg->payload_length <= DOIP_SMALL_PAYLOAD_SIZE) {
         // Use small stack buffer for normal messages
         uint8_t small_buffer[DOIP_HEADER_SIZE + DOIP_SMALL_PAYLOAD_SIZE];
         send_buffer = small_buffer;
-        printf("DOIP Client: Using small stack buffer for %lu byte payload\r\n", msg->payload_length);
+        printf("✅ [DEBUG] Using small stack buffer for %lu byte payload\n", msg->payload_length);
     } else if (msg->payload_length <= DOIP_LARGE_SEND_BUFFER_SIZE) {
         // Use static buffer for large messages
         send_buffer = large_send_buffer;
-        printf("DOIP Client: Using static large buffer for %lu byte payload\r\n", msg->payload_length);
+        printf("✅ [DEBUG] Using static large buffer for %lu byte payload\n", msg->payload_length);
     } else {
-        printf("DOIP Client: Message too large (%lu bytes, max: %d)\r\n", 
+        printf("❌ [DEBUG] Message too large (%lu bytes, max: %d)\n", 
                msg->payload_length, DOIP_LARGE_SEND_BUFFER_SIZE);
         return false;
     }
     
     // Serialize message using utility function
+    printf("🔍 [DEBUG] Serializing message...\n");
     doip_utils_serialize_message(msg, send_buffer);
+    printf("✅ [DEBUG] Message serialized successfully\n");
     
-    printf("DOIP Client: Sending TCP message (%lu bytes payload, %lu total)\r\n", 
-           msg->payload_length, total_length);
+    printf("🔍 [DEBUG] About to call send() function:\n");
+    printf("   Socket: %d\n", socket);
+    printf("   Buffer: %p\n", send_buffer);
+    printf("   Length: %lu bytes\n", total_length);
+    printf("   Flags: 0\n");
     
     // Send message
     int result = send(socket, send_buffer, total_length, 0);
-    if (result != (int)total_length) {
-        printf("DOIP Client: TCP send failed - sent %d/%lu bytes\r\n", result, total_length);
+    
+    // ENHANCED ERROR ANALYSIS
+    if (result < 0) {
+        printf("❌ [DEBUG] send() failed with error:\n");
+        printf("   Return value: %d\n", result);
+        printf("   errno: %d\n", errno);
+        
+        // Common errno values and their meanings
+        switch (errno) {
+            case EBADF:
+                printf("   Error: EBADF - Invalid socket descriptor\n");
+                break;
+            case ENOTSOCK:
+                printf("   Error: ENOTSOCK - Not a socket\n");
+                break;
+            case EFAULT:
+                printf("   Error: EFAULT - Invalid buffer address\n");
+                break;
+            case EMSGSIZE:
+                printf("   Error: EMSGSIZE - Message too large\n");
+                break;
+            case ENOBUFS:
+                printf("   Error: ENOBUFS - No buffer space available\n");
+                break;
+            case ENOTCONN:
+                printf("   Error: ENOTCONN - Socket not connected\n");
+                break;
+            case EPIPE:
+                printf("   Error: EPIPE - Connection broken\n");
+                break;
+            default:
+                printf("   Error: Unknown error code %d\n", errno);
+                break;
+        }
+        return false;
+    } else if (result != (int)total_length) {
+        printf("❌ [DEBUG] send() partial success:\n");
+        printf("   Expected: %lu bytes\n", total_length);
+        printf("   Actually sent: %d bytes\n", result);
         return false;
     }
     
-    printf("DOIP Client: TCP message sent successfully (%d bytes)\r\n", result);
+    printf("✅ [DEBUG] TCP message sent successfully (%d bytes)\n", result);
+    printf("✅ [DEBUG] doip_send_tcp_message_socket() completed successfully\n");
     return true;
 }
 

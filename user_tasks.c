@@ -1367,154 +1367,152 @@ static void doip_client_task(void *pvParameters)
 		return;
 	}
 	
-	printf("DOIP Client: Task started\r\n");
+	printf("🔍 [DEBUG] DOIP Client Task started\r\n");
+	printf("🔍 [DEBUG] Driver handle: %p\r\n", doip_handle);
 	
 	// Initialize DOIP driver
-	printf("DOIP Client: Initializing driver...\r\n");
+	printf("🔍 [DEBUG] Initializing DOIP driver...\r\n");
 	if (hw_doip_init(doip_handle) != DRV_DOIP_STATUS_OK) {
-		printf("DOIP Client: Driver initialization failed\r\n");
+		printf("❌ [DEBUG] Driver initialization failed\r\n");
 		vTaskDelete(NULL);
 		return;
 	}
 	
+	printf("✅ [DEBUG] DOIP driver initialized successfully\r\n");
+	
 	// Reset metrics for clean session start
 	hw_doip_reset_metrics(doip_handle);
-	printf("DOIP Client: Performance metrics reset for clean session\r\n");
+	printf("✅ [DEBUG] Performance metrics reset for clean session\r\n");
 	
 	// Demonstrate configurable timeout functionality
 	drv_doip_config_t current_config;
 	hw_doip_get_config(doip_handle, &current_config);
-	printf("DOIP Client: Current configuration:\r\n");
+	printf("🔍 [DEBUG] Current configuration:\r\n");
 	printf("  Discovery timeout: %lu ms\r\n", current_config.discovery_timeout_ms);
 	printf("  TCP connect timeout: %lu ms\r\n", current_config.tcp_connect_timeout_ms);
 	printf("  Safe chunk size: %u bytes\r\n", current_config.safe_chunk_size);
 	printf("  Buffer wait timeout: %lu ms\r\n", current_config.buffer_wait_timeout_ms);
 	
-	printf("DOIP Client: Driver initialized successfully\r\n");
+	printf("✅ [DEBUG] Driver initialized successfully\r\n");
 	
 	// Small delay to ensure driver is ready
 	vTaskDelay(pdMS_TO_TICKS(100));
 	
 	// Wait a bit for network to be fully ready
+	printf("🔍 [DEBUG] Waiting for network to be ready...\r\n");
 	vTaskDelay(pdMS_TO_TICKS(2000));
 	
 	while (1) {
 		// Only proceed if we're in idle state (not connected)
-		if (hw_doip_get_status(doip_handle) == DRV_DOIP_STATE_IDLE) {
-			// Discover all available ECUs
-			uint8_t ecu_count = doip_discover_all_ecus(doip_handle);
+		drv_doip_state_t current_state = hw_doip_get_status(doip_handle);
+		printf("🔍 [DEBUG] Current DOIP state: %d\r\n", current_state);
+		
+		if (current_state == DRV_DOIP_STATE_IDLE) {
+			printf("🔍 [DEBUG] In IDLE state, bypassing ECU discovery for testing...\r\n");
 			
-			if (ecu_count > 0) {
-				printf("DOIP Client: Found %d ECUs, testing multi-ECU communication...\r\n", ecu_count);
+			// BYPASS DISCOVERY: Since there are no real ECUs, create a mock ECU for testing
+			printf("🔍 [DEBUG] Creating mock ECU for TCP testing...\r\n");
+			
+			// Create a mock ECU with a known IP address for testing
+			drv_doip_vehicle_info_t mock_ecu;
+			memset(&mock_ecu, 0, sizeof(mock_ecu));
+			
+			// Use a common test IP address (192.168.100.100)
+			mock_ecu.ip_address = 0xC0A86464; // 192.168.100.100 in network byte order
+			mock_ecu.tcp_port = 13400; // Standard DOIP TCP port
+			mock_ecu.logical_address = 0x1001; // Test logical address
+			strcpy(mock_ecu.vin, "TEST12345678901234"); // Test VIN
+			
+			printf("🔍 [DEBUG] Mock ECU created:\r\n");
+			printf("   IP: 192.168.100.100\r\n");
+			printf("   Port: 13400\r\n");
+			printf("   Logical Address: 0x1001\r\n");
+			printf("   VIN: %s\r\n", mock_ecu.vin);
+			
+			// Store in discovery cache for compatibility
+			discovered_ecus.count = 1;
+			discovered_ecus.vehicles[0] = mock_ecu;
+			
+			printf("🔍 [DEBUG] Mock ECU stored in discovery cache\r\n");
+			
+			// Now proceed with TCP connection testing
+			printf("🔍 [DEBUG] Proceeding with TCP connection testing...\r\n");
+			
+			// Test TCP connection to mock ECU
+			printf("\r\n=== Testing TCP Connection to Mock ECU ===\r\n");
+			printf("🔍 [DEBUG] Attempting to connect to mock ECU...\r\n");
+			
+			drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(doip_handle, &mock_ecu);
+			
+			if (connect_status == DRV_DOIP_STATUS_OK) {
+				printf("✅ [DEBUG] Successfully connected to mock ECU!\r\n");
+				printf("🔍 [DEBUG] TCP connection established - this means the TCP stack is working!\r\n");
 				
-				// Test large message capabilities with all ECUs
-				doip_test_large_messages_all_ecus(doip_handle);
+				// Test basic diagnostic request
+				printf("🔍 [DEBUG] Testing diagnostic request...\r\n");
+				uint8_t response_buffer[1024];
+				size_t actual_len;
 				
-				// Test sustained large message transfer (256KB equivalent)
-				printf("\r\n=== Testing Sustained Large Message Transfer ===\r\n");
-				for (uint8_t ecu_idx = 0; ecu_idx < discovered_ecus.count && ecu_idx < 2; ecu_idx++) {
-					// Connect to ECU for sustained test
-					drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(doip_handle, &discovered_ecus.vehicles[ecu_idx]);
-					if (connect_status == DRV_DOIP_STATUS_OK) {
-						// Test 256KB sustained transfer (32 x 8KB messages) in FAST MODE
-						printf("*** FAST MODE ENABLED: Minimal delays, optimized logging, full timeout protection ***\r\n");
-						doip_test_sustained_large_messages(doip_handle, &discovered_ecus.vehicles[ecu_idx], 256 * 1024, true, NULL);
-						hw_doip_disconnect(doip_handle);
-						vTaskDelay(pdMS_TO_TICKS(500)); // Reduced recovery delay in fast mode
-					}
-				}
+				drv_doip_status_t diag_status = hw_doip_send_diagnostic_request(
+					doip_handle, 
+					0x22, // Read Data by Identifier
+					0xF190, // VIN
+					NULL, // No additional payload
+					0,
+					response_buffer,
+					sizeof(response_buffer),
+					&actual_len
+				);
 				
-				// Test concurrent ECU requests
-				doip_test_concurrent_ecu_requests(doip_handle);
-				
-				// Connect to primary ECU (first discovered) for detailed analysis
-				printf("\r\n=== Connecting to Primary ECU for Detailed Analysis ===\r\n");
-				if (hw_doip_connect_to_vehicle(doip_handle, &discovered_ecus.vehicles[0]) == DRV_DOIP_STATUS_OK) {
-					printf("\r\n--- DOIP Communication Complete ---\r\n");
+				if (diag_status == DRV_DOIP_STATUS_OK) {
+					printf("✅ [DEBUG] Diagnostic request sent successfully!\r\n");
+					printf("🔍 [DEBUG] Response received: %zu bytes\r\n", actual_len);
 					
-					// Read and display system information after successful connection
-					if (hw_doip_get_status(doip_handle) == DRV_DOIP_STATE_ACTIVATED) {
-						printf("\r\n=== ECU System Information ===\r\n");
-						
-						// Basic identification
-						doip_read_did_and_display(doip_handle, DID_VIN, "VIN", "string");
-						doip_read_did_and_display(doip_handle, DID_ECU_SOFTWARE_VERSION, "ECU SW Version", "string");
-						doip_read_did_and_display(doip_handle, DID_ECU_HARDWARE_VERSION, "ECU HW Version", "string");
-						doip_read_did_and_display(doip_handle, DID_ECU_SERIAL_NUMBER, "ECU Serial Number", "string");
-						
-						printf("\r\n=== System Details ===\r\n");
-						doip_read_did_and_display(doip_handle, DID_ACTIVE_DIAGNOSTIC_SESSION, "Diagnostic Session", "uint8");
-						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_SPARE_PART_NUMBER, "Spare Part Number", "string");
-						doip_read_did_and_display(doip_handle, DID_SYSTEM_SUPPLIER_IDENTIFIER, "System Supplier", "string");
-						doip_read_did_and_display(doip_handle, DID_ECU_MANUFACTURING_DATE, "Manufacturing Date", "string");
-						
-						printf("\r\n=== Network Information ===\r\n");
-						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_ECU_NETWORK_NAME, "Network Name", "string");
-						doip_read_did_and_display(doip_handle, DID_VEHICLE_MANUFACTURER_ECU_NETWORK_ADDRESS, "Network Address", "string");
-						
-						printf("\r\n=== Runtime Monitoring ===\r\n");
-						doip_read_did_and_display(doip_handle, DID_ECU_OPERATING_HOURS, "Operating Hours", "uint32_hours");
-						doip_read_did_and_display(doip_handle, DID_VEHICLE_SPEED_INFORMATION, "Vehicle Speed", "uint16_kmh");
-						doip_read_did_and_display(doip_handle, DID_ENGINE_RPM_INFORMATION, "Engine RPM", "uint16_rpm");
-						doip_read_did_and_display(doip_handle, DID_BATTERY_VOLTAGE_INFORMATION, "Battery Voltage", "uint16_mv");
-						doip_read_did_and_display(doip_handle, DID_TEMPERATURE_SENSOR_DATA, "Temperature", "int16_temp");
-						doip_read_did_and_display(doip_handle, DID_FUEL_LEVEL_INFORMATION, "Fuel Level", "uint8_percent");
-						
-						printf("\r\n=== Diagnostic Status ===\r\n");
-						doip_read_did_and_display(doip_handle, DID_ERROR_MEMORY_STATUS, "Error Memory Status", "uint8");
-						doip_read_did_and_display(doip_handle, DID_LAST_RESET_REASON, "Last Reset Reason", "uint8");
-						doip_read_did_and_display(doip_handle, DID_BOOT_SOFTWARE_IDENTIFICATION, "Boot Software ID", "string");
-						
-						printf("\r\n--- Testing Alive Check ---\r\n");
-						printf("DOIP Client: Connection established, listening for ECU messages...\r\n");
-						
-						// Listen period for incoming messages (alive checks, etc.)
-						vTaskDelay(pdMS_TO_TICKS(3000)); // 3 second listening period
-						
-						printf("DOIP Client: Alive check testing completed\r\n");
-						
-						// Periodic monitoring of dynamic data
-						printf("\r\n--- Periodic Runtime Monitoring ---\r\n");
-						printf("DOIP Client: Monitoring dynamic data for 60 seconds...\r\n");
-						
-						for (int cycle = 0; cycle < 4; cycle++) { // 4 cycles = 60 seconds
-							printf("\r\n--- Monitoring Cycle %d ---\r\n", cycle + 1);
-							
-							// Read dynamic runtime values
-							doip_read_did_and_display(doip_handle, DID_VEHICLE_SPEED_INFORMATION, "Vehicle Speed", "uint16_kmh");
-							doip_read_did_and_display(doip_handle, DID_ENGINE_RPM_INFORMATION, "Engine RPM", "uint16_rpm");
-							doip_read_did_and_display(doip_handle, DID_BATTERY_VOLTAGE_INFORMATION, "Battery Voltage", "uint16_mv");
-							doip_read_did_and_display(doip_handle, DID_TEMPERATURE_SENSOR_DATA, "Temperature", "int16_temp");
-							doip_read_did_and_display(doip_handle, DID_FUEL_LEVEL_INFORMATION, "Fuel Level", "uint8_percent");
-							doip_read_did_and_display(doip_handle, DID_ECU_OPERATING_HOURS, "Operating Hours", "uint32_hours");
-							
-							if (cycle < 3) { // Don't wait after last cycle
-								vTaskDelay(pdMS_TO_TICKS(15000)); // Wait 15 seconds between readings
-							}
+					// Display response data
+					if (actual_len > 0) {
+						printf("🔍 [DEBUG] Response data: ");
+						for (size_t i = 0; i < actual_len && i < 32; i++) {
+							printf("%02X ", response_buffer[i]);
 						}
-						
-						printf("DOIP Client: Periodic monitoring completed\r\n");
+						if (actual_len > 32) printf("...");
+						printf("\r\n");
 					}
-					
-					// Disconnect after communication
-					hw_doip_disconnect(doip_handle);
-					
-					// Print metrics report every cycle for monitoring
-					printf("\r\n=== DoIP Session Metrics Summary ===\r\n");
-					hw_doip_print_metrics(doip_handle);
-					
-					// Wait before next cycle
-					vTaskDelay(pdMS_TO_TICKS(30000)); // 30 seconds
 				} else {
-					printf("DOIP Client: Primary ECU connection failed\r\n");
-					vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
+					printf("❌ [DEBUG] Diagnostic request failed: %d\r\n", diag_status);
 				}
+				
+				// Disconnect
+				printf("🔍 [DEBUG] Disconnecting from mock ECU...\r\n");
+				hw_doip_disconnect(doip_handle);
+				
 			} else {
-				printf("DOIP Client: No ECUs discovered in multi-ECU scan\r\n");
-				vTaskDelay(pdMS_TO_TICKS(30000)); // Wait 30 seconds before retry
+				printf("❌ [DEBUG] Failed to connect to mock ECU: %d\r\n", connect_status);
+				printf("🔍 [DEBUG] This indicates a TCP connection issue\r\n");
+				
+				// Analyze the failure
+				switch (connect_status) {
+					case DRV_DOIP_STATUS_ERROR:
+						printf("🔍 [DEBUG] General connection error - check TCP stack\r\n");
+						break;
+					case DRV_DOIP_STATUS_TIMEOUT:
+						printf("🔍 [DEBUG] Connection timeout - check network configuration\r\n");
+						break;
+					case DRV_DOIP_STATUS_NO_VEHICLE:
+						printf("🔍 [DEBUG] No vehicle error - unexpected in this context\r\n");
+						break;
+					default:
+						printf("🔍 [DEBUG] Unknown error code: %d\r\n", connect_status);
+						break;
+				}
 			}
+			
+			// Wait before next test cycle
+			printf("🔍 [DEBUG] Waiting 30 seconds before next test cycle...\r\n");
+			vTaskDelay(pdMS_TO_TICKS(30000));
+			
 		} else {
 			// If in connected state, perform periodic monitoring
+			printf("🔍 [DEBUG] In connected state (%d), performing periodic monitoring\r\n", current_state);
 			vTaskDelay(pdMS_TO_TICKS(5000));
 		}
 	}

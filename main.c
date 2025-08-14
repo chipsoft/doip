@@ -31,21 +31,33 @@
  *
  */
 
+#include "user_tasks.h"
+#include "semphr.h"
+#include "lwip/tcpip.h"
 #include "printf.h"
+#include "network_events.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "bsp_led.h"
+#include "bsp_ethernet.h"
+#include "eth_ipstack_main.h"
+#include <hal_mac_async.h>
+#include "app_libs/asf4/hri/hri_gmac_e54.h"
+#include "ethif_mac.h"
+#include "driver_doip.h"
+#include <string.h>
+#include "lwip/sockets.h"  // Add socket includes
+#include "lwip/ip_addr.h"
+#include "lwip/ip4_addr.h"
 #include <peripheral_clk_config.h>
 #include <utils.h>
 #include <hal_init.h>
 #include <hal_gpio.h>
-#include "bsp_led.h"
-#include "eth_ipstack_main.h"
-#include "user_tasks.h"
 #include "bsp_doip.h"  // Universal DOIP driver
 #include "bsp_ksz8851snl.h"  // KSZ8851SNL driver with debug functions
 #ifndef USE_KSZ8851SNL_INTERFACE
 #include "bsp_net.h"   // Universal network driver (GMAC only)
 #endif
-#include "FreeRTOS.h"
-#include "task.h"
 
 // Network interface specific includes
 #ifdef USE_KSZ8851SNL_INTERFACE
@@ -152,6 +164,240 @@ static void ksz8851snl_link_monitor_task(void *pvParameters)
 	}
 }
 #endif
+
+// Raw TCP test function using KSZ8851SNL hardware directly (bypasses lwIP)
+static void raw_tcp_test_send_packets(void)
+{
+    printf("\r\n=== Raw TCP Test: Direct KSZ8851SNL Transmission ===\r\n");
+    printf("This will send raw TCP packets directly through KSZ8851SNL hardware\r\n");
+    printf("Bypassing lwIP entirely to test raw packet transmission\r\n");
+    
+    // Wait a bit for KSZ8851SNL to be fully ready
+    printf("🔍 Raw TCP Test: Waiting for KSZ8851SNL to be ready...\r\n");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    // First, let's test with a simple broadcast packet to verify basic functionality
+    printf("🔍 Raw TCP Test: Testing basic broadcast packet first...\r\n");
+    
+    // Check TX memory status before sending
+    printf("🔍 Raw TCP Test: Checking TX memory status...\r\n");
+    uint16_t tx_mem_info = 0;
+    uint16_t available_mem = 0;
+    
+    // Read TX memory info register (we'll need to implement this)
+    // For now, let's try to send a smaller packet first
+    
+    uint8_t broadcast_packet[64];
+    uint16_t broadcast_length = 0;
+    
+    // Simple broadcast packet (64 bytes minimum for Ethernet)
+    // Destination MAC (broadcast)
+    broadcast_packet[0] = 0xFF; broadcast_packet[1] = 0xFF; broadcast_packet[2] = 0xFF;
+    broadcast_packet[3] = 0xFF; broadcast_packet[4] = 0xFF; broadcast_packet[5] = 0xFF;
+    // Source MAC (our device - use the configured MAC address)
+    broadcast_packet[6] = 0x00; broadcast_packet[7] = 0x00; broadcast_packet[8] = 0x00;
+    broadcast_packet[9] = 0x00; broadcast_packet[10] = 0x20; broadcast_packet[11] = 0x76;
+    // EtherType (IPv4)
+    broadcast_packet[12] = 0x08; broadcast_packet[13] = 0x00;
+    // Simple payload (fill with test pattern) - REDUCE SIZE
+    for (int i = 14; i < 32; i++) {  // Reduced from 64 to 32 bytes
+        broadcast_packet[i] = i & 0xFF;
+    }
+    broadcast_length = 32;  // Reduced packet size
+    
+    printf("🔍 Raw TCP Test: Sending small broadcast test packet (%d bytes)...\r\n", broadcast_length);
+    printf("🔍 Raw TCP Test: Broadcast packet starts with: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+           broadcast_packet[0], broadcast_packet[1], broadcast_packet[2], broadcast_packet[3],
+           broadcast_packet[4], broadcast_packet[5], broadcast_packet[6], broadcast_packet[7]);
+    
+    // Try to reset TX memory if it's full
+    printf("🔍 Raw TCP Test: Attempting to reset TX memory...\r\n");
+    // This would require implementing a TX reset function in the driver
+    // For now, let's try to send the packet and see what happens
+    
+    extern drv_ksz8851snl_t ksz8851snl_0;
+    drv_ksz8851snl_status_t broadcast_result = hw_ksz8851snl_send_packet(&ksz8851snl_0, broadcast_packet, broadcast_length);
+    
+    if (broadcast_result == DRV_KSZ8851SNL_STATUS_OK) {
+        printf("✅ Raw TCP Test: Broadcast packet sent successfully!\r\n");
+        printf("🔍 Raw TCP Test: Check Wireshark for broadcast packet\r\n");
+    } else {
+        printf("❌ Raw TCP Test: Broadcast packet failed: %d\r\n", broadcast_result);
+    }
+    
+    // Wait a bit to see if broadcast packet appears in Wireshark
+    printf("🔍 Raw TCP Test: Waiting 3 seconds to check broadcast packet in Wireshark...\r\n");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    
+    uint32_t packet_count = 0;
+    
+    while (1) {
+        packet_count++;
+        printf("\r\n--- Raw TCP Test Packet #%lu ---\r\n", packet_count);
+        
+        // Create a raw TCP packet manually
+        // TCP SYN packet structure for connection to 192.168.100.100:13400
+        uint8_t raw_tcp_packet[60]; // Standard TCP packet size
+        uint16_t packet_length = 0;
+        
+        // Ethernet header (14 bytes)
+        uint8_t *eth_ptr = raw_tcp_packet;
+        // Destination MAC (broadcast for testing)
+        eth_ptr[0] = 0xFF; eth_ptr[1] = 0xFF; eth_ptr[2] = 0xFF;
+        eth_ptr[3] = 0xFF; eth_ptr[4] = 0xFF; eth_ptr[5] = 0xFF;
+        // Source MAC (our device - use the configured MAC address)
+        eth_ptr[6] = 0x00; eth_ptr[7] = 0x00; eth_ptr[8] = 0x00;
+        eth_ptr[9] = 0x00; eth_ptr[10] = 0x20; eth_ptr[11] = 0x76;
+        // EtherType (IPv4)
+        eth_ptr[12] = 0x08; eth_ptr[13] = 0x00;
+        packet_length += 14;
+        
+        // IP header (20 bytes)
+        uint8_t *ip_ptr = raw_tcp_packet + 14;
+        // IP version and header length
+        ip_ptr[0] = 0x45; // IPv4, header length 5 words
+        // Type of Service
+        ip_ptr[1] = 0x00;
+        // Total length (will be filled)
+        ip_ptr[2] = 0x00; ip_ptr[3] = 0x00;
+        // Identification
+        ip_ptr[4] = 0x00; ip_ptr[5] = 0x01;
+        // Flags and fragment offset
+        ip_ptr[6] = 0x40; ip_ptr[7] = 0x00; // Don't fragment
+        // Time to live
+        ip_ptr[8] = 0x40; // 64 hops
+        // Protocol (TCP)
+        ip_ptr[9] = 0x06;
+        // Header checksum (will be filled)
+        ip_ptr[10] = 0x00; ip_ptr[11] = 0x00;
+        // Source IP (our device: 192.168.100.2)
+        ip_ptr[12] = 192; ip_ptr[13] = 168; ip_ptr[14] = 100; ip_ptr[15] = 2;
+        // Destination IP (target: 192.168.100.100)
+        ip_ptr[16] = 192; ip_ptr[17] = 168; ip_ptr[18] = 100; ip_ptr[19] = 100;
+        packet_length += 20;
+        
+        // TCP header (20 bytes)
+        uint8_t *tcp_ptr = raw_tcp_packet + 34;
+        // Source port (random high port)
+        tcp_ptr[0] = 0x13; tcp_ptr[1] = 0x89; // 5001
+        // Destination port (DOIP: 13400)
+        tcp_ptr[2] = 0x34; tcp_ptr[3] = 0x58; // 13400
+        // Sequence number
+        tcp_ptr[4] = 0x00; tcp_ptr[5] = 0x00; tcp_ptr[6] = 0x00; tcp_ptr[7] = 0x01;
+        // Acknowledgment number
+        tcp_ptr[8] = 0x00; tcp_ptr[9] = 0x00; tcp_ptr[10] = 0x00; tcp_ptr[11] = 0x00;
+        // Data offset and flags
+        tcp_ptr[12] = 0x50; // 5 words, no flags
+        tcp_ptr[13] = 0x02; // SYN flag
+        // Window size
+        tcp_ptr[14] = 0x20; tcp_ptr[15] = 0x00; // 8192
+        // Checksum (will be filled)
+        tcp_ptr[16] = 0x00; tcp_ptr[17] = 0x00;
+        // Urgent pointer
+        tcp_ptr[18] = 0x00; tcp_ptr[19] = 0x00;
+        packet_length += 20;
+        
+        // TCP options (6 bytes - MSS)
+        uint8_t *opt_ptr = raw_tcp_packet + 54;
+        opt_ptr[0] = 0x02; // Option kind: MSS
+        opt_ptr[1] = 0x04; // Option length: 4 bytes
+        opt_ptr[2] = 0x05; opt_ptr[3] = 0xB4; // MSS: 1460
+        opt_ptr[4] = 0x01; // Option kind: NOP
+        opt_ptr[5] = 0x01; // Option kind: NOP
+        packet_length += 6;
+        
+        // Update IP total length
+        uint16_t ip_total_len = packet_length - 14; // Exclude Ethernet header
+        ip_ptr[2] = (ip_total_len >> 8) & 0xFF;
+        ip_ptr[3] = ip_total_len & 0xFF;
+        
+        // Calculate IP checksum
+        uint32_t ip_checksum = 0;
+        for (int i = 0; i < 20; i += 2) {
+            ip_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
+        }
+        while (ip_checksum >> 16) {
+            ip_checksum = (ip_checksum & 0xFFFF) + (ip_checksum >> 16);
+        }
+        ip_checksum = ~ip_checksum;
+        ip_ptr[10] = (ip_checksum >> 8) & 0xFF;
+        ip_ptr[11] = ip_checksum & 0xFF;
+        
+        // Calculate TCP checksum (pseudo-header + TCP header + data)
+        uint32_t tcp_checksum = 0;
+        
+        // Pseudo-header
+        for (int i = 12; i < 20; i += 2) { // Source IP
+            tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
+        }
+        for (int i = 16; i < 20; i += 2) { // Destination IP
+            tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
+        }
+        tcp_checksum += 0x0006; // Protocol (TCP)
+        tcp_checksum += (ip_total_len - 20); // TCP length
+        
+        // TCP header and data
+        for (int i = 0; i < (packet_length - 34); i += 2) {
+            if (i + 1 < (packet_length - 34)) {
+                tcp_checksum += (tcp_ptr[i] << 8) | tcp_ptr[i + 1];
+            } else {
+                tcp_checksum += (tcp_ptr[i] << 8);
+            }
+        }
+        
+        while (tcp_checksum >> 16) {
+            tcp_checksum = (tcp_checksum & 0xFFFF) + (tcp_checksum >> 16);
+        }
+        tcp_checksum = ~tcp_checksum;
+        tcp_ptr[16] = (tcp_checksum >> 8) & 0xFF;
+        tcp_ptr[17] = tcp_checksum & 0xFF;
+        
+        printf("🔍 Raw TCP Test: Packet constructed (%lu bytes)\r\n", packet_length);
+        printf("🔍 Raw TCP Test: Source: 192.168.100.2:5001\r\n");
+        printf("🔍 Raw TCP Test: Destination: 192.168.100.100:13400\r\n");
+        printf("🔍 Raw TCP Test: TCP SYN flag set\r\n");
+        
+        // Send the raw packet through KSZ8851SNL
+        printf("🔍 Raw TCP Test: Sending raw packet through KSZ8851SNL...\r\n");
+        
+        // Debug: Print first few bytes of the packet
+        printf("🔍 Raw TCP Test: Packet starts with: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+               raw_tcp_packet[0], raw_tcp_packet[1], raw_tcp_packet[2], raw_tcp_packet[3],
+               raw_tcp_packet[4], raw_tcp_packet[5], raw_tcp_packet[6], raw_tcp_packet[7]);
+        
+        // Use the existing KSZ8851SNL send function
+        // This bypasses lwIP entirely and sends directly through the hardware
+        extern drv_ksz8851snl_t ksz8851snl_0; // Reference to the driver instance
+        drv_ksz8851snl_status_t send_result = hw_ksz8851snl_send_packet(&ksz8851snl_0, raw_tcp_packet, packet_length);
+        
+        if (send_result == DRV_KSZ8851SNL_STATUS_OK) {
+            printf("✅ Raw TCP Test: Packet sent successfully through KSZ8851SNL!\r\n");
+            printf("🔍 Raw TCP Test: Check Wireshark for raw TCP SYN packet\r\n");
+        } else {
+            printf("❌ Raw TCP Test: Failed to send packet: %d\r\n", send_result);
+        }
+        
+        printf("🔍 Raw TCP Test: Packet #%lu completed\r\n", packet_count);
+        printf("🔍 Raw TCP Test: Waiting 2 seconds before next packet...\r\n");
+        
+        vTaskDelay(pdMS_TO_TICKS(2000)); // Wait 2 seconds between packets
+    }
+}
+
+// Task wrapper for raw TCP test
+static void raw_tcp_test_task_wrapper(void *pvParameters)
+{
+    (void)pvParameters; // Unused parameter
+    
+    printf("🔍 Raw TCP Test Task: Starting...\r\n");
+    
+    // Run the raw TCP test
+    raw_tcp_test_send_packets();
+    
+    // This should never reach here, but just in case
+    printf("🔍 Raw TCP Test Task: Unexpected exit\r\n");
+    vTaskDelete(NULL);
+}
 
 // Network initialization task - runs after scheduler starts
 static void network_init_task(void *pvParameters)
@@ -325,6 +571,8 @@ static void network_init_task(void *pvParameters)
 	// Print network configuration
 	print_ipaddress();
 	
+	// TCP test will be started in a separate task after network initialization
+	
 	// Create packet reception task for KSZ8851SNL
 	if (xTaskCreate(ksz8851snl_packet_task,
 	                "KSZ_RX",
@@ -361,6 +609,19 @@ static void network_init_task(void *pvParameters)
 	
 	// Start diagnostic processor for raw DOIP packet analysis
 	task_diagnostic_processor_create(&doip_0);
+	
+	// Create TCP test task after network is fully initialized
+	if (xTaskCreate(raw_tcp_test_task_wrapper,
+	                "TCP_TEST",
+	                1024,  // Stack size
+	                NULL,
+	                (tskIDLE_PRIORITY + 1),  // Medium priority
+	                NULL)
+	    != pdPASS) {
+		printf("Failed to create TCP test task\r\n");
+	} else {
+		printf("TCP test task created successfully\r\n");
+	}
 	
 	// This task is done, delete itself
 	printf("Network initialization complete, deleting init task\r\n");

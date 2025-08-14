@@ -806,6 +806,31 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_status_impl(const void *hw_con
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
+// TX memory reset function to clear stuck packets
+static void ksz8851_tx_memory_reset(void)
+{
+    printf("[KSZ8851SNL] Resetting TX memory...\r\n");
+    
+    // Read current TX memory status
+    uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
+    uint16_t available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
+    
+    printf("[KSZ8851SNL] TX memory before reset: available=%d bytes\r\n", available_mem);
+    
+    // Try to reset TX memory by writing to TXQ command register
+    // This is a bit experimental - consult KSZ8851SNL datasheet for proper reset sequence
+    ksz8851_reg_write(REG_TXQ_CMD, 0x0000);  // Clear TXQ command
+    
+    // Wait a bit for reset to take effect
+    for (volatile int i = 0; i < 1000; i++);
+    
+    // Read TX memory status again
+    tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
+    available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
+    
+    printf("[KSZ8851SNL] TX memory after reset: available=%d bytes\r\n", available_mem);
+}
+
 // FIFO read/write helper functions with proper CS control
 static void ksz8851_fifo_write_data(const uint8_t *data, uint16_t length)
 {
@@ -911,6 +936,10 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     // Step 9: Restore interrupt mask
     ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
     
+    // Step 10: Update transmission statistics
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    context->tx_packets++;
+    
     printf("[KSZ8851SNL] Packet transmission initiated successfully\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
@@ -964,6 +993,10 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
     
     // Free the received frame
     ksz8851_reg_write(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
+    
+    // Update reception statistics
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    context->rx_packets++;
     
     *length = frame_len;
     printf("[KSZ8851SNL] Packet received successfully\r\n");
