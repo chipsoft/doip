@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "lwip_socket_api.h": "c"
+        "lwip_socket_api.h": "c",
+        "ksz8851snl_reg.h": "c"
     }
 }

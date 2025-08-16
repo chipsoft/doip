@@ -1466,7 +1466,7 @@ static void doip_client_task(void *pvParameters)
 			printf("🔍 Check Wireshark to see if packets appear correctly\r\n");
 			
 			// Break out of the while loop - test completed
-			break;
+			vTaskDelete(NULL);
 			
 		} else {
 			// Wait a bit and try again

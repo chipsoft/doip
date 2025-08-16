@@ -450,192 +450,85 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_hardware_reset(void)
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
-static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, const drv_ksz8851snl_config_t *config)
+static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
+    const void *hw_context,
+    const drv_ksz8851snl_config_t *config)
 {
     ASSERT(hw_context != NULL);
     ASSERT(config != NULL);
-    
+
     drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
-    
+
     if (context->is_initialized) {
         return DRV_KSZ8851SNL_STATUS_OK;
     }
-    
-    printf("[KSZ8851SNL] Initializing KSZ8851SNL Ethernet controller\r\n");
-    
-    // Configure pins
+
+    printf("[KSZ8851SNL] Initializing (Oryx style)\r\n");
+
+    // Step 1: Configure pins and SPI
     drv_ksz8851snl_configure_pins();
-    
-    // Initialize SPI first
+
     drv_spi_config_t spi_config = {
         .baudrate = KSZ8851SNL_SPI_CLOCK_SPEED,
         .clock_polarity = KSZ8851SNL_SPI_CLOCK_POLARITY,
         .clock_phase = KSZ8851SNL_SPI_CLOCK_PHASE,
         .bits_per_transfer = KSZ8851SNL_SPI_BITS_PER_TRANSFER,
-        .cs_delay_before = 0,
-        .cs_delay_after = 0,
     };
-    
-    drv_spi_status_t spi_status = hw_spi_init(&spi_4, &spi_config);
-    if (spi_status != DRV_SPI_STATUS_OK) {
-        printf("[KSZ8851SNL] SPI initialization failed: %d\r\n", spi_status);
+
+    if (hw_spi_init(&spi_4, &spi_config) != DRV_SPI_STATUS_OK ||
+        hw_spi_enable(&spi_4) != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] SPI init failed\r\n");
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    spi_status = hw_spi_enable(&spi_4);
-    if (spi_status != DRV_SPI_STATUS_OK) {
-        printf("[KSZ8851SNL] SPI enable failed: %d\r\n", spi_status);
-        return DRV_KSZ8851SNL_STATUS_ERROR;
-    }
-    
-    // Perform hardware reset
-    drv_ksz8851snl_status_t reset_status = drv_ksz8851snl_hardware_reset();
-    if (reset_status != DRV_KSZ8851SNL_STATUS_OK) {
-        return reset_status;
-    }
-    
-    // Test chip ID first (SPI communication test)
+
+    // Step 2: Hardware reset
+    drv_ksz8851snl_hardware_reset();
+
+    // Step 3: Verify chip ID
     drv_ksz8851snl_id_info_t id_info;
-    drv_ksz8851snl_status_t id_status = drv_ksz8851snl_get_chip_id_impl(hw_context, &id_info);
-    if (id_status != DRV_KSZ8851SNL_STATUS_OK || !id_info.chip_detected) {
-        printf("[KSZ8851SNL] Chip ID verification failed\r\n");
+    drv_ksz8851snl_get_chip_id_impl(hw_context, &id_info);
+    if (!id_info.chip_detected) {
+        printf("[KSZ8851SNL] Invalid chip ID\r\n");
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    printf("[KSZ8851SNL] Chip ID verified: 0x%04X\r\n", id_info.chip_id);
-    
-    // Initialize interrupt system
-    drv_ksz8851snl_status_t irq_status = ksz8851snl_irq_init();
-    if (irq_status != DRV_KSZ8851SNL_STATUS_OK) {
-        printf("[KSZ8851SNL] Interrupt initialization failed\r\n");
-        return irq_status;
-    }
-    
-    // Configure TX control register for proper packet transmission
-    printf("[KSZ8851SNL] Configuring TX control register\r\n");
-    uint16_t tx_ctrl = TX_CTRL_ICMP_CHECKSUM |
-                       TX_CTRL_UDP_CHECKSUM |
-                       TX_CTRL_TCP_CHECKSUM |
-                       TX_CTRL_IP_CHECKSUM |
+    printf("[KSZ8851SNL] Chip detected (ID=0x%04X)\r\n", id_info.chip_id);
+
+    // Step 4: Configure QMU (TX/RX engines)
+    uint16_t tx_ctrl = TX_CTRL_ENABLE |
                        TX_CTRL_FLOW_ENABLE |
                        TX_CTRL_PAD_ENABLE |
                        TX_CTRL_CRC_ENABLE |
-                       TX_CTRL_ENABLE;
+                       TX_CTRL_ICMP_CHECKSUM |
+                       TX_CTRL_UDP_CHECKSUM |
+                       TX_CTRL_TCP_CHECKSUM |
+                       TX_CTRL_IP_CHECKSUM;
+
     ksz8851_reg_write(REG_TX_CTRL, tx_ctrl);
-    printf("[KSZ8851SNL] TX control configured: 0x%04X\r\n", tx_ctrl);
-    
-    // Configure TX address pointer with auto-increment
-    printf("[KSZ8851SNL] Configuring TX address pointer\r\n");
     ksz8851_reg_write(REG_TX_ADDR_PTR, ADDR_PTR_AUTO_INC);
-    printf("[KSZ8851SNL] TX address pointer configured with auto-increment\r\n");
-    
-    // CRITICAL: TX Memory Pool Initialization
-    // This is the most critical part for fixing "TX memory = 0" issue
-    printf("[KSZ8851SNL] ================================================\r\n");
-    printf("[KSZ8851SNL] CRITICAL: Initializing TX Memory Pool\r\n");
-    printf("[KSZ8851SNL] ================================================\r\n");
-    
-    // Step 1: Check current TX memory state
-    uint16_t tx_mem_before = ksz8851_reg_read(REG_TX_MEM_INFO);
-    uint16_t available_before = tx_mem_before & TX_MEM_AVAILABLE_MASK;
-    printf("[KSZ8851SNL] TX memory before initialization: %d bytes\r\n", available_before);
-    
-    // Step 2: Disable TX before flushing (critical for proper reset)
-    printf("[KSZ8851SNL] Step 1: Disabling TX before flush\r\n");
-    ksz8851_reg_write(REG_TX_CTRL, tx_ctrl & ~TX_CTRL_ENABLE);
-    vTaskDelay(pdMS_TO_TICKS(5));  // Allow disable to take effect
-    
-    // Step 3: Flush TX queue (this should reset the memory pointers)
-    printf("[KSZ8851SNL] Step 2: Flushing TX queue\r\n");
-    printf("[KSZ8851SNL] WARNING: Corrupted frames may appear during flush!\r\n");
-    ksz8851_reg_write(REG_TX_CTRL, (tx_ctrl & ~TX_CTRL_ENABLE) | TX_CTRL_FLUSH_QUEUE);
-    
-    // Wait for flush to complete - use proper timing
-    vTaskDelay(pdMS_TO_TICKS(10));
-    printf("[KSZ8851SNL] TX flush completed\r\n");
-    
-    // Step 4: Clear flush bit but keep TX disabled
-    printf("[KSZ8851SNL] Step 3: Clearing flush bit\r\n");
-    ksz8851_reg_write(REG_TX_CTRL, tx_ctrl & ~TX_CTRL_ENABLE);
-    vTaskDelay(pdMS_TO_TICKS(5));
-    
-    // Step 5: Check if memory was released
-    uint16_t tx_mem_after_flush = ksz8851_reg_read(REG_TX_MEM_INFO);
-    uint16_t available_after_flush = tx_mem_after_flush & TX_MEM_AVAILABLE_MASK;
-    printf("[KSZ8851SNL] TX memory after flush: %d bytes\r\n", available_after_flush);
-    
-    // Step 6: If still 0, try alternative reset sequence
-    if (available_after_flush == 0) {
-        printf("[KSZ8851SNL] ⚠ TX memory still 0 - trying alternative reset\r\n");
-        
-        // Try QMU software reset approach (safer than global reset)
-        printf("[KSZ8851SNL] Attempting QMU software reset\r\n");
-        ksz8851_reg_setbits(REG_RESET_CTRL, QMU_SOFTWARE_RESET);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        ksz8851_reg_clrbits(REG_RESET_CTRL, QMU_SOFTWARE_RESET);
-        vTaskDelay(pdMS_TO_TICKS(20));
-        
-        // Reconfigure TX control after reset
-        ksz8851_reg_write(REG_TX_CTRL, tx_ctrl & ~TX_CTRL_ENABLE);
-        ksz8851_reg_write(REG_TX_ADDR_PTR, ADDR_PTR_AUTO_INC);
-        
-        // Try flush again
-        ksz8851_reg_write(REG_TX_CTRL, (tx_ctrl & ~TX_CTRL_ENABLE) | TX_CTRL_FLUSH_QUEUE);
-        vTaskDelay(pdMS_TO_TICKS(15));
-        ksz8851_reg_write(REG_TX_CTRL, tx_ctrl & ~TX_CTRL_ENABLE);
-        vTaskDelay(pdMS_TO_TICKS(10));
-        
-        uint16_t tx_mem_after_reset = ksz8851_reg_read(REG_TX_MEM_INFO);
-        uint16_t available_after_reset = tx_mem_after_reset & TX_MEM_AVAILABLE_MASK;
-        printf("[KSZ8851SNL] TX memory after reset sequence: %d bytes\r\n", available_after_reset);
-        
-        if (available_after_reset == 0) {
-            printf("[KSZ8851SNL] ❌ CRITICAL ERROR: TX memory initialization failed completely\r\n");
-            printf("[KSZ8851SNL] This indicates a fundamental hardware or SPI communication issue\r\n");
-            printf("[KSZ8851SNL] Possible causes:\r\n");
-            printf("[KSZ8851SNL] 1. SPI communication problems\r\n");
-            printf("[KSZ8851SNL] 2. Incorrect chip power-up sequence\r\n");
-            printf("[KSZ8851SNL] 3. Hardware fault in KSZ8851SNL\r\n");
-            printf("[KSZ8851SNL] 4. Incorrect register mapping or bit definitions\r\n");
-            // Continue anyway - maybe it will recover later
-        }
+
+    uint16_t rx_ctrl = RX_CTRL_ENABLE |
+                       RX_CTRL_FLUSH_QUEUE |
+                       RX_CTRL_FLOW_ENABLE |
+                       RX_CTRL_IP_CHECKSUM |
+                       RX_CTRL_TCP_CHECKSUM |
+                       RX_CTRL_UDP_CHECKSUM;
+
+    ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl);
+    ksz8851_reg_write(REG_RX_ADDR_PTR, ADDR_PTR_AUTO_INC);
+
+    // Step 5: Enable interrupts (RX, TX, PHY)
+    ksz8851_reg_write(REG_INT_STATUS, 0xFFFF); // Clear pending
+    ksz8851_reg_write(REG_INT_MASK, INT_RX | INT_TX | INT_PHY);
+
+    // Step 6: Init IRQ system (FreeRTOS semaphore + external IRQ)
+    if (ksz8851snl_irq_init() != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[KSZ8851SNL] IRQ init failed\r\n");
+        return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    // Step 7: Final verification and enable TX
-    uint16_t tx_mem_final = ksz8851_reg_read(REG_TX_MEM_INFO);
-    uint16_t available_final = tx_mem_final & TX_MEM_AVAILABLE_MASK;
-    printf("[KSZ8851SNL] ================================================\r\n");
-    printf("[KSZ8851SNL] TX Memory Pool Initialization COMPLETE\r\n");
-    printf("[KSZ8851SNL] Final TX memory available: %d bytes\r\n", available_final);
-    printf("[KSZ8851SNL] Expected: ~6000 bytes, Actual: %d bytes\r\n", available_final);
-    if (available_final > 0) {
-        printf("[KSZ8851SNL] ✅ SUCCESS: TX memory pool is functional\r\n");
-        
-        // Now that memory is available, enable TX
-        printf("[KSZ8851SNL] Enabling TX after successful memory initialization\r\n");
-        ksz8851_reg_write(REG_TX_CTRL, tx_ctrl | TX_CTRL_ENABLE);
-    } else {
-        printf("[KSZ8851SNL] ❌ FAILURE: TX memory pool is NOT functional\r\n");
-        printf("[KSZ8851SNL] Enabling TX anyway (may not work properly)\r\n");
-        ksz8851_reg_write(REG_TX_CTRL, tx_ctrl | TX_CTRL_ENABLE);
-    }
-    printf("[KSZ8851SNL] ================================================\r\n");
-    
-    // Configure KSZ8851SNL chip interrupts
-    printf("[KSZ8851SNL] Configuring chip interrupts\r\n");
-    
-    // Clear any pending interrupt status
-    ksz8851_reg_write(REG_INT_STATUS, 0xFFFF);
-    
-    // Enable RX, TX, and PHY link interrupts
-    uint16_t interrupt_mask = INT_RX | INT_TX | INT_PHY;
-    ksz8851_reg_write(REG_INT_MASK, interrupt_mask);
-    
-    printf("[KSZ8851SNL] Interrupts enabled: RX, TX, PHY (mask: 0x%04X)\r\n", interrupt_mask);
-    
+
     context->is_initialized = true;
-    printf("[KSZ8851SNL] KSZ8851SNL initialization completed successfully\r\n");
-    
+    printf("[KSZ8851SNL] Init complete\r\n");
+
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
@@ -1305,124 +1198,86 @@ static void ksz8851_fifo_read_data(uint8_t *data, uint16_t length)
 }
 
 // Packet transmission implementation following Microchip reference
-static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length)
+static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(
+    const void *hw_context,
+    const uint8_t *data,
+    uint16_t length)
 {
     ASSERT(hw_context != NULL);
     ASSERT(data != NULL);
     ASSERT(length > 0);
-    
-    printf("[KSZ8851SNL] Send packet - length: %d\r\n", length);
-    
-    // Step 1: Check if TX memory is available
+
+    printf("[KSZ8851SNL] Send packet (Oryx style) - length: %d\r\n", length);
+
+    // Step 1: Check available TX memory
     uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
     uint16_t available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
-    
-    // Need space for frame + overhead (account for alignment and headers)
-    uint16_t required_mem = length + 8;  // Frame + control overhead
+    uint16_t required_mem = length + 8; // frame + header + alignment
+
     if (available_mem < required_mem) {
-        printf("[KSZ8851SNL] Not enough TX memory: need %d, have %d\r\n", required_mem, available_mem);
+        printf("[KSZ8851SNL] Not enough TX memory: need %d, have %d\r\n",
+               required_mem, available_mem);
         return DRV_KSZ8851SNL_STATUS_BUSY;
     }
-    
-    printf("[KSZ8851SNL] TX memory available: %d bytes (need %d)\r\n", available_mem, required_mem);
-    
-    // Step 2: Enable TXQ write access using SDA bit (CRITICAL for preventing 0x55 corruption)
-    // Based on Oryx driver analysis - this step was missing and causes memory corruption
-    printf("[KSZ8851SNL] Enabling TXQ write access (SDA bit)\r\n");
+
+    // Step 2: Enable TXQ write access
     ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_SDA);
-    
-    // Step 3: Disable interrupts during transmission setup
-    uint16_t saved_int_mask = ksz8851_reg_read(REG_INT_MASK);
-    ksz8851_reg_write(REG_INT_MASK, 0);
-    
-    // Step 3: Calculate padding for 32-bit alignment
-    uint32_t pad_bytes = (4 - (length % 4)) % 4;
-    uint32_t total_length = length + pad_bytes;  // ✅ FIXED - include padding in total
-    
-    printf("[KSZ8851SNL] Packet length: %d, padding: %lu bytes, total: %lu\r\n", 
-           length, pad_bytes, total_length);
-    
-    // Step 3.5: Validate FIFO write sequence before starting
-    if (!validate_fifo_write_sequence(total_length, length, pad_bytes)) {
-        printf("[KSZ8851SNL] FIFO write validation FAILED - aborting transmission\r\n");
-        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);  // Clean up TXQ access
-        ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
+
+    // Step 3: Begin FIFO write
+    uint8_t cmd = FIFO_WRITE;
+    drv_spi_cs_set_low();
+    if (hw_spi_transfer(&spi_4, &cmd, NULL, 1) != DRV_SPI_STATUS_OK) {
+        drv_spi_cs_set_high();
+        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    // Step 4: Begin FIFO write with Oryx pattern
-    drv_ksz8851snl_status_t status = ksz8851_fifo_write_begin(total_length);
-    if (status != DRV_KSZ8851SNL_STATUS_OK) {
-        printf("[KSZ8851SNL] FIFO write begin failed - CS already released\r\n");
-        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);  // Clean up TXQ access
-        ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
-        return status;
+
+    // Step 4: Write TX header
+    static uint8_t frame_id = 0;
+    uint16_t control_word = (1 << 15) | (frame_id++ & 0x3F);
+    uint16_t byte_count   = length;
+
+    uint8_t header[4];
+    header[0] = control_word >> 8;
+    header[1] = control_word & 0xFF;
+    header[2] = byte_count >> 8;
+    header[3] = byte_count & 0xFF;
+
+    if (hw_spi_transfer(&spi_4, header, NULL, sizeof(header)) != DRV_SPI_STATUS_OK) {
+        drv_spi_cs_set_high();
+        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
+        return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    // Step 4.5: Write proper 4-byte TX header to FIFO (CS stays LOW)
-    status = ksz8851_fifo_write_tx_header(length);
-    if (status != DRV_KSZ8851SNL_STATUS_OK) {
-        printf("[KSZ8851SNL] TX header write failed - releasing CS and performing recovery\r\n");
-        drv_spi_cs_set_high();  // CRITICAL: Must release CS on error to reset FIFO state
-        ksz8851_fifo_error_recovery_post_cs_release();  // Clean up FIFO state
-        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);  // Clean up TXQ access
-        ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
-        return status;
+
+    // Step 5: Write frame data
+    if (hw_spi_transfer(&spi_4, data, NULL, length) != DRV_SPI_STATUS_OK) {
+        drv_spi_cs_set_high();
+        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
+        return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    // Step 5: Write packet data to FIFO (CS stays LOW throughout)
-    status = ksz8851_fifo_write_data(data, length);
-    if (status != DRV_KSZ8851SNL_STATUS_OK) {
-        printf("[KSZ8851SNL] FIFO data write failed - releasing CS and performing recovery\r\n");
-        drv_spi_cs_set_high();  // CRITICAL: Must release CS on error to reset FIFO state
-        ksz8851_fifo_error_recovery_post_cs_release();  // Clean up FIFO state
-        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);  // Clean up TXQ access
-        ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
-        return status;
+
+    // Step 6: Add padding for 4-byte alignment
+    uint16_t total_written = 4 + length;
+    while (total_written % 4) {
+        uint8_t pad = 0x00;
+        if (hw_spi_transfer(&spi_4, &pad, NULL, 1) != DRV_SPI_STATUS_OK) {
+            drv_spi_cs_set_high();
+            ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
+            return DRV_KSZ8851SNL_STATUS_ERROR;
+        }
+        total_written++;
     }
-    
-    // Step 5.5: FIFO verification disabled - TX FIFO readback not reliable on KSZ8851SNL
-    printf("[KSZ8851SNL] Skipping FIFO verification - TX FIFO readback not supported reliably\r\n");
-    
-    // Step 6: Complete FIFO write with padding (this releases CS at end)
-    status = ksz8851_fifo_write_end(length);
-    if (status != DRV_KSZ8851SNL_STATUS_OK) {
-        printf("[KSZ8851SNL] FIFO write end failed - CS already released in write_end\r\n");
-        ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);  // Clean up TXQ access
-        ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
-        return status;
-    }
-    
-    // Step 7: Enqueue frame for transmission using correct command
-    printf("[KSZ8851SNL] Enqueueing frame for transmission\r\n");
+
+    // Step 7: Release CS
+    drv_spi_cs_set_high();
+
+    // Step 8: Enqueue frame
     ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
-    
-    // Step 8: Disable TXQ write access (SDA bit) after transmission setup complete
-    printf("[KSZ8851SNL] Disabling TXQ write access (SDA bit)\r\n");
+
+    // Step 9: Disable TXQ write access
     ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
-    
-    // Step 9: Restore interrupt mask
-    ksz8851_reg_write(REG_INT_MASK, saved_int_mask);
-    
-    // Step 9: Update transmission statistics
-    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
-    context->tx_packets++;
-    
-    printf("[KSZ8851SNL] Packet transmission initiated successfully\r\n");
-    
-    // Step 10: Verify TX memory decreased (optional debug check)
-    uint16_t tx_mem_after = ksz8851_reg_read(REG_TX_MEM_INFO) & TX_MEM_AVAILABLE_MASK;
-    printf("[KSZ8851SNL] TX memory after transmission: %d bytes (was %d)\r\n", 
-           tx_mem_after, available_mem);
-    
-    // Step 11: Clear sensitive buffer data to prevent reuse of corrupted data
-    // Note: This is a defensive measure - the original buffer belongs to caller
-    // We add memory barriers to ensure the transmission completed
-    __DMB();  // Ensure all memory operations are complete
-    __ISB();  // Instruction Synchronization Barrier
-    
-    printf("[KSZ8851SNL] Transmission sequence completed with memory protection\r\n");
-    
+
+    printf("[KSZ8851SNL] Packet enqueued successfully\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 

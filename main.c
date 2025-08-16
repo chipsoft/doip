@@ -233,138 +233,120 @@ static void raw_tcp_test_send_packets(void)
     
     while (1) {
         packet_count++;
-        printf("\r\n--- Raw TCP Test Packet #%lu ---\r\n", packet_count);
-        
-        // Create a raw TCP packet manually
-        // TCP SYN packet structure for connection to 192.168.100.100:13400
-        uint8_t raw_tcp_packet[60]; // Standard TCP packet size
-        uint16_t packet_length = 0;
-        
-        // Ethernet header (14 bytes)
-        uint8_t *eth_ptr = raw_tcp_packet;
-        // Destination MAC (broadcast for testing)
-        eth_ptr[0] = 0xFF; eth_ptr[1] = 0xFF; eth_ptr[2] = 0xFF;
-        eth_ptr[3] = 0xFF; eth_ptr[4] = 0xFF; eth_ptr[5] = 0xFF;
-        // Source MAC (our device - use the configured MAC address)
-        eth_ptr[6] = 0x00; eth_ptr[7] = 0x00; eth_ptr[8] = 0x00;
-        eth_ptr[9] = 0x00; eth_ptr[10] = 0x20; eth_ptr[11] = 0x76;
-        // EtherType (IPv4)
-        eth_ptr[12] = 0x08; eth_ptr[13] = 0x00;
-        packet_length += 14;
-        
-        // IP header (20 bytes)
-        uint8_t *ip_ptr = raw_tcp_packet + 14;
-        // IP version and header length
-        ip_ptr[0] = 0x45; // IPv4, header length 5 words
-        // Type of Service
-        ip_ptr[1] = 0x00;
-        // Total length (will be filled)
-        ip_ptr[2] = 0x00; ip_ptr[3] = 0x00;
-        // Identification
-        ip_ptr[4] = 0x00; ip_ptr[5] = 0x01;
-        // Flags and fragment offset
-        ip_ptr[6] = 0x40; ip_ptr[7] = 0x00; // Don't fragment
-        // Time to live
-        ip_ptr[8] = 0x40; // 64 hops
-        // Protocol (TCP)
-        ip_ptr[9] = 0x06;
-        // Header checksum (will be filled)
-        ip_ptr[10] = 0x00; ip_ptr[11] = 0x00;
-        // Source IP (our device: 192.168.100.2)
-        ip_ptr[12] = 192; ip_ptr[13] = 168; ip_ptr[14] = 100; ip_ptr[15] = 2;
-        // Destination IP (target: 192.168.100.100)
-        ip_ptr[16] = 192; ip_ptr[17] = 168; ip_ptr[18] = 100; ip_ptr[19] = 100;
-        packet_length += 20;
-        
-        // TCP header (20 bytes)
-        uint8_t *tcp_ptr = raw_tcp_packet + 34;
-        // Source port (random high port)
-        tcp_ptr[0] = 0x13; tcp_ptr[1] = 0x89; // 5001
-        // Destination port (DOIP: 13400)
-        tcp_ptr[2] = 0x34; tcp_ptr[3] = 0x58; // 13400
-        // Sequence number
-        tcp_ptr[4] = 0x00; tcp_ptr[5] = 0x00; tcp_ptr[6] = 0x00; tcp_ptr[7] = 0x01;
-        // Acknowledgment number
-        tcp_ptr[8] = 0x00; tcp_ptr[9] = 0x00; tcp_ptr[10] = 0x00; tcp_ptr[11] = 0x00;
-        // Data offset and flags
-        tcp_ptr[12] = 0x50; // 5 words, no flags
-        tcp_ptr[13] = 0x02; // SYN flag
-        // Window size
-        tcp_ptr[14] = 0x20; tcp_ptr[15] = 0x00; // 8192
-        // Checksum (will be filled)
-        tcp_ptr[16] = 0x00; tcp_ptr[17] = 0x00;
-        // Urgent pointer
-        tcp_ptr[18] = 0x00; tcp_ptr[19] = 0x00;
-        packet_length += 20;
-        
-        // TCP options (6 bytes - MSS)
-        uint8_t *opt_ptr = raw_tcp_packet + 54;
-        opt_ptr[0] = 0x02; // Option kind: MSS
-        opt_ptr[1] = 0x04; // Option length: 4 bytes
-        opt_ptr[2] = 0x05; opt_ptr[3] = 0xB4; // MSS: 1460
-        opt_ptr[4] = 0x01; // Option kind: NOP
-        opt_ptr[5] = 0x01; // Option kind: NOP
-        packet_length += 6;
-        
-        // Update IP total length
-        uint16_t ip_total_len = packet_length - 14; // Exclude Ethernet header
-        ip_ptr[2] = (ip_total_len >> 8) & 0xFF;
-        ip_ptr[3] = ip_total_len & 0xFF;
-        
-        // Calculate IP checksum
-        uint32_t ip_checksum = 0;
-        for (int i = 0; i < 20; i += 2) {
-            ip_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
-        }
-        while (ip_checksum >> 16) {
-            ip_checksum = (ip_checksum & 0xFFFF) + (ip_checksum >> 16);
-        }
-        ip_checksum = ~ip_checksum;
-        ip_ptr[10] = (ip_checksum >> 8) & 0xFF;
-        ip_ptr[11] = ip_checksum & 0xFF;
-        
-        // Calculate TCP checksum (pseudo-header + TCP header + data)
-        uint32_t tcp_checksum = 0;
-        
-        // Pseudo-header
-        for (int i = 12; i < 20; i += 2) { // Source IP
-            tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
-        }
-        for (int i = 16; i < 20; i += 2) { // Destination IP
-            tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
-        }
-        tcp_checksum += 0x0006; // Protocol (TCP)
-        tcp_checksum += (ip_total_len - 20); // TCP length
-        
-        // TCP header and data
-        for (int i = 0; i < (packet_length - 34); i += 2) {
-            if (i + 1 < (packet_length - 34)) {
-                tcp_checksum += (tcp_ptr[i] << 8) | tcp_ptr[i + 1];
-            } else {
-                tcp_checksum += (tcp_ptr[i] << 8);
-            }
-        }
-        
-        while (tcp_checksum >> 16) {
-            tcp_checksum = (tcp_checksum & 0xFFFF) + (tcp_checksum >> 16);
-        }
-        tcp_checksum = ~tcp_checksum;
-        tcp_ptr[16] = (tcp_checksum >> 8) & 0xFF;
-        tcp_ptr[17] = tcp_checksum & 0xFF;
-        
-        printf("🔍 Raw TCP Test: Packet constructed (%lu bytes)\r\n", packet_length);
-        printf("🔍 Raw TCP Test: Source: 192.168.100.2:5001\r\n");
-        printf("🔍 Raw TCP Test: Destination: 192.168.100.100:13400\r\n");
-        printf("🔍 Raw TCP Test: TCP SYN flag set\r\n");
-        
-        // Send the raw packet through KSZ8851SNL
-        printf("🔍 Raw TCP Test: Sending raw packet through KSZ8851SNL...\r\n");
-        
-        // Debug: Print first few bytes of the packet
-        printf("🔍 Raw TCP Test: Packet starts with: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-               raw_tcp_packet[0], raw_tcp_packet[1], raw_tcp_packet[2], raw_tcp_packet[3],
-               raw_tcp_packet[4], raw_tcp_packet[5], raw_tcp_packet[6], raw_tcp_packet[7]);
-        
+		printf("\r\n--- Raw TCP Test Packet #%lu ---\r\n", packet_count);
+
+		// Create a raw TCP packet manually
+		// TCP SYN packet structure for connection to 192.168.100.100:13400
+		uint8_t raw_tcp_packet[64]; // Enough for Ethernet + IP + TCP + options
+		uint16_t packet_length = 0;
+		
+		// ------------------- Ethernet header (14 bytes) -------------------
+		uint8_t *eth_ptr = raw_tcp_packet;
+		// Destination MAC (broadcast for testing)
+		eth_ptr[0] = 0xFF; eth_ptr[1] = 0xFF; eth_ptr[2] = 0xFF;
+		eth_ptr[3] = 0xFF; eth_ptr[4] = 0xFF; eth_ptr[5] = 0xFF;
+		// Source MAC (our device - example)
+		eth_ptr[6] = 0x00; eth_ptr[7] = 0x00; eth_ptr[8] = 0x00;
+		eth_ptr[9] = 0x00; eth_ptr[10] = 0x20; eth_ptr[11] = 0x76;
+		// EtherType (IPv4)
+		eth_ptr[12] = 0x08; eth_ptr[13] = 0x00;
+		packet_length += 14;
+		
+		// ------------------- IP header (20 bytes) -------------------
+		uint8_t *ip_ptr = raw_tcp_packet + 14;
+		ip_ptr[0] = 0x45; // Version=4, IHL=5
+		ip_ptr[1] = 0x00; // TOS
+		ip_ptr[2] = 0x00; ip_ptr[3] = 0x00; // Total length (to be filled)
+		ip_ptr[4] = 0x00; ip_ptr[5] = 0x01; // Identification
+		ip_ptr[6] = 0x40; ip_ptr[7] = 0x00; // Flags + fragment offset (DF)
+		ip_ptr[8] = 0x40; // TTL = 64
+		ip_ptr[9] = 0x06; // Protocol = TCP
+		ip_ptr[10] = 0x00; ip_ptr[11] = 0x00; // Header checksum (to be filled)
+		ip_ptr[12] = 192; ip_ptr[13] = 168; ip_ptr[14] = 100; ip_ptr[15] = 2;   // Src IP
+		ip_ptr[16] = 192; ip_ptr[17] = 168; ip_ptr[18] = 100; ip_ptr[19] = 100; // Dst IP
+		packet_length += 20;
+		
+		// ------------------- TCP header (20 bytes + 8 option bytes) -------------------
+		uint8_t *tcp_ptr = raw_tcp_packet + 34;
+		tcp_ptr[0] = 0x13; tcp_ptr[1] = 0x89; // Src port = 5001
+		tcp_ptr[2] = 0x34; tcp_ptr[3] = 0x58; // Dst port = 13400
+		tcp_ptr[4] = 0x00; tcp_ptr[5] = 0x00; tcp_ptr[6] = 0x00; tcp_ptr[7] = 0x01; // Seq
+		tcp_ptr[8] = 0x00; tcp_ptr[9] = 0x00; tcp_ptr[10] = 0x00; tcp_ptr[11] = 0x00; // Ack
+		tcp_ptr[12] = 0x70; // Data offset = 7 (28 bytes), reserved=0
+		tcp_ptr[13] = 0x02; // Flags = SYN
+		tcp_ptr[14] = 0x20; tcp_ptr[15] = 0x00; // Window size = 8192
+		tcp_ptr[16] = 0x00; tcp_ptr[17] = 0x00; // Checksum (to be filled)
+		tcp_ptr[18] = 0x00; tcp_ptr[19] = 0x00; // Urgent pointer
+		packet_length += 20;
+		
+		// ------------------- TCP options (8 bytes, aligned) -------------------
+		uint8_t *opt_ptr = raw_tcp_packet + 54;
+		opt_ptr[0] = 0x02; // MSS option
+		opt_ptr[1] = 0x04; // Length = 4
+		opt_ptr[2] = 0x05; opt_ptr[3] = 0xB4; // MSS = 1460
+		opt_ptr[4] = 0x01; // NOP
+		opt_ptr[5] = 0x01; // NOP
+		opt_ptr[6] = 0x01; // NOP (padding)
+		opt_ptr[7] = 0x01; // NOP (padding)
+		packet_length += 8;
+		
+		// ------------------- Update IP total length -------------------
+		uint16_t ip_total_len = packet_length - 14; // Excluding Ethernet
+		ip_ptr[2] = (ip_total_len >> 8) & 0xFF;
+		ip_ptr[3] = ip_total_len & 0xFF;
+		
+		// ------------------- IP checksum -------------------
+		uint32_t ip_checksum = 0;
+		for (int i = 0; i < 20; i += 2) {
+			ip_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1];
+		}
+		while (ip_checksum >> 16) {
+			ip_checksum = (ip_checksum & 0xFFFF) + (ip_checksum >> 16);
+		}
+		ip_checksum = ~ip_checksum;
+		ip_ptr[10] = (ip_checksum >> 8) & 0xFF;
+		ip_ptr[11] = ip_checksum & 0xFF;
+		
+		// ------------------- TCP checksum (pseudo-header + TCP header) -------------------
+		uint32_t tcp_checksum = 0;
+		
+		// Pseudo-header
+		for (int i = 12; i < 20; i += 2) {
+			tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1]; // Src IP
+		}
+		for (int i = 16; i < 20; i += 2) {
+			tcp_checksum += (ip_ptr[i] << 8) | ip_ptr[i + 1]; // Dst IP
+		}
+		tcp_checksum += 0x0006;                  // Protocol (TCP)
+		tcp_checksum += (ip_total_len - 20);     // TCP length
+		
+		// TCP header + options
+		for (int i = 0; i < (packet_length - 34); i += 2) {
+			if (i + 1 < (packet_length - 34)) {
+				tcp_checksum += (tcp_ptr[i] << 8) | tcp_ptr[i + 1];
+			} else {
+				tcp_checksum += (tcp_ptr[i] << 8);
+			}
+		}
+		while (tcp_checksum >> 16) {
+			tcp_checksum = (tcp_checksum & 0xFFFF) + (tcp_checksum >> 16);
+		}
+		tcp_checksum = ~tcp_checksum;
+		tcp_ptr[16] = (tcp_checksum >> 8) & 0xFF;
+		tcp_ptr[17] = tcp_checksum & 0xFF;
+		
+		// ------------------- Debug -------------------
+		printf("🔍 Raw TCP Test: Packet constructed (%u bytes)\r\n", packet_length);
+		printf("🔍 Raw TCP Test: Source 192.168.100.2:5001 -> Destination 192.168.100.100:13400\r\n");
+		printf("🔍 Raw TCP Test: SYN flag set\r\n");
+		printf("🔍 Raw TCP Test: First bytes: ");
+		for (int i = 0; i < 16; i++) {
+			printf("%02X ", raw_tcp_packet[i]);
+		}
+		printf("\r\n");
+		
+		// At this point you can send raw_tcp_packet via KSZ8851SNL
+		
         // Use the existing KSZ8851SNL send function
         // This bypasses lwIP entirely and sends directly through the hardware
         extern drv_ksz8851snl_t ksz8851snl_0; // Reference to the driver instance
