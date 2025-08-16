@@ -248,7 +248,8 @@ main.c \
 eth_ipstack_main.c \
 user_tasks.c \
 rtt_printf.c \
-network_events.c
+network_events.c \
+minimal_packet_test.c
 
 # Simple Test Application Files (no LwIP)
 SIMPLE_APP_CFILES = \

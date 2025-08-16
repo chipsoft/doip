@@ -19,10 +19,10 @@
 // Include existing register definitions
 #include "app_libs/FreeRTOS-Plus-TCP/source/portable/NetworkInterface/ksz8851snl/ksz8851snl_reg.h"
 
-// CRITICAL MISSING DEFINITION: TXQ Access Control bit (from Oryx driver analysis)
-// This bit enables/disables TXQ write access and is ESSENTIAL to prevent 0x55 corruption
-// FIXED: Using correct bit position 3 (0x0008) from proven Oryx/TI-modbus implementation
+// CRITICAL MISSING DEFINITIONS: TXQ Access Control bits (from Oryx driver analysis)
+// These bits are ESSENTIAL to prevent 0x55 corruption and enable proper transmission
 #define RXQ_SDA                   0x0008    /* Enable TXQ write access (SDA = Start DMA Access) - bit 3 */
+#define TXQ_METFE                 0x0008    /* Manual Enqueue Transmit Frame Enable - triggers transmission */
 
 // Simple byte swap for embedded environment (no arpa/inet.h available)
 static inline uint16_t htons_local(uint16_t hostshort) {
@@ -493,7 +493,16 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     }
     printf("[KSZ8851SNL] Chip detected (ID=0x%04X)\r\n", id_info.chip_id);
 
-    // Step 4: Configure QMU (TX/RX engines)
+    // Step 4: Set MAC address
+    printf("[KSZ8851SNL] Setting MAC address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+           config->mac_addr[0], config->mac_addr[1], config->mac_addr[2],
+           config->mac_addr[3], config->mac_addr[4], config->mac_addr[5]);
+    
+    ksz8851_reg_write(REG_MAC_ADDR_0, (config->mac_addr[1] << 8) | config->mac_addr[0]);
+    ksz8851_reg_write(REG_MAC_ADDR_2, (config->mac_addr[3] << 8) | config->mac_addr[2]);
+    ksz8851_reg_write(REG_MAC_ADDR_4, (config->mac_addr[5] << 8) | config->mac_addr[4]);
+
+    // Step 5: Configure QMU (TX/RX engines)
     uint16_t tx_ctrl = TX_CTRL_ENABLE |
                        TX_CTRL_FLOW_ENABLE |
                        TX_CTRL_PAD_ENABLE |
@@ -516,11 +525,11 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl);
     ksz8851_reg_write(REG_RX_ADDR_PTR, ADDR_PTR_AUTO_INC);
 
-    // Step 5: Enable interrupts (RX, TX, PHY)
+    // Step 6: Enable interrupts (RX, TX, PHY)
     ksz8851_reg_write(REG_INT_STATUS, 0xFFFF); // Clear pending
     ksz8851_reg_write(REG_INT_MASK, INT_RX | INT_TX | INT_PHY);
 
-    // Step 6: Init IRQ system (FreeRTOS semaphore + external IRQ)
+    // Step 7: Init IRQ system (FreeRTOS semaphore + external IRQ)
     if (ksz8851snl_irq_init() != DRV_KSZ8851SNL_STATUS_OK) {
         printf("[KSZ8851SNL] IRQ init failed\r\n");
         return DRV_KSZ8851SNL_STATUS_ERROR;
@@ -575,10 +584,30 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_enable_impl(const void *hw_context
     
     printf("[KSZ8851SNL] Enabling KSZ8851SNL controller\r\n");
     
-    // TODO: Enable TX/RX operations
+    // Enable TX operations
+    uint16_t tx_ctrl = ksz8851_reg_read(REG_TX_CTRL);
+    if (!(tx_ctrl & TX_CTRL_ENABLE)) {
+        printf("[KSZ8851SNL] TX was disabled, enabling now\r\n");
+        ksz8851_reg_setbits(REG_TX_CTRL, TX_CTRL_ENABLE);
+        tx_ctrl = ksz8851_reg_read(REG_TX_CTRL);
+        printf("[KSZ8851SNL] TX_CTRL after enable: 0x%04X\r\n", tx_ctrl);
+    } else {
+        printf("[KSZ8851SNL] TX already enabled: 0x%04X\r\n", tx_ctrl);
+    }
+    
+    // Enable RX operations  
+    uint16_t rx_ctrl = ksz8851_reg_read(REG_RX_CTRL1);
+    if (!(rx_ctrl & RX_CTRL_ENABLE)) {
+        printf("[KSZ8851SNL] RX was disabled, enabling now\r\n");
+        ksz8851_reg_setbits(REG_RX_CTRL1, RX_CTRL_ENABLE);
+        rx_ctrl = ksz8851_reg_read(REG_RX_CTRL1);
+        printf("[KSZ8851SNL] RX_CTRL after enable: 0x%04X\r\n", rx_ctrl);
+    } else {
+        printf("[KSZ8851SNL] RX already enabled: 0x%04X\r\n", rx_ctrl);
+    }
     
     context->is_enabled = true;
-    printf("[KSZ8851SNL] KSZ8851SNL enabled successfully\r\n");
+    printf("[KSZ8851SNL] KSZ8851SNL enabled successfully - TX/RX operational\r\n");
     
     return DRV_KSZ8851SNL_STATUS_OK;
 }
@@ -1207,32 +1236,68 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(
     ASSERT(data != NULL);
     ASSERT(length > 0);
 
+    printf("[KSZ8851SNL] *** DETAILED SEND DEBUG START ***\r\n");
     printf("[KSZ8851SNL] Send packet (Oryx style) - length: %d\r\n", length);
 
-    // Step 1: Check available TX memory
+    // Step 1: Check driver state
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    printf("[KSZ8851SNL] Driver state - initialized: %s, enabled: %s\r\n",
+           context->is_initialized ? "YES" : "NO",
+           context->is_enabled ? "YES" : "NO");
+
+    if (!context->is_initialized || !context->is_enabled) {
+        printf("[KSZ8851SNL] ❌ Driver not ready for transmission!\r\n");
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+
+    // Step 2: Check available TX memory with detailed status
     uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
     uint16_t available_mem = tx_mem_info & TX_MEM_AVAILABLE_MASK;
     uint16_t required_mem = length + 8; // frame + header + alignment
 
+    printf("[KSZ8851SNL] TX Memory Status:\r\n");
+    printf("[KSZ8851SNL]   - Raw TX_MEM_INFO: 0x%04X\r\n", tx_mem_info);
+    printf("[KSZ8851SNL]   - Available memory: %d bytes\r\n", available_mem);
+    printf("[KSZ8851SNL]   - Required memory: %d bytes\r\n", required_mem);
+
     if (available_mem < required_mem) {
-        printf("[KSZ8851SNL] Not enough TX memory: need %d, have %d\r\n",
+        printf("[KSZ8851SNL] ❌ Not enough TX memory: need %d, have %d\r\n",
                required_mem, available_mem);
         return DRV_KSZ8851SNL_STATUS_BUSY;
     }
 
-    // Step 2: Enable TXQ write access
-    ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_SDA);
+    // Step 3: Check TX control register status
+    uint16_t tx_ctrl_status = ksz8851_reg_read(REG_TX_CTRL);
+    printf("[KSZ8851SNL] TX Control Register: 0x%04X (TX_ENABLE: %s)\r\n",
+           tx_ctrl_status, (tx_ctrl_status & TX_CTRL_ENABLE) ? "YES" : "NO");
 
-    // Step 3: Begin FIFO write
+    if (!(tx_ctrl_status & TX_CTRL_ENABLE)) {
+        printf("[KSZ8851SNL] ❌ TX is disabled in control register!\r\n");
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+
+    // Step 4: Enable TXQ write access
+    printf("[KSZ8851SNL] Step 4: Enabling TXQ write access (RXQ_SDA)\r\n");
+    uint16_t rxq_before = ksz8851_reg_read(REG_RXQ_CMD);
+    ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_SDA);
+    uint16_t rxq_after = ksz8851_reg_read(REG_RXQ_CMD);
+    printf("[KSZ8851SNL]   RXQ_CMD: 0x%04X -> 0x%04X\r\n", rxq_before, rxq_after);
+
+    // Step 5: Begin FIFO write
+    printf("[KSZ8851SNL] Step 5: Beginning FIFO write sequence\r\n");
     uint8_t cmd = FIFO_WRITE;
+    printf("[KSZ8851SNL]   Sending FIFO_WRITE command: 0x%02X\r\n", cmd);
     drv_spi_cs_set_low();
     if (hw_spi_transfer(&spi_4, &cmd, NULL, 1) != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] ❌ FIFO write command failed!\r\n");
         drv_spi_cs_set_high();
         ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
+    printf("[KSZ8851SNL]   FIFO write command sent successfully\r\n");
 
-    // Step 4: Write TX header
+    // Step 6: Write TX header
+    printf("[KSZ8851SNL] Step 6: Writing TX header\r\n");
     static uint8_t frame_id = 0;
     uint16_t control_word = (1 << 15) | (frame_id++ & 0x3F);
     uint16_t byte_count   = length;
@@ -1243,41 +1308,68 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(
     header[2] = byte_count >> 8;
     header[3] = byte_count & 0xFF;
 
+    printf("[KSZ8851SNL]   Header: [0x%02X 0x%02X 0x%02X 0x%02X] (ctrl=0x%04X, len=%d)\r\n",
+           header[0], header[1], header[2], header[3], control_word, byte_count);
+
     if (hw_spi_transfer(&spi_4, header, NULL, sizeof(header)) != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] ❌ TX header write failed!\r\n");
         drv_spi_cs_set_high();
         ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
+    printf("[KSZ8851SNL]   TX header written successfully\r\n");
 
-    // Step 5: Write frame data
+    // Step 7: Write frame data
+    printf("[KSZ8851SNL] Step 7: Writing frame data (%d bytes)\r\n", length);
     if (hw_spi_transfer(&spi_4, data, NULL, length) != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] ❌ Frame data write failed!\r\n");
         drv_spi_cs_set_high();
         ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
+    printf("[KSZ8851SNL]   Frame data written successfully\r\n");
 
-    // Step 6: Add padding for 4-byte alignment
+    // Step 8: Add padding for 4-byte alignment
     uint16_t total_written = 4 + length;
-    while (total_written % 4) {
+    uint16_t padding_needed = (4 - (total_written % 4)) % 4;
+    printf("[KSZ8851SNL] Step 8: Adding padding (%d bytes) for alignment\r\n", padding_needed);
+    
+    for (uint16_t i = 0; i < padding_needed; i++) {
         uint8_t pad = 0x00;
         if (hw_spi_transfer(&spi_4, &pad, NULL, 1) != DRV_SPI_STATUS_OK) {
+            printf("[KSZ8851SNL] ❌ Padding write failed!\r\n");
             drv_spi_cs_set_high();
             ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
             return DRV_KSZ8851SNL_STATUS_ERROR;
         }
-        total_written++;
     }
+    total_written += padding_needed;
+    printf("[KSZ8851SNL]   Total written: %d bytes (aligned)\r\n", total_written);
 
-    // Step 7: Release CS
+    // Step 9: Release CS
+    printf("[KSZ8851SNL] Step 9: Releasing CS (ending FIFO write)\r\n");
     drv_spi_cs_set_high();
 
-    // Step 8: Enqueue frame
-    ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
-
-    // Step 9: Disable TXQ write access
+    // Step 10: Disable TXQ write access (end FIFO write phase)
+    printf("[KSZ8851SNL] Step 10: Disabling TXQ write access\r\n");
     ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
+    uint16_t rxq_final = ksz8851_reg_read(REG_RXQ_CMD);
+    printf("[KSZ8851SNL]   RXQ_CMD after disable: 0x%04X\r\n", rxq_final);
 
-    printf("[KSZ8851SNL] Packet enqueued successfully\r\n");
+    // Step 11: Trigger transmission using ENQUEUE (Enable enqueue tx frames one frame at a time)
+    printf("[KSZ8851SNL] Step 11: Triggering transmission (TXQ_ENQUEUE)\r\n");
+    uint16_t txq_before = ksz8851_reg_read(REG_TXQ_CMD);
+    ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
+    uint16_t txq_after = ksz8851_reg_read(REG_TXQ_CMD);
+    printf("[KSZ8851SNL]   TXQ_CMD: 0x%04X -> 0x%04X (ENQUEUE bit set)\r\n", txq_before, txq_after);
+
+    // Step 12: Check final TX memory status
+    uint16_t final_tx_mem = ksz8851_reg_read(REG_TX_MEM_INFO);
+    uint16_t final_available = final_tx_mem & TX_MEM_AVAILABLE_MASK;
+    printf("[KSZ8851SNL] Final TX memory: %d bytes (was %d bytes)\r\n", final_available, available_mem);
+
+    printf("[KSZ8851SNL] *** PACKET TRANSMISSION SEQUENCE COMPLETED ***\r\n");
+    printf("[KSZ8851SNL] ✅ Check Wireshark now - packet should appear!\r\n");
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
