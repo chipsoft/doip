@@ -216,9 +216,9 @@ void assert_triggered(const char *file, uint32_t line);
 #define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP    0
 #endif
 
-/* Set configENABLE_HEAP_PROTECTOR to 0 for compatibility */
+/* Set configENABLE_HEAP_PROTECTOR to 1 for heap corruption detection */
 #ifndef configENABLE_HEAP_PROTECTOR
-#define configENABLE_HEAP_PROTECTOR                  0
+#define configENABLE_HEAP_PROTECTOR                  1
 #endif
 
 /******************************************************************************/
@@ -274,9 +274,9 @@ void assert_triggered(const char *file, uint32_t line);
 #define configUSE_SB_COMPLETED_CALLBACK       0
 #endif
 
-/* Set configCHECK_FOR_STACK_OVERFLOW to 0 - preserve original setting */
+/* Set configCHECK_FOR_STACK_OVERFLOW to 2 - enable comprehensive stack overflow detection */
 #ifndef configCHECK_FOR_STACK_OVERFLOW
-#define configCHECK_FOR_STACK_OVERFLOW        0
+#define configCHECK_FOR_STACK_OVERFLOW        2
 #endif
 
 /******************************************************************************/

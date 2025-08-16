@@ -122,7 +122,7 @@ DIR_INCLUDES = \
 FREERTOS_CFILES = \
 $(FREERTOS_DIR)/queue.c \
 $(FREERTOS_DIR)/list.c \
-$(FREERTOS_DIR)/portable/MemMang/heap_2.c \
+$(FREERTOS_DIR)/portable/MemMang/heap_4.c \
 $(FREERTOS_DIR)/croutine.c \
 $(FREERTOS_DIR)/event_groups.c \
 $(FREERTOS_DIR)/timers.c \

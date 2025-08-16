@@ -36,6 +36,34 @@ static void led_blink_task(void *pvParameters)
 }
 
 /**
+ * Stack overflow hook function for FreeRTOS
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    printf("\r\n*** CRITICAL ERROR: Stack overflow detected! ***\r\n");
+    printf("Task: %s (handle: %p)\r\n", pcTaskName ? pcTaskName : "Unknown", (void*)xTask);
+    printf("System halted for safety.\r\n");
+    
+    /* Disable interrupts and halt system */
+    taskDISABLE_INTERRUPTS();
+    for (;;);
+}
+
+/**
+ * Heap protection canary generation for FreeRTOS heap_4
+ */
+uint32_t vApplicationGetRandomHeapCanary(void)
+{
+    static uint32_t seed = 0x55AA55AA;
+    
+    /* Linear congruential generator for simple randomness */
+    seed = (seed * 1664525UL + 1013904223UL);
+    
+    /* XOR with system tick for additional entropy */
+    return seed ^ xTaskGetTickCount();
+}
+
+/**
  * Main application entry point
  */
 int main(void)

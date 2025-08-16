@@ -45,6 +45,7 @@
 #include "app_libs/asf4/hri/hri_gmac_e54.h"
 #include "ethif_mac.h"
 #include "driver_doip.h"
+#include "bsp_ksz8851snl.h"
 #include <string.h>
 
 // External reference to DoIP driver instance
@@ -1408,112 +1409,69 @@ static void doip_client_task(void *pvParameters)
 		printf("🔍 [DEBUG] Current DOIP state: %d\r\n", current_state);
 		
 		if (current_state == DRV_DOIP_STATE_IDLE) {
-			printf("🔍 [DEBUG] In IDLE state, bypassing ECU discovery for testing...\r\n");
+			printf("✅ [DEBUG] DOIP ready - now testing simple packet transmission\r\n");
 			
-			// BYPASS DISCOVERY: Since there are no real ECUs, create a mock ECU for testing
-			printf("🔍 [DEBUG] Creating mock ECU for TCP testing...\r\n");
+			// Simple packet transmission test (no mock ECU needed)
+			printf("=== Simple Ethernet Packet Test ===\r\n");
 			
-			// Create a mock ECU with a known IP address for testing
-			drv_doip_vehicle_info_t mock_ecu;
-			memset(&mock_ecu, 0, sizeof(mock_ecu));
+			// Create a simple UDP broadcast packet for testing
+			uint8_t test_packet[64];
+			memset(test_packet, 0, sizeof(test_packet));
 			
-			// Use a common test IP address (192.168.100.100)
-			mock_ecu.ip_address = 0xC0A86464; // 192.168.100.100 in network byte order
-			mock_ecu.tcp_port = 13400; // Standard DOIP TCP port
-			mock_ecu.logical_address = 0x1001; // Test logical address
-			strcpy(mock_ecu.vin, "TEST12345678901234"); // Test VIN
+			// Ethernet header (broadcast)
+			memset(&test_packet[0], 0xFF, 6);    // Destination MAC: broadcast
+			memset(&test_packet[6], 0x00, 6);    // Source MAC: all zeros for now
+			test_packet[6] = 0x00; test_packet[7] = 0x00; test_packet[8] = 0x00;
+			test_packet[9] = 0x00; test_packet[10] = 0x20; test_packet[11] = 0x76;  // Simple MAC
+			test_packet[12] = 0x08; test_packet[13] = 0x00; // EtherType: IPv4
 			
-			printf("🔍 [DEBUG] Mock ECU created:\r\n");
-			printf("   IP: 192.168.100.100\r\n");
-			printf("   Port: 13400\r\n");
-			printf("   Logical Address: 0x1001\r\n");
-			printf("   VIN: %s\r\n", mock_ecu.vin);
+			// Simple IPv4 header
+			test_packet[14] = 0x45;   // Version + IHL
+			test_packet[15] = 0x00;   // DSCP + ECN
+			test_packet[16] = 0x00; test_packet[17] = 0x32; // Total Length: 50 bytes
+			test_packet[18] = 0x00; test_packet[19] = 0x01; // Identification
+			test_packet[20] = 0x00; test_packet[21] = 0x00; // Flags + Fragment Offset
+			test_packet[22] = 0x40;   // TTL
+			test_packet[23] = 0x11;   // Protocol: UDP
+			test_packet[24] = 0x00; test_packet[25] = 0x00; // Header Checksum (calc later)
+			test_packet[26] = 192; test_packet[27] = 168; test_packet[28] = 100; test_packet[29] = 2; // Source IP
+			test_packet[30] = 255; test_packet[31] = 255; test_packet[32] = 255; test_packet[33] = 255; // Dest IP (broadcast)
 			
-			// Store in discovery cache for compatibility
-			discovered_ecus.count = 1;
-			discovered_ecus.vehicles[0] = mock_ecu;
+			// Simple UDP header
+			test_packet[34] = 0x13; test_packet[35] = 0x89; // Source port: 5001
+			test_packet[36] = 0x13; test_packet[37] = 0x89; // Dest port: 5001
+			test_packet[38] = 0x00; test_packet[39] = 0x12; // Length: 18 bytes (8 + 10)
+			test_packet[40] = 0x00; test_packet[41] = 0x00; // Checksum
 			
-			printf("🔍 [DEBUG] Mock ECU stored in discovery cache\r\n");
+			// UDP payload: "TEST PACKET"
+			const char* payload = "TEST PKT";
+			memcpy(&test_packet[42], payload, 8);
 			
-			// Now proceed with TCP connection testing
-			printf("🔍 [DEBUG] Proceeding with TCP connection testing...\r\n");
+			uint16_t packet_length = 50; // Total: 14 (eth) + 20 (ip) + 8 (udp) + 8 (data)
 			
-			// Test TCP connection to mock ECU
-			printf("\r\n=== Testing TCP Connection to Mock ECU ===\r\n");
-			printf("🔍 [DEBUG] Attempting to connect to mock ECU...\r\n");
+			printf("📤 Sending simple test packet (%d bytes)...\r\n", packet_length);
 			
-			drv_doip_status_t connect_status = hw_doip_connect_to_vehicle(doip_handle, &mock_ecu);
+			// Send through KSZ8851SNL directly
+			extern drv_ksz8851snl_t ksz8851snl_0;
+			drv_ksz8851snl_status_t result = hw_ksz8851snl_send_packet(&ksz8851snl_0, test_packet, packet_length);
 			
-			if (connect_status == DRV_DOIP_STATUS_OK) {
-				printf("✅ [DEBUG] Successfully connected to mock ECU!\r\n");
-				printf("🔍 [DEBUG] TCP connection established - this means the TCP stack is working!\r\n");
-				
-				// Test basic diagnostic request
-				printf("🔍 [DEBUG] Testing diagnostic request...\r\n");
-				uint8_t response_buffer[1024];
-				size_t actual_len;
-				
-				drv_doip_status_t diag_status = hw_doip_send_diagnostic_request(
-					doip_handle, 
-					0x22, // Read Data by Identifier
-					0xF190, // VIN
-					NULL, // No additional payload
-					0,
-					response_buffer,
-					sizeof(response_buffer),
-					&actual_len
-				);
-				
-				if (diag_status == DRV_DOIP_STATUS_OK) {
-					printf("✅ [DEBUG] Diagnostic request sent successfully!\r\n");
-					printf("🔍 [DEBUG] Response received: %zu bytes\r\n", actual_len);
-					
-					// Display response data
-					if (actual_len > 0) {
-						printf("🔍 [DEBUG] Response data: ");
-						for (size_t i = 0; i < actual_len && i < 32; i++) {
-							printf("%02X ", response_buffer[i]);
-						}
-						if (actual_len > 32) printf("...");
-						printf("\r\n");
-					}
-				} else {
-					printf("❌ [DEBUG] Diagnostic request failed: %d\r\n", diag_status);
-				}
-				
-				// Disconnect
-				printf("🔍 [DEBUG] Disconnecting from mock ECU...\r\n");
-				hw_doip_disconnect(doip_handle);
-				
+			if (result == DRV_KSZ8851SNL_STATUS_OK) {
+				printf("✅ Test packet sent successfully!\r\n");
+				printf("🔍 Check Wireshark for UDP broadcast packet from 192.168.100.2\r\n");
 			} else {
-				printf("❌ [DEBUG] Failed to connect to mock ECU: %d\r\n", connect_status);
-				printf("🔍 [DEBUG] This indicates a TCP connection issue\r\n");
-				
-				// Analyze the failure
-				switch (connect_status) {
-					case DRV_DOIP_STATUS_ERROR:
-						printf("🔍 [DEBUG] General connection error - check TCP stack\r\n");
-						break;
-					case DRV_DOIP_STATUS_TIMEOUT:
-						printf("🔍 [DEBUG] Connection timeout - check network configuration\r\n");
-						break;
-					case DRV_DOIP_STATUS_NO_VEHICLE:
-						printf("🔍 [DEBUG] No vehicle error - unexpected in this context\r\n");
-						break;
-					default:
-						printf("🔍 [DEBUG] Unknown error code: %d\r\n", connect_status);
-						break;
-				}
+				printf("❌ Test packet failed: %d\r\n", result);
 			}
 			
-			// Wait before next test cycle
-			printf("🔍 [DEBUG] Waiting 30 seconds before next test cycle...\r\n");
-			vTaskDelay(pdMS_TO_TICKS(30000));
+			printf("✅ Simple packet test completed\r\n");
+			printf("🔍 Check Wireshark to see if packets appear correctly\r\n");
+			
+			// Break out of the while loop - test completed
+			break;
 			
 		} else {
-			// If in connected state, perform periodic monitoring
-			printf("🔍 [DEBUG] In connected state (%d), performing periodic monitoring\r\n", current_state);
-			vTaskDelay(pdMS_TO_TICKS(5000));
+			// Wait a bit and try again
+			printf("🔍 [DEBUG] DOIP not ready (state: %d), waiting...\r\n", current_state);
+			vTaskDelay(pdMS_TO_TICKS(1000));
 		}
 	}
 }
