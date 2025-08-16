@@ -16,6 +16,9 @@
 #include <peripheral_clk_config.h>
 #include <string.h>
 
+// CMSIS includes for NVIC interrupt priority configuration
+#include "sam.h"  // Includes CMSIS core and device headers
+
 // Include existing register definitions
 #include "app_libs/FreeRTOS-Plus-TCP/source/portable/NetworkInterface/ksz8851snl/ksz8851snl_reg.h"
 
@@ -136,6 +139,12 @@ static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
         ksz8851snl_interrupt_semaphore = NULL;
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
+    
+    // Set interrupt priority (CRITICAL: Must be >= configMAX_SYSCALL_INTERRUPT_PRIORITY)
+    // configMAX_SYSCALL_INTERRUPT_PRIORITY = 4 (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+    // Using priority 5 to be safe (lower number = higher priority, but must be >= 4)
+    NVIC_SetPriority(EIC_7_IRQn, 5);
+    printf("[KSZ8851SNL] Set EIC_7_IRQn priority to 5 (safe for FreeRTOS APIs)\r\n");
     
     // Enable external interrupt
     result = ext_irq_enable(KSZ8851SNL_INT_PIN);
@@ -484,7 +493,37 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     // Step 2: Hardware reset
     drv_ksz8851snl_hardware_reset();
 
-    // Step 3: Verify chip ID
+    // Step 3: Software reset sequence (CRITICAL for proper chip state)
+    printf("[KSZ8851SNL] Performing software reset sequence\r\n");
+    
+    // Global software reset (PHY, MAC, QMU) - this clears all internal state
+    printf("[KSZ8851SNL] - Global software reset\r\n");
+    ksz8851_reg_write(REG_RESET_CTRL, GLOBAL_SOFTWARE_RESET);
+    vTaskDelay(pdMS_TO_TICKS(50)); // Wait for reset to complete
+    
+    // QMU software reset (clear TxQ, RxQ) - this ensures clean FIFO state
+    printf("[KSZ8851SNL] - QMU software reset\r\n");
+    ksz8851_reg_write(REG_RESET_CTRL, QMU_SOFTWARE_RESET);
+    vTaskDelay(pdMS_TO_TICKS(20)); // Wait for QMU reset
+    
+    // Clear reset register
+    ksz8851_reg_write(REG_RESET_CTRL, 0x0000);
+    vTaskDelay(pdMS_TO_TICKS(10)); // Final settling time
+    
+    // Verify reset was successful
+    uint16_t reset_status = ksz8851_reg_read(REG_RESET_CTRL);
+    printf("[KSZ8851SNL] Reset control register after reset: 0x%04X\r\n", reset_status);
+    
+    printf("[KSZ8851SNL] Software reset sequence completed\r\n");
+
+    // Step 3.5: Ensure chip is in normal operation mode (not power-saving)
+    printf("[KSZ8851SNL] Setting power control to normal operation mode\r\n");
+    ksz8851_reg_write(REG_POWER_CNTL, POWER_STATE_D0);
+    vTaskDelay(pdMS_TO_TICKS(10)); // Allow chip to stabilize in normal mode
+    uint16_t power_state = ksz8851_reg_read(REG_POWER_CNTL);
+    printf("[KSZ8851SNL] Power control register: 0x%04X (should be in D0 mode)\r\n", power_state);
+
+    // Step 4: Verify chip ID
     drv_ksz8851snl_id_info_t id_info;
     drv_ksz8851snl_get_chip_id_impl(hw_context, &id_info);
     if (!id_info.chip_detected) {
@@ -493,7 +532,7 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     }
     printf("[KSZ8851SNL] Chip detected (ID=0x%04X)\r\n", id_info.chip_id);
 
-    // Step 4: Set MAC address
+    // Step 5: Set MAC address
     printf("[KSZ8851SNL] Setting MAC address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
            config->mac_addr[0], config->mac_addr[1], config->mac_addr[2],
            config->mac_addr[3], config->mac_addr[4], config->mac_addr[5]);
@@ -502,7 +541,7 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     ksz8851_reg_write(REG_MAC_ADDR_2, (config->mac_addr[3] << 8) | config->mac_addr[2]);
     ksz8851_reg_write(REG_MAC_ADDR_4, (config->mac_addr[5] << 8) | config->mac_addr[4]);
 
-    // Step 5: Configure QMU (TX/RX engines)
+    // Step 6: Configure QMU (TX/RX engines)
     uint16_t tx_ctrl = TX_CTRL_ENABLE |
                        TX_CTRL_FLOW_ENABLE |
                        TX_CTRL_PAD_ENABLE |
@@ -525,11 +564,18 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl);
     ksz8851_reg_write(REG_RX_ADDR_PTR, ADDR_PTR_AUTO_INC);
 
-    // Step 6: Enable interrupts (RX, TX, PHY)
+    // Step 6.5: Configure RXQ Control Register (CRITICAL for QMU operation)
+    printf("[KSZ8851SNL] Configuring RXQ control register\r\n");
+    uint16_t rxq_ctrl = RXQ_FRAME_CNT_INT | RXQ_AUTO_DEQUEUE;
+    ksz8851_reg_write(REG_RXQ_CMD, rxq_ctrl);
+    uint16_t rxq_status = ksz8851_reg_read(REG_RXQ_CMD);
+    printf("[KSZ8851SNL] RXQ control register: 0x%04X (auto-dequeue enabled)\r\n", rxq_status);
+
+    // Step 7: Enable interrupts (RX, TX, PHY)
     ksz8851_reg_write(REG_INT_STATUS, 0xFFFF); // Clear pending
     ksz8851_reg_write(REG_INT_MASK, INT_RX | INT_TX | INT_PHY);
 
-    // Step 7: Init IRQ system (FreeRTOS semaphore + external IRQ)
+    // Step 8: Init IRQ system (FreeRTOS semaphore + external IRQ)
     if (ksz8851snl_irq_init() != DRV_KSZ8851SNL_STATUS_OK) {
         printf("[KSZ8851SNL] IRQ init failed\r\n");
         return DRV_KSZ8851SNL_STATUS_ERROR;
