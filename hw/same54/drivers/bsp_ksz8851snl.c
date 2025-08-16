@@ -537,10 +537,12 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     
     // Step 3: Flush TX queue (this should reset the memory pointers)
     printf("[KSZ8851SNL] Step 2: Flushing TX queue\r\n");
+    printf("[KSZ8851SNL] WARNING: Corrupted frames may appear during flush!\r\n");
     ksz8851_reg_write(REG_TX_CTRL, (tx_ctrl & ~TX_CTRL_ENABLE) | TX_CTRL_FLUSH_QUEUE);
     
     // Wait for flush to complete - use proper timing
     vTaskDelay(pdMS_TO_TICKS(10));
+    printf("[KSZ8851SNL] TX flush completed\r\n");
     
     // Step 4: Clear flush bit but keep TX disabled
     printf("[KSZ8851SNL] Step 3: Clearing flush bit\r\n");

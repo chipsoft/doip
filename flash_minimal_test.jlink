@@ -1,0 +1,31 @@
+#!/usr/bin/env jlink
+
+# JLink script to flash the minimal KSZ test firmware
+# Usage: JLinkExe -CommanderScript flash_minimal_test.jlink
+
+# Connect to SAME54P20A target
+si 1
+speed 4000
+device ATSAME54P20A
+
+# Connect to target
+connect
+
+# Halt the target
+halt
+
+# Erase the flash (optional - for clean flash)
+erase
+
+# Flash the minimal test firmware
+loadfile build/AtmelStart.bin 0x00000000
+
+# Verify the flash
+verifybin build/AtmelStart.bin 0x00000000
+
+# Reset and run
+r
+g
+
+# Exit JLink
+exit

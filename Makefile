@@ -250,6 +250,12 @@ user_tasks.c \
 rtt_printf.c \
 network_events.c
 
+# Simple Test Application Files (no LwIP)
+SIMPLE_APP_CFILES = \
+main_simple.c \
+ksz_minimal_test.c \
+rtt_printf.c
+
 # Ethernet PHY Files (now integrated into PHY driver)
 ETHERNET_PHY_CFILES =
 
@@ -261,6 +267,24 @@ PRINTF_CFILES = \
 $(PRINTF_DIR)/printf.c
 
 # Combine all source files
+# Conditional file selection based on build type
+ifeq ($(SIMPLE_BUILD), 1)
+# Simple build - no LwIP, minimal dependencies
+CFILES = \
+$(FREERTOS_CFILES) \
+$(ASF4_CFILES) \
+$(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
+$(DRIVERS_DIR)/driver_ksz8851snl.c \
+$(BSP_DRIVERS_DIR)/bsp_led.c \
+$(DRIVERS_DIR)/driver_led.c \
+$(BSP_DRIVERS_DIR)/bsp_spi.c \
+$(DRIVERS_DIR)/driver_spi.c \
+$(ASF4_DIR)/system_same54.c \
+$(SIMPLE_APP_CFILES) \
+$(SEGGER_RTT_CFILES) \
+$(PRINTF_CFILES)
+else
+# Normal build - full functionality
 CFILES = \
 $(FREERTOS_CFILES) \
 $(LWIP_CFILES) \
@@ -270,6 +294,7 @@ $(APP_CFILES) \
 $(ETHERNET_PHY_CFILES) \
 $(SEGGER_RTT_CFILES) \
 $(PRINTF_CFILES)
+endif
 
 # Assembly Files
 ASMFILES = \
@@ -301,17 +326,23 @@ OUTPUT_FILE_PATH := $(BUILD_DIR)/$(PROJECT).elf
 QUOTE := "
 
 # Phony targets
-.PHONY: all clean distclean rebuild size help init gmac ksz8851 clean-switch-interface switch-status
+.PHONY: all clean distclean rebuild size help init gmac ksz8851 clean-switch-interface switch-status simple
 
 # Default target
 all: init $(OUTPUT_FILE_PATH)
 	@echo "Build completed successfully!"
 	@echo "Output files in $(BUILD_DIR)/"
 
+# Simple test target (no LwIP)
+simple: clean
+	@echo "Building simple KSZ8851SNL test (no LwIP)..."
+	$(MAKE) SIMPLE_BUILD=1 NETWORK_INTERFACE=KSZ8851SNL all
+
 # Help target
 help:
 	@echo "Available targets:"
 	@echo "  all       - Build the project (default)"
+	@echo "  simple    - Build simple KSZ8851SNL test (no LwIP)"
 	@echo "  clean     - Remove build directory"
 	@echo "  distclean - Remove all generated files"
 	@echo "  rebuild   - Clean and build"
@@ -321,6 +352,9 @@ help:
 	@echo "Network Interface Selection:"
 	@echo "  ksz8851   - Build with KSZ8851SNL SPI-Ethernet interface (default)"
 	@echo "  gmac      - Build with GMAC Ethernet interface"
+	@echo ""
+	@echo "Simple Test Build:"
+	@echo "  simple    - Minimal KSZ8851SNL test without LwIP dependencies"
 	@echo "  clean-switch-interface - Clean for interface switch"
 	@echo "  switch-status - Show current interface configuration"
 

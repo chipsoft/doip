@@ -12,7 +12,7 @@
 #define KSZ8851SNL_MISO_PIN     GPIO(GPIO_PORTB, 29)  // PB29 - SPI MISO
 
 // SPI Configuration
-#define KSZ8851SNL_SPI_CLOCK_SPEED      25000000UL    // 25 MHz (max 40 MHz for KSZ8851SNL)
+#define KSZ8851SNL_SPI_CLOCK_SPEED      5000000UL     // 5 MHz (reduced from 25MHz - working implementations use 5-10MHz max)
 #define KSZ8851SNL_SPI_CLOCK_POLARITY   0             // Clock idle low
 #define KSZ8851SNL_SPI_CLOCK_PHASE      1             // Sample on rising edge
 #define KSZ8851SNL_SPI_BITS_PER_TRANSFER 8            // 8-bit transfers
