@@ -88,51 +88,51 @@ static drv_spi_status_t convert_asf4_error(int32_t asf4_result)
 
 static void drv_spi_configure_pins(void)
 {
-    printf("[SPI4] Configuring SERCOM4 SPI pins...\r\n");
+    // printf("[SPI4] Configuring SERCOM4 SPI pins...\r\n");
     
     // Configure SERCOM4 pins for SPI - following working example pattern
     // PB26 - SCK (PAD1)
     gpio_set_pin_level(GPIO(GPIO_PORTB, 26), false); // Initial level low
     gpio_set_pin_direction(GPIO(GPIO_PORTB, 26), GPIO_DIRECTION_OUT);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 26), PINMUX_PB26D_SERCOM4_PAD1);
-    printf("[SPI4] SCK (PB26) configured as SERCOM4_PAD1\r\n");
+    // printf("[SPI4] SCK (PB26) configured as SERCOM4_PAD1\r\n");
     
     // PB27 - MOSI (PAD0)  
     gpio_set_pin_level(GPIO(GPIO_PORTB, 27), false); // Initial level low
     gpio_set_pin_direction(GPIO(GPIO_PORTB, 27), GPIO_DIRECTION_OUT);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 27), PINMUX_PB27D_SERCOM4_PAD0);
-    printf("[SPI4] MOSI (PB27) configured as SERCOM4_PAD0\r\n");
+    // printf("[SPI4] MOSI (PB27) configured as SERCOM4_PAD0\r\n");
     
     // PB28 - CS (PAD2) - This will be managed manually for CS
     gpio_set_pin_function(GPIO(GPIO_PORTB, 28), GPIO_PIN_FUNCTION_OFF);
     gpio_set_pin_direction(GPIO(GPIO_PORTB, 28), GPIO_DIRECTION_OUT);
     gpio_set_pin_level(GPIO(GPIO_PORTB, 28), true); // CS idle high
-    printf("[SPI4] CS (PB28) configured as GPIO output (idle high)\r\n");
+    // printf("[SPI4] CS (PB28) configured as GPIO output (idle high)\r\n");
     
     // PB29 - MISO (PAD3)
     gpio_set_pin_direction(GPIO(GPIO_PORTB, 29), GPIO_DIRECTION_IN);
     gpio_set_pin_pull_mode(GPIO(GPIO_PORTB, 29), GPIO_PULL_OFF);
     gpio_set_pin_function(GPIO(GPIO_PORTB, 29), PINMUX_PB29D_SERCOM4_PAD3);
-    printf("[SPI4] MISO (PB29) configured as SERCOM4_PAD3 (input, no pull)\r\n");
+    // printf("[SPI4] MISO (PB29) configured as SERCOM4_PAD3 (input, no pull)\r\n");
     
-    printf("[SPI4] All SPI pins configured successfully\r\n");
+    // printf("[SPI4] All SPI pins configured successfully\r\n");
 }
 
 static void drv_spi_configure_sercom4_clock(void)
 {
-    printf("[SPI4] Configuring SERCOM4 clocks...\r\n");
+    // printf("[SPI4] Configuring SERCOM4 clocks...\r\n");
     
     // Enable SERCOM4 APB clock
     hri_mclk_set_APBDMASK_SERCOM4_bit(MCLK);
-    printf("[SPI4] SERCOM4 APB clock enabled\r\n");
+    // printf("[SPI4] SERCOM4 APB clock enabled\r\n");
     
     // Configure GCLK for SERCOM4 - using working example's approach
     hri_gclk_write_PCHCTRL_reg(GCLK, SERCOM4_GCLK_ID_CORE, CONF_GCLK_SERCOM4_CORE_SRC | (1 << GCLK_PCHCTRL_CHEN_Pos));
     hri_gclk_write_PCHCTRL_reg(GCLK, SERCOM4_GCLK_ID_SLOW, CONF_GCLK_SERCOM4_SLOW_SRC | (1 << GCLK_PCHCTRL_CHEN_Pos));
-    printf("[SPI4] SERCOM4 core clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
-           SERCOM4_GCLK_ID_CORE, CONF_GCLK_SERCOM4_CORE_SRC);
-    printf("[SPI4] SERCOM4 slow clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
-           SERCOM4_GCLK_ID_SLOW, CONF_GCLK_SERCOM4_SLOW_SRC);
+    // printf("[SPI4] SERCOM4 core clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
+    //        SERCOM4_GCLK_ID_CORE, CONF_GCLK_SERCOM4_CORE_SRC);
+    // printf("[SPI4] SERCOM4 slow clock configured (GCLK ID: %d, SRC: 0x%02X)\r\n", 
+    //        SERCOM4_GCLK_ID_SLOW, CONF_GCLK_SERCOM4_SLOW_SRC);
 }
 
 static drv_spi_status_t drv_spi_init_impl(const void *hw_context, const drv_spi_config_t *config)
@@ -146,35 +146,35 @@ static drv_spi_status_t drv_spi_init_impl(const void *hw_context, const drv_spi_
         return DRV_SPI_STATUS_OK;
     }
     
-    printf("[SPI4] Initializing SERCOM4 SPI controller\r\n");
+    // printf("[SPI4] Initializing SERCOM4 SPI controller\r\n");
     
     // Configure clocks and pins
     drv_spi_configure_sercom4_clock();
     drv_spi_configure_pins();
     
     // Initialize SPI with ASF4 - using same approach as working example
-    printf("[SPI4] Calling spi_m_sync_init with descriptor %p and SERCOM4\r\n", (void*)context->spi_desc);
+    // printf("[SPI4] Calling spi_m_sync_init with descriptor %p and SERCOM4\r\n", (void*)context->spi_desc);
     int32_t result = spi_m_sync_init(context->spi_desc, SERCOM4);
     if (result != ERR_NONE) {
-        printf("[SPI4] ASF4 spi_m_sync_init failed: %d\r\n", result);
+        // printf("[SPI4] ASF4 spi_m_sync_init failed: %d\r\n", result);
         return convert_asf4_error(result);
     }
-    printf("[SPI4] spi_m_sync_init successful\r\n");
+    // printf("[SPI4] spi_m_sync_init successful\r\n");
     
     // SPI mode is configured in hpl_sercom_config.h
     // No need to manually set mode as it's handled by the configuration
-    printf("[SPI4] Using SPI mode from configuration file\r\n");
+    // printf("[SPI4] Using SPI mode from configuration file\r\n");
     
     // Set baudrate
     result = spi_m_sync_set_baudrate(context->spi_desc, config->baudrate);
     if (result != ERR_NONE) {
-        printf("[SPI4] Failed to set baudrate %lu: %d\r\n", config->baudrate, result);
+        // printf("[SPI4] Failed to set baudrate %lu: %d\r\n", config->baudrate, result);
         return convert_asf4_error(result);
     }
     
     ((drv_spi_hw_context_t *)context)->is_spi_init = true;
     
-    printf("[SPI4] SPI initialized successfully at %lu Hz\r\n", config->baudrate);
+    // printf("[SPI4] SPI initialized successfully at %lu Hz\r\n", config->baudrate);
     return DRV_SPI_STATUS_OK;
 }
 
@@ -188,13 +188,13 @@ static drv_spi_status_t drv_spi_deinit_impl(const void *hw_context)
         return DRV_SPI_STATUS_OK;
     }
     
-    printf("[SPI4] Deinitializing SPI controller\r\n");
+    // printf("[SPI4] Deinitializing SPI controller\r\n");
     
     spi_m_sync_deinit(context->spi_desc);
     
     ((drv_spi_hw_context_t *)context)->is_spi_init = false;
     
-    printf("[SPI4] SPI deinitialized successfully\r\n");
+    // printf("[SPI4] SPI deinitialized successfully\r\n");
     return DRV_SPI_STATUS_OK;
 }
 
@@ -208,11 +208,11 @@ static drv_spi_status_t drv_spi_enable_impl(const void *hw_context)
         return DRV_SPI_STATUS_ERROR;
     }
     
-    printf("[SPI4] Enabling SPI controller\r\n");
+    // printf("[SPI4] Enabling SPI controller\r\n");
     
     spi_m_sync_enable(context->spi_desc);
     
-    printf("[SPI4] SPI enabled successfully\r\n");
+    // printf("[SPI4] SPI enabled successfully\r\n");
     return DRV_SPI_STATUS_OK;
 }
 
@@ -226,11 +226,11 @@ static drv_spi_status_t drv_spi_disable_impl(const void *hw_context)
         return DRV_SPI_STATUS_ERROR;
     }
     
-    printf("[SPI4] Disabling SPI controller\r\n");
+    // printf("[SPI4] Disabling SPI controller\r\n");
     
     spi_m_sync_disable(context->spi_desc);
     
-    printf("[SPI4] SPI disabled successfully\r\n");
+    // printf("[SPI4] SPI disabled successfully\r\n");
     return DRV_SPI_STATUS_OK;
 }
 
@@ -253,25 +253,25 @@ static drv_spi_status_t drv_spi_transfer_impl(const void *hw_context, const uint
         .size = length
     };
     
-    printf("[SPI4] Starting SPI transfer: tx=%p, rx=%p, size=%lu\r\n", 
-           (void*)tx_data, (void*)rx_data, (unsigned long)length);
-    printf("[SPI4] SPI descriptor: %p\r\n", (void*)context->spi_desc);
-    printf("[SPI4] Transfer structure: txbuf=%p, rxbuf=%p, size=%lu\r\n", 
-           (void*)xfer.txbuf, (void*)xfer.rxbuf, (unsigned long)xfer.size);
+    // printf("[SPI4] Starting SPI transfer: tx=%p, rx=%p, size=%lu\r\n", 
+    //        (void*)tx_data, (void*)rx_data, (unsigned long)length);
+    // printf("[SPI4] SPI descriptor: %p\r\n", (void*)context->spi_desc);
+    // printf("[SPI4] Transfer structure: txbuf=%p, rxbuf=%p, size=%lu\r\n", 
+    //        (void*)xfer.txbuf, (void*)xfer.rxbuf, (unsigned long)xfer.size);
     
     int32_t result = spi_m_sync_transfer(context->spi_desc, &xfer);
     
     // spi_m_sync_transfer returns number of bytes transferred on success, negative error code on failure
     if (result == (int32_t)length) {
-        printf("[SPI4] ASF4 transfer completed successfully: %d bytes transferred\r\n", result);
+        // printf("[SPI4] ASF4 transfer completed successfully: %d bytes transferred\r\n", result);
         return DRV_SPI_STATUS_OK;
     } else if (result < 0) {
-        printf("[SPI4] ASF4 transfer failed with error: %d, trying direct SERCOM4 approach\r\n", result);
+        // printf("[SPI4] ASF4 transfer failed with error: %d, trying direct SERCOM4 approach\r\n", result);
         // Fallback: Direct SERCOM4 SPI transfer
         return drv_spi_direct_transfer(tx_data, rx_data, length);
     } else {
-        printf("[SPI4] ASF4 partial transfer: %d bytes of %lu transferred, trying direct SERCOM4 approach\r\n", 
-               result, (unsigned long)length);
+        // printf("[SPI4] ASF4 partial transfer: %d bytes of %lu transferred, trying direct SERCOM4 approach\r\n", 
+        //        result, (unsigned long)length);
         // Fallback: Direct SERCOM4 SPI transfer
         return drv_spi_direct_transfer(tx_data, rx_data, length);
     }
@@ -296,15 +296,15 @@ static drv_spi_status_t drv_spi_set_baudrate_impl(const void *hw_context, uint32
         return DRV_SPI_STATUS_ERROR;
     }
     
-    printf("[SPI4] Setting baudrate to %lu Hz\r\n", baudrate);
+    // printf("[SPI4] Setting baudrate to %lu Hz\r\n", baudrate);
     
     int32_t result = spi_m_sync_set_baudrate(context->spi_desc, baudrate);
     if (result != ERR_NONE) {
-        printf("[SPI4] Set baudrate failed: %d\r\n", result);
+        // printf("[SPI4] Set baudrate failed: %d\r\n", result);
         return convert_asf4_error(result);
     }
     
-    printf("[SPI4] Baudrate set successfully\r\n");
+    // printf("[SPI4] Baudrate set successfully\r\n");
     return DRV_SPI_STATUS_OK;
 }
 
@@ -347,7 +347,7 @@ void drv_spi_cs_set_high(void)
 // Direct SERCOM4 SPI transfer fallback (bypasses ASF4)
 static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t *rx_data, uint32_t length)
 {
-    printf("[SPI4] Using direct SERCOM4 transfer fallback\r\n");
+    // printf("[SPI4] Using direct SERCOM4 transfer fallback\r\n");
     
     // Direct SERCOM4 register access for SPI transfer
     Sercom *sercom = SERCOM4;
@@ -381,6 +381,6 @@ static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t 
     // Wait for final transfer to complete
     while (!(sercom->SPI.INTFLAG.bit.TXC));
     
-    printf("[SPI4] Direct SERCOM4 transfer completed successfully\r\n");
+    // printf("[SPI4] Direct SERCOM4 transfer completed successfully\r\n");
     return DRV_SPI_STATUS_OK;
 }
