@@ -361,6 +361,9 @@ static void ksz8851snl_process_interrupt(void)
         uint8_t frame_count = (rxq_status & RX_FRAME_CNT_MASK) >> 8;
         printf("[KSZ8851SNL] RX interrupt: %d frame(s) available in queue\r\n", frame_count);
         
+        // Yellow text notification for interrupt-based RX detection
+        printf("\033[33m⚡ RX INTERRUPT! %d packet(s) received via hardware interrupt\033[0m\r\n", frame_count);
+        
         // Don't process frames here - let lwIP's low_level_input() handle it
         // This prevents conflicts between interrupt handler and receive_packet function
         printf("[KSZ8851SNL] RX interrupt acknowledged - frames ready for lwIP processing\r\n");
@@ -1940,6 +1943,9 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
         *length = 0;
         return DRV_KSZ8851SNL_STATUS_OK; // No frames available
     }
+    
+    // Yellow text notification that RX is coming
+    printf("\033[33m🔥 RX is coming! Processing %d frame(s)\033[0m\r\n", rx_frame_count);
     
     // Start reading frame data from RX FIFO (same as interrupt handler)
     ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_START);
