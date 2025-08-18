@@ -355,8 +355,15 @@ static void ksz8851snl_process_interrupt(void)
     // Handle RX interrupt
     if (int_status & INT_RX) {
         printf("[KSZ8851SNL] RX interrupt - packet received\r\n");
-        // TODO: Signal network stack that packet is available
-        // This will be implemented when we update packet processing
+        
+        // Check how many frames are available
+        uint16_t rxq_status = ksz8851_reg_read(REG_RXQ_CMD);
+        uint8_t frame_count = (rxq_status & RX_FRAME_CNT_MASK) >> 8;
+        printf("[KSZ8851SNL] RX interrupt: %d frame(s) available in queue\r\n", frame_count);
+        
+        // Don't process frames here - let lwIP's low_level_input() handle it
+        // This prevents conflicts between interrupt handler and receive_packet function
+        printf("[KSZ8851SNL] RX interrupt acknowledged - frames ready for lwIP processing\r\n");
     }
     
     // Handle TX interrupt
@@ -674,14 +681,26 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     // (TX_CTRL will be configured in Step 6.1 after QMU reset)
     ksz8851_reg_write(REG_TX_ADDR_PTR, ADDR_PTR_AUTO_INC);
 
-    uint16_t rx_ctrl = RX_CTRL_ENABLE |
-                       RX_CTRL_FLUSH_QUEUE |
-                       RX_CTRL_FLOW_ENABLE |
-                       RX_CTRL_IP_CHECKSUM |
-                       RX_CTRL_TCP_CHECKSUM |
-                       RX_CTRL_UDP_CHECKSUM;
+    // Step 1: Flush RX queue first to clear any residual data
+    uint16_t rx_ctrl_flush = RX_CTRL_ENABLE |
+                            RX_CTRL_FLUSH_QUEUE |
+                            RX_CTRL_FLOW_ENABLE |
+                            RX_CTRL_IP_CHECKSUM |
+                            RX_CTRL_TCP_CHECKSUM |
+                            RX_CTRL_UDP_CHECKSUM;
 
-    ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl);
+    printf("[KSZ8851SNL] Flushing RX queue and configuring RX control\r\n");
+    ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl_flush);
+    
+    // Step 2: Clear flush bit to enable normal RX operation
+    uint16_t rx_ctrl_normal = RX_CTRL_ENABLE |
+                             RX_CTRL_FLOW_ENABLE |
+                             RX_CTRL_IP_CHECKSUM |
+                             RX_CTRL_TCP_CHECKSUM |
+                             RX_CTRL_UDP_CHECKSUM;
+    
+    ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl_normal);
+    printf("[KSZ8851SNL] RX control configured: 0x%04X (FLUSH_QUEUE cleared)\r\n", rx_ctrl_normal);
     ksz8851_reg_write(REG_RX_ADDR_PTR, ADDR_PTR_AUTO_INC);
 
     // Step 6.5: Configure RXQ Control Register (CRITICAL for QMU operation)
@@ -1913,54 +1932,98 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
     
     // Check if there are frames in the receive queue
     uint16_t rx_status = ksz8851_reg_read(REG_RXQ_CMD);
-    uint8_t rx_frame_count = (rx_status & RXQ_CMD_CNTL) >> 8;
+    uint8_t rx_frame_count = (rx_status & RX_FRAME_CNT_MASK) >> 8;
+    
+    printf("[KSZ8851SNL] Receive packet: %d frames available\r\n", rx_frame_count);
     
     if (rx_frame_count == 0) {
         *length = 0;
         return DRV_KSZ8851SNL_STATUS_OK; // No frames available
     }
     
-    // Check frame header status
-    uint16_t fhr_status = ksz8851_reg_read(REG_RX_FHR_STATUS);
-    if ((fhr_status & RX_VALID) == 0) {
-        printf("[KSZ8851SNL] Invalid frame in RX queue\r\n");
+    // Start reading frame data from RX FIFO (same as interrupt handler)
+    ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_START);
+    
+    // Read the 4-byte frame header from RX FIFO
+    uint32_t rx_frame_hdr = 0;
+    for (int i = 0; i < 4; i += 2) {
+        uint16_t word = ksz8851_reg_read(REG_QDR_DUMMY);
+        rx_frame_hdr |= ((uint32_t)word) << (i * 8);
+    }
+    
+    uint16_t frame_len = (rx_frame_hdr >> 16) & 0x0FFF;  // Frame length (bits 27:16)
+    uint16_t frame_status = rx_frame_hdr & 0xFFFF;       // Frame status (bits 15:0)
+    
+    printf("[KSZ8851SNL] RX Frame: len=%d, status=0x%04X\r\n", frame_len, frame_status);
+    
+    // Check if frame is valid
+    if ((frame_status & 0x8000) == 0) {  // Valid frame bit
+        printf("[KSZ8851SNL] Invalid frame status: 0x%04X\r\n", frame_status);
+        
+        // Still need to read the frame data to clear FIFO
+        uint16_t words_to_read = (frame_len + 1) / 2;
+        for (uint16_t i = 0; i < words_to_read; i++) {
+            uint16_t dummy = ksz8851_reg_read(REG_QDR_DUMMY);
+            (void)dummy;
+        }
+        
+        // Clear the frame from queue
+        ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
+        
         *length = 0;
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
     
-    // Get frame length from frame header
-    uint16_t frame_len = (fhr_status & 0x07FF); // Lower 11 bits contain frame length
-    
+    // Check if caller's buffer is large enough
     if (frame_len > *length) {
         printf("[KSZ8851SNL] Frame too large: %d > %d\r\n", frame_len, *length);
+        
+        // Still need to read and discard the frame data
+        uint16_t words_to_read = (frame_len + 1) / 2;
+        for (uint16_t i = 0; i < words_to_read; i++) {
+            uint16_t dummy = ksz8851_reg_read(REG_QDR_DUMMY);
+            (void)dummy;
+        }
+        
+        // Clear the frame from queue
+        ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
+        
         *length = 0;
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
     
     printf("[KSZ8851SNL] Receiving packet - length: %d\r\n", frame_len);
     
-    // Enable RXQ read access
-    ksz8851_reg_write(REG_RXQ_CMD, RXQ_START);
+    // Read actual frame data from RX FIFO (frame header already consumed above)
+    // Read data in 16-bit words since KSZ8851SNL uses word-based FIFO access
+    uint16_t words_to_read = (frame_len + 1) / 2;  // Round up to word boundary
+    uint16_t byte_index = 0;
     
-    // Read frame header (4 bytes) - we'll discard this
-    uint8_t frame_header[4];
-    ksz8851_fifo_read_data(frame_header, 4);
+    for (uint16_t i = 0; i < words_to_read && byte_index < frame_len; i++) {
+        uint16_t word_data = ksz8851_reg_read(REG_QDR_DUMMY);
+        
+        // Store low byte
+        if (byte_index < frame_len) {
+            data[byte_index++] = (uint8_t)(word_data & 0xFF);
+        }
+        
+        // Store high byte
+        if (byte_index < frame_len) {
+            data[byte_index++] = (uint8_t)((word_data >> 8) & 0xFF);
+        }
+    }
     
-    // Read actual frame data
-    ksz8851_fifo_read_data(data, frame_len);
+    printf("[KSZ8851SNL] Frame data read: %d bytes\r\n", byte_index);
     
-    // End RXQ read access
-    ksz8851_reg_write(REG_RXQ_CMD, 0);
-    
-    // Free the received frame
-    ksz8851_reg_write(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
+    // Clear the frame from queue
+    ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_CMD_FREE_PACKET);
     
     // Update reception statistics
     drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
     context->rx_packets++;
     
     *length = frame_len;
-    printf("[KSZ8851SNL] Packet received successfully\r\n");
+    printf("[KSZ8851SNL] ✅ Packet received successfully (%d bytes)\r\n", frame_len);
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
@@ -1971,20 +2034,39 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void
     
     *rx_available = false;
     
-    // Check if interrupt semaphore is available (interrupt occurred)
+    // ALWAYS check RX frame count directly (not just on interrupt)
+    uint16_t rx_status = ksz8851_reg_read(REG_RXQ_CMD);
+    uint8_t rx_frame_count = (rx_status & RX_FRAME_CNT_MASK) >> 8;
+    
+    // Debug: Print RX status periodically (every 1000 calls ~ 1 second)
+    static uint32_t debug_counter = 0;
+    debug_counter++;
+    if (debug_counter % 1000 == 0) {
+        uint16_t int_status = ksz8851_reg_read(REG_INT_STATUS);
+        printf("[KSZ8851SNL] RX DEBUG: frame_count=%d, rx_status=0x%04X, int_status=0x%04X\r\n", 
+               rx_frame_count, rx_status, int_status);
+    }
+    
+    if (rx_frame_count > 0) {
+        *rx_available = true;
+        printf("[KSZ8851SNL] RX available: %d frame(s) pending (direct check)\r\n", rx_frame_count);
+        return DRV_KSZ8851SNL_STATUS_OK;
+    }
+    
+    // Also check if interrupt semaphore is available (interrupt occurred)
     if (ksz8851snl_interrupt_semaphore != NULL) {
         // Try to take semaphore without blocking
         if (xSemaphoreTake(ksz8851snl_interrupt_semaphore, 0) == pdTRUE) {
             // Process the interrupt
             ksz8851snl_process_interrupt();
             
-            // Check if RX data is actually available by reading RX frame count
-            uint16_t rx_status = ksz8851_reg_read(REG_RXQ_CMD);
-            uint8_t rx_frame_count = (rx_status & RXQ_CMD_CNTL) >> 8;
+            // Re-check RX frame count after processing interrupt
+            rx_status = ksz8851_reg_read(REG_RXQ_CMD);
+            rx_frame_count = (rx_status & RX_FRAME_CNT_MASK) >> 8;
             
             if (rx_frame_count > 0) {
                 *rx_available = true;
-                printf("[KSZ8851SNL] RX available: %d frame(s) pending\r\n", rx_frame_count);
+                printf("[KSZ8851SNL] RX available: %d frame(s) pending (after interrupt)\r\n", rx_frame_count);
             }
         }
     }
