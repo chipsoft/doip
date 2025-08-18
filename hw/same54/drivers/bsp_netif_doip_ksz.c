@@ -260,10 +260,23 @@ static drv_netif_doip_status_t ksz_netif_init_impl(const void *hw_context, const
     // Bring interface up
     netif_set_up(&context->lwip_netif);
     
-    // Enable DHCP if requested
+    // Configure network addressing
     if (config->use_dhcp) {
         printf("KSZ NetIF DoIP: Starting DHCP client\r\n");
         dhcp_start(&context->lwip_netif);
+    } else {
+        printf("KSZ NetIF DoIP: Configuring static IP\r\n");
+        ip4_addr_t ipaddr, netmask, gateway;
+        ipaddr.addr = config->static_ip;
+        netmask.addr = config->static_netmask;
+        gateway.addr = config->static_gateway;
+        
+        netif_set_addr(&context->lwip_netif, &ipaddr, &netmask, &gateway);
+        printf("KSZ NetIF DoIP: Static IP configured: %d.%d.%d.%d\r\n",
+               (config->static_ip >> 0) & 0xFF,
+               (config->static_ip >> 8) & 0xFF,
+               (config->static_ip >> 16) & 0xFF,
+               (config->static_ip >> 24) & 0xFF);
     }
     
     // Update status

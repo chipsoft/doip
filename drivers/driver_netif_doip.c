@@ -518,12 +518,13 @@ void hw_netif_doip_create_default_config(drv_netif_doip_config_t *config, drv_ne
     config->link_speed = 100;  // 100 Mbps default
     config->full_duplex = true;
     
-    // Network configuration defaults
-    config->use_dhcp = true;  // Use DHCP by default
-    config->static_ip = 0;
-    config->static_netmask = 0;
-    config->static_gateway = 0;
-    config->static_dns = 0;
+    // Network configuration defaults - use static IP for DoIP
+    config->use_dhcp = false;  // Use static IP for reliable DoIP communications
+    // Set static IP to match main.c configuration: 192.168.100.2
+    config->static_ip = (192 << 0) | (168 << 8) | (100 << 16) | (2 << 24);
+    config->static_netmask = (255 << 0) | (255 << 8) | (255 << 16) | (0 << 24);
+    config->static_gateway = (192 << 0) | (168 << 8) | (100 << 16) | (1 << 24);
+    config->static_dns = (8 << 0) | (8 << 8) | (8 << 16) | (8 << 24);
     strcpy(config->hostname, "doip-device");
     
     // Timing configuration defaults

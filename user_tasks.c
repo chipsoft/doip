@@ -311,6 +311,9 @@ static uint8_t doip_discover_all_ecus(drv_doip_t *handle)
         printf("\r\n");
     }
     
+    // Reset DoIP driver to IDLE state to allow next discovery cycle
+    hw_doip_disconnect(handle);
+    
     return discovered_ecus.count;
 }
 

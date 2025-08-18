@@ -971,8 +971,40 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
         return DRV_DOIP_STATUS_ERROR;
     }
     
-    printf("DOIP Bridge: Discovery broadcast sent - responses forwarded to callback\r\n");
+    printf("DOIP Bridge: Discovery broadcast sent successfully\r\n");
     context->metrics.discovery_requests_sent++;
+    
+    // Now set up UDP PCB to listen for responses
+    printf("DOIP Bridge: Setting up UDP listener for DoIP responses...\r\n");
+    
+    // Clean up any existing UDP PCB
+    if (context->udp_pcb != NULL) {
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
+    }
+    
+    // Create UDP PCB for receiving responses
+    context->udp_pcb = udp_new();
+    if (context->udp_pcb == NULL) {
+        printf("DOIP Bridge: Failed to create UDP PCB for responses\r\n");
+        context->current_state = DRV_DOIP_STATE_IDLE;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Set up UDP receive callback
+    udp_recv(context->udp_pcb, bridge_udp_recv_callback, context);
+    
+    // Bind to DoIP port to receive responses
+    err_t err = udp_bind(context->udp_pcb, IP_ADDR_ANY, 13400);
+    if (err != ERR_OK) {
+        printf("DOIP Bridge: Failed to bind UDP PCB to port 13400 - err=%d\r\n", err);
+        udp_remove(context->udp_pcb);
+        context->udp_pcb = NULL;
+        context->current_state = DRV_DOIP_STATE_IDLE;
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    printf("DOIP Bridge: UDP listener ready on port 13400 for DoIP responses\r\n");
     
     // Keep UDP PCB open for responses - application handles discovery data
     context->current_state = DRV_DOIP_STATE_DISCOVERED;

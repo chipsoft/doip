@@ -935,38 +935,61 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_chip_id_impl(const void *hw_co
     
     // Read chip ID register multiple times to verify stable communication
     uint16_t chip_id_1 = ksz8851_reg_read(REG_CHIP_ID);
-    vTaskDelay(1); // Small delay
+    vTaskDelay(2); // Slightly longer delay for SPI stability
     uint16_t chip_id_2 = ksz8851_reg_read(REG_CHIP_ID);
-    vTaskDelay(1); // Small delay  
+    vTaskDelay(2); // Slightly longer delay  
     uint16_t chip_id_3 = ksz8851_reg_read(REG_CHIP_ID);
     
     printf("[KSZ8851SNL] Chip ID readings: 0x%04X, 0x%04X, 0x%04X\r\n", chip_id_1, chip_id_2, chip_id_3);
     
-    // Check if all readings are consistent (SPI communication OK)
-    if (chip_id_1 == chip_id_2 && chip_id_2 == chip_id_3 && chip_id_1 != 0xFFFF && chip_id_1 != 0x0000) {
+    // Use majority vote for robustness - at least 2 out of 3 readings must be valid and consistent
+    uint16_t valid_chip_id = 0;
+    bool spi_ok = false;
+    
+    // Count occurrences of each non-error value
+    if ((chip_id_1 == chip_id_2) && (chip_id_1 != 0x0000) && (chip_id_1 != 0xFFFF)) {
+        // First two readings match and are valid
+        valid_chip_id = chip_id_1;
+        spi_ok = true;
+        printf("[KSZ8851SNL] Majority vote: Using readings 1&2 (0x%04X)\r\n", valid_chip_id);
+    } else if ((chip_id_1 == chip_id_3) && (chip_id_1 != 0x0000) && (chip_id_1 != 0xFFFF)) {
+        // First and third readings match and are valid
+        valid_chip_id = chip_id_1;
+        spi_ok = true;
+        printf("[KSZ8851SNL] Majority vote: Using readings 1&3 (0x%04X)\r\n", valid_chip_id);
+    } else if ((chip_id_2 == chip_id_3) && (chip_id_2 != 0x0000) && (chip_id_2 != 0xFFFF)) {
+        // Second and third readings match and are valid
+        valid_chip_id = chip_id_2;
+        spi_ok = true;
+        printf("[KSZ8851SNL] Majority vote: Using readings 2&3 (0x%04X)\r\n", valid_chip_id);
+    } else {
+        printf("[KSZ8851SNL] No consistent readings found - SPI communication failed\r\n");
+    }
+    
+    if (spi_ok) {
         id_info->spi_communication_ok = true;
-        id_info->chip_id = chip_id_1;
-        id_info->revision_id = chip_id_1 & 0x000F; // Lower 4 bits are revision
+        id_info->chip_id = valid_chip_id;
+        id_info->revision_id = valid_chip_id & 0x000F; // Lower 4 bits are revision
         
         // Check if chip ID matches expected value using proper mask (exclude revision bits)
-        uint16_t masked_chip_id = chip_id_1 & KSZ8851SNL_CHIP_ID_MASK;
-        uint16_t revision = chip_id_1 & KSZ8851SNL_REVISION_MASK;
+        uint16_t masked_chip_id = valid_chip_id & KSZ8851SNL_CHIP_ID_MASK;
+        uint16_t revision = valid_chip_id & KSZ8851SNL_REVISION_MASK;
         
         if (masked_chip_id == KSZ8851SNL_CHIP_ID_EXPECTED) {
             id_info->chip_detected = true;
             printf("[KSZ8851SNL] ✓ Valid KSZ8851SNL chip detected!\r\n");
             printf("[KSZ8851SNL] ✓ Chip ID: 0x%04X (masked: 0x%04X, expected: 0x%04X)\r\n", 
-                   chip_id_1, masked_chip_id, KSZ8851SNL_CHIP_ID_EXPECTED);
+                   valid_chip_id, masked_chip_id, KSZ8851SNL_CHIP_ID_EXPECTED);
             printf("[KSZ8851SNL] ✓ Revision: %d (0x%X)\r\n", revision, revision);
         } else {
-            printf("[KSZ8851SNL] ✗ Unexpected chip ID: 0x%04X\r\n", chip_id_1);
+            printf("[KSZ8851SNL] ✗ Unexpected chip ID: 0x%04X\r\n", valid_chip_id);
             printf("[KSZ8851SNL] ✗ Masked ID: 0x%04X (expected: 0x%04X)\r\n", 
                    masked_chip_id, KSZ8851SNL_CHIP_ID_EXPECTED);
             printf("[KSZ8851SNL] ✗ Check chip variant and connections\r\n");
             id_info->chip_detected = false;
         }
     } else {
-        printf("[KSZ8851SNL] Inconsistent chip ID readings - SPI communication failed\r\n");
+        printf("[KSZ8851SNL] No consistent readings found - SPI communication failed\r\n");
         id_info->spi_communication_ok = false;
         id_info->chip_detected = false;
     }
