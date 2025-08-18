@@ -272,6 +272,9 @@ static void network_init_task(void *pvParameters)
 			
 			// Run packet transmission test to validate fixes
 			ksz8851snl_debug_test_packet_transmission();
+			ksz8851snl_debug_test_packet_transmission();
+			ksz8851snl_debug_test_packet_transmission();
+			ksz8851snl_debug_test_packet_transmission();
 			
 			printf("[MAIN] ================================================\r\n");
 			printf("[MAIN] KSZ8851SNL initialization and testing COMPLETE\r\n");

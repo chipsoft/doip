@@ -691,12 +691,12 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(
     uint16_t rxq_status = ksz8851_reg_read(REG_RXQ_CMD);
     printf("[KSZ8851SNL] RXQ control register: 0x%04X (auto-dequeue enabled)\r\n", rxq_status);
 
-    // Step 6.6: Configure TXQ Control Register with AUTO_ENQUEUE (CRITICAL for sustained transmission)
-    printf("[KSZ8851SNL] Configuring TXQ control register with auto-enqueue\r\n");
-    uint16_t txq_ctrl = TXQ_AUTO_ENQUEUE | TXQ_MEM_AVAILABLE_INT;
+    // Step 6.6: Configure TXQ Control Register - DISABLE auto-enqueue, use pure manual mode
+    printf("[KSZ8851SNL] Configuring TXQ control register for MANUAL mode (no auto-enqueue)\r\n");
+    uint16_t txq_ctrl = 0x0000;  // Clear all bits - pure manual mode
     ksz8851_reg_write(REG_TXQ_CMD, txq_ctrl);
     uint16_t txq_status = ksz8851_reg_read(REG_TXQ_CMD);
-    printf("[KSZ8851SNL] TXQ control register: 0x%04X (auto-enqueue enabled)\r\n", txq_status);
+    printf("[KSZ8851SNL] TXQ control register: 0x%04X (manual mode - no auto-enqueue)\r\n", txq_status);
 
     // Step 7: Enable interrupts (RX, TX, PHY)
     ksz8851_reg_write(REG_INT_STATUS, 0xFFFF); // Clear pending
@@ -1169,11 +1169,11 @@ static void ksz8851_fifo_error_recovery_post_cs_release(void)
     // Add delay for FIFO reset to take effect
     for (volatile int i = 0; i < 1000; i++);
     
-    // Restore TXQ auto-enqueue configuration
-    ksz8851_reg_write(REG_TXQ_CMD, TXQ_AUTO_ENQUEUE | TXQ_MEM_AVAILABLE_INT);
+    // Restore TXQ manual mode configuration (no auto-enqueue)
+    ksz8851_reg_write(REG_TXQ_CMD, 0x0000);
     
     txq_cmd = ksz8851_reg_read(REG_TXQ_CMD);
-    printf("[KSZ8851SNL] TXQ_CMD after reset: 0x%04X (auto-enqueue restored)\r\n", txq_cmd);
+    printf("[KSZ8851SNL] TXQ_CMD after reset: 0x%04X (manual mode restored)\r\n", txq_cmd);
     
     // Check TX memory status after recovery
     uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
@@ -1633,46 +1633,121 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(
     printf("[KSZ8851SNL] Ensuring TX_CTRL_FLOW_ENABLE is set before transmission...\r\n");
     ensure_tx_flow_control_enabled();
     
-    // Step 12: Hybrid approach - auto-enqueue + manual trigger
-    printf("[KSZ8851SNL] Using hybrid transmission mode (auto-enqueue + manual trigger)\r\n");
+    // Step 12: COMPREHENSIVE REGISTER STATE ANALYSIS BEFORE TRANSMISSION
+    printf("[KSZ8851SNL] =============================================\r\n");
+    printf("[KSZ8851SNL] COMPREHENSIVE REGISTER STATE ANALYSIS\r\n");
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
+    // Read all critical registers for diagnosis
+    uint16_t reg_chip_id = ksz8851_reg_read(REG_CHIP_ID);
+    uint16_t reg_tx_ctrl = ksz8851_reg_read(REG_TX_CTRL); 
+    uint16_t reg_rx_ctrl = ksz8851_reg_read(REG_RX_CTRL1);
+    uint16_t reg_led_ctrl = ksz8851_reg_read(REG_LED_CTRL);
+    uint16_t reg_txq_cmd = ksz8851_reg_read(REG_TXQ_CMD);
+    uint16_t reg_rxq_cmd = ksz8851_reg_read(REG_RXQ_CMD);
+    uint16_t reg_int_mask = ksz8851_reg_read(REG_INT_MASK);
+    uint16_t reg_int_status = ksz8851_reg_read(REG_INT_STATUS);
+    uint16_t reg_port_ctrl = ksz8851_reg_read(0xF6);  // Port Control
+    uint16_t reg_port_status = ksz8851_reg_read(0xF8); // Port Status 
+    uint16_t reg_phy_ctrl = ksz8851_reg_read(0xE4);    // PHY Control
+    uint16_t reg_phy_status = ksz8851_reg_read(0xE6);  // PHY Status
+    uint16_t reg_tx_status = ksz8851_reg_read(0x72);   // TX Status
+    uint16_t reg_tx_total_frame = ksz8851_reg_read(0x74); // TX Total Frame Counter
+    
+    printf("[KSZ8851SNL] REGISTER DUMP BEFORE TRANSMISSION:\r\n");
+    printf("[KSZ8851SNL]   CHIP_ID (0xC0):        0x%04X\r\n", reg_chip_id);
+    printf("[KSZ8851SNL]   TX_CTRL (0x70):        0x%04X\r\n", reg_tx_ctrl);
+    printf("[KSZ8851SNL]     - TX_ENABLE:         %s\r\n", (reg_tx_ctrl & 0x0001) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TX_CRC_ENABLE:     %s\r\n", (reg_tx_ctrl & 0x0002) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TX_PAD_ENABLE:     %s\r\n", (reg_tx_ctrl & 0x0004) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TX_FLOW_ENABLE:    %s\r\n", (reg_tx_ctrl & 0x0008) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TX_FLUSH_QUEUE:    %s\r\n", (reg_tx_ctrl & 0x0010) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   RX_CTRL1 (0x74):       0x%04X\r\n", reg_rx_ctrl);
+    printf("[KSZ8851SNL]   LED_CTRL (0xC6):       0x%04X\r\n", reg_led_ctrl);
+    printf("[KSZ8851SNL]   TXQ_CMD (0x80):        0x%04X\r\n", reg_txq_cmd);
+    printf("[KSZ8851SNL]     - TXQ_ENQUEUE:       %s\r\n", (reg_txq_cmd & 0x0001) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TXQ_AUTO_ENQUEUE:  %s\r\n", (reg_txq_cmd & 0x0004) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   RXQ_CMD (0x82):        0x%04X\r\n", reg_rxq_cmd);
+    printf("[KSZ8851SNL]   INT_MASK (0x90):       0x%04X\r\n", reg_int_mask);
+    printf("[KSZ8851SNL]   INT_STATUS (0x92):     0x%04X\r\n", reg_int_status);
+    printf("[KSZ8851SNL]   PORT_CTRL (0xF6):      0x%04X\r\n", reg_port_ctrl);
+    printf("[KSZ8851SNL]   PORT_STATUS (0xF8):    0x%04X\r\n", reg_port_status);
+    printf("[KSZ8851SNL]     - LINK_GOOD:         %s\r\n", (reg_port_status & 0x0020) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - AN_DONE:           %s\r\n", (reg_port_status & 0x0040) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - DUPLEX_STATUS:     %s\r\n", (reg_port_status & 0x0004) ? "FULL" : "HALF");
+    printf("[KSZ8851SNL]     - SPEED_STATUS:      %s\r\n", (reg_port_status & 0x0002) ? "100M" : "10M");
+    printf("[KSZ8851SNL]   PHY_CTRL (0xE4):       0x%04X\r\n", reg_phy_ctrl);
+    printf("[KSZ8851SNL]   PHY_STATUS (0xE6):     0x%04X\r\n", reg_phy_status);
+    printf("[KSZ8851SNL]   TX_STATUS (0x72):      0x%04X\r\n", reg_tx_status);
+    printf("[KSZ8851SNL]   TX_TOTAL_FRAME (0x74): 0x%04X\r\n", reg_tx_total_frame);
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
+    // Step 12: Pure manual transmission mode (like original working code)
+    printf("[KSZ8851SNL] Using PURE MANUAL transmission mode (TXQ_ENQUEUE only)\r\n");
     uint16_t txq_status = ksz8851_reg_read(REG_TXQ_CMD);
     printf("[KSZ8851SNL]   TXQ_CMD current status: 0x%04X\r\n", txq_status);
     
-    // Ensure auto-enqueue is enabled but also trigger manual enqueue
-    // This provides the best of both modes: sustained transmission capability + reliable triggering
-    if (!(txq_status & TXQ_AUTO_ENQUEUE)) {
-        printf("[KSZ8851SNL]   ⚠️  Re-enabling TXQ_AUTO_ENQUEUE...\r\n");
-        ksz8851_reg_write(REG_TXQ_CMD, TXQ_AUTO_ENQUEUE | TXQ_MEM_AVAILABLE_INT);
+    // Ensure we're in pure manual mode (no auto-enqueue)
+    if (txq_status != 0x0000) {
+        printf("[KSZ8851SNL]   ⚠️  Clearing TXQ_CMD to pure manual mode...\r\n");
+        ksz8851_reg_write(REG_TXQ_CMD, 0x0000);
+        vTaskDelay(pdMS_TO_TICKS(1));
         txq_status = ksz8851_reg_read(REG_TXQ_CMD);
+        printf("[KSZ8851SNL]   TXQ_CMD after clear: 0x%04X\r\n", txq_status);
     }
     
-    // Always trigger manual TXQ_ENQUEUE to ensure transmission starts
-    printf("[KSZ8851SNL]   Writing combined TXQ command: AUTO_ENQUEUE + ENQUEUE...\r\n");
-    uint16_t combined_cmd = TXQ_AUTO_ENQUEUE | TXQ_ENQUEUE;
-    printf("[KSZ8851SNL]   Command value: 0x%04X (AUTO: 0x%04X + MANUAL: 0x%04X)\r\n", 
-           combined_cmd, TXQ_AUTO_ENQUEUE, TXQ_ENQUEUE);
+    // Trigger ONLY manual TXQ_ENQUEUE (one frame at a time)
+    printf("[KSZ8851SNL]   Writing PURE MANUAL TXQ_ENQUEUE...\r\n");
+    printf("[KSZ8851SNL]   Command value: 0x%04X (MANUAL ONLY: 0x%04X)\r\n", 
+           TXQ_ENQUEUE, TXQ_ENQUEUE);
     
-    ksz8851_reg_write(REG_TXQ_CMD, combined_cmd);
+    ksz8851_reg_write(REG_TXQ_CMD, TXQ_ENQUEUE);
     
     // Small delay for transmission trigger to take effect
-    vTaskDelay(pdMS_TO_TICKS(1));
+    vTaskDelay(pdMS_TO_TICKS(2));  // Slightly longer delay for manual mode
     
-    // Check final state (TXQ_ENQUEUE may auto-clear after triggering)
+    // Check final state (TXQ_ENQUEUE should auto-clear after triggering)
     txq_status = ksz8851_reg_read(REG_TXQ_CMD);
     printf("[KSZ8851SNL]   Final TXQ_CMD: 0x%04X ", txq_status);
-    if (txq_status & TXQ_AUTO_ENQUEUE) {
-        printf("(auto: YES) ");
-    } else {
-        printf("(auto: NO) ");
-    }
     if (txq_status & TXQ_ENQUEUE) {
-        printf("(manual: PENDING)\r\n");
+        printf("(manual: STILL PENDING - transmission may have failed)\r\n");
     } else {
-        printf("(manual: TRIGGERED)\r\n");
+        printf("(manual: TRIGGERED AND CLEARED - transmission should have started)\r\n");
     }
     
+    // COMPREHENSIVE REGISTER STATE ANALYSIS AFTER TRANSMISSION TRIGGER
+    printf("[KSZ8851SNL] =============================================\r\n");
+    printf("[KSZ8851SNL] REGISTER STATE AFTER TRANSMISSION TRIGGER\r\n");
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
+    uint16_t reg_tx_ctrl_after = ksz8851_reg_read(REG_TX_CTRL);
+    uint16_t reg_txq_cmd_after = ksz8851_reg_read(REG_TXQ_CMD);
+    uint16_t reg_int_status_after = ksz8851_reg_read(REG_INT_STATUS);
+    uint16_t reg_port_status_after = ksz8851_reg_read(0xF8);
+    uint16_t reg_tx_status_after = ksz8851_reg_read(0x72);
+    uint16_t reg_tx_total_frame_after = ksz8851_reg_read(0x74);
+    uint16_t reg_tx_mem_after = ksz8851_reg_read(REG_TX_MEM_INFO);
+    
+    printf("[KSZ8851SNL]   TX_CTRL (0x70):        0x%04X -> 0x%04X\r\n", reg_tx_ctrl, reg_tx_ctrl_after);
+    printf("[KSZ8851SNL]     - TX_ENABLE:         %s -> %s\r\n", 
+           (reg_tx_ctrl & 0x0001) ? "YES" : "NO",
+           (reg_tx_ctrl_after & 0x0001) ? "YES" : "NO");
+    printf("[KSZ8851SNL]     - TX_FLOW_ENABLE:    %s -> %s\r\n", 
+           (reg_tx_ctrl & 0x0008) ? "YES" : "NO",
+           (reg_tx_ctrl_after & 0x0008) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   TXQ_CMD (0x80):        0x%04X -> 0x%04X\r\n", reg_txq_cmd, reg_txq_cmd_after);
+    printf("[KSZ8851SNL]   INT_STATUS (0x92):     0x%04X -> 0x%04X\r\n", reg_int_status, reg_int_status_after);
+    printf("[KSZ8851SNL]   PORT_STATUS (0xF8):    0x%04X -> 0x%04X\r\n", reg_port_status, reg_port_status_after);
+    printf("[KSZ8851SNL]     - LINK_GOOD:         %s -> %s\r\n", 
+           (reg_port_status & 0x0020) ? "YES" : "NO",
+           (reg_port_status_after & 0x0020) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   TX_STATUS (0x72):      0x%04X -> 0x%04X\r\n", reg_tx_status, reg_tx_status_after);
+    printf("[KSZ8851SNL]   TX_TOTAL_FRAME (0x74): 0x%04X -> 0x%04X\r\n", reg_tx_total_frame, reg_tx_total_frame_after);
+    printf("[KSZ8851SNL]   TX_MEM_INFO (0x8C):    0x%04X -> 0x%04X\r\n", tx_mem_info, reg_tx_mem_after);
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
     // Re-check TX_CTRL after transmission attempt
-    uint16_t tx_ctrl_check = ksz8851_reg_read(REG_TX_CTRL);
+    uint16_t tx_ctrl_check = reg_tx_ctrl_after;
     uint16_t flow_final = tx_ctrl_check & TX_CTRL_FLOW_ENABLE;
     printf("[KSZ8851SNL]   TX_CTRL after transmission: 0x%04X (FLOW_ENABLE: %s)\r\n", 
            tx_ctrl_check, flow_final ? "YES" : "NO");
@@ -1743,7 +1818,62 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(
         }
     }
     
-    // Step 14: Update transmission statistics
+    // Step 14: FINAL COMPREHENSIVE REGISTER STATE ANALYSIS
+    printf("[KSZ8851SNL] =============================================\r\n");
+    printf("[KSZ8851SNL] FINAL REGISTER STATE AFTER TRANSMISSION\r\n");
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
+    uint16_t reg_tx_ctrl_final = ksz8851_reg_read(REG_TX_CTRL);
+    uint16_t reg_txq_cmd_final = ksz8851_reg_read(REG_TXQ_CMD);
+    uint16_t reg_int_status_final = ksz8851_reg_read(REG_INT_STATUS);
+    uint16_t reg_port_status_final = ksz8851_reg_read(0xF8);
+    uint16_t reg_tx_status_final = ksz8851_reg_read(0x72);
+    uint16_t reg_tx_total_frame_final = ksz8851_reg_read(0x74);
+    uint16_t reg_tx_mem_final = ksz8851_reg_read(REG_TX_MEM_INFO);
+    uint16_t reg_led_ctrl_final = ksz8851_reg_read(REG_LED_CTRL);
+    uint16_t reg_phy_status_final = ksz8851_reg_read(0xE6);
+    
+    printf("[KSZ8851SNL] CRITICAL REGISTER FINAL STATES:\r\n");
+    printf("[KSZ8851SNL]   TX_CTRL (0x70):        0x%04X (TX_EN: %s, FLOW_EN: %s)\r\n", 
+           reg_tx_ctrl_final,
+           (reg_tx_ctrl_final & 0x0001) ? "YES" : "NO",
+           (reg_tx_ctrl_final & 0x0008) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   TXQ_CMD (0x80):        0x%04X (ENQUEUE: %s, AUTO_EN: %s)\r\n", 
+           reg_txq_cmd_final,
+           (reg_txq_cmd_final & 0x0001) ? "YES" : "NO",
+           (reg_txq_cmd_final & 0x0004) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   INT_STATUS (0x92):     0x%04X (TX_INT: %s)\r\n", 
+           reg_int_status_final,
+           (reg_int_status_final & 0x4000) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   PORT_STATUS (0xF8):    0x%04X (LINK: %s, %s, %s)\r\n", 
+           reg_port_status_final,
+           (reg_port_status_final & 0x0020) ? "UP" : "DOWN",
+           (reg_port_status_final & 0x0004) ? "FULL" : "HALF",
+           (reg_port_status_final & 0x0002) ? "100M" : "10M");
+    printf("[KSZ8851SNL]   TX_STATUS (0x72):      0x%04X\r\n", reg_tx_status_final);
+    printf("[KSZ8851SNL]   TX_TOTAL_FRAME (0x74): 0x%04X\r\n", reg_tx_total_frame_final);
+    printf("[KSZ8851SNL]   TX_MEM_INFO (0x8C):    0x%04X (available: %d bytes)\r\n", 
+           reg_tx_mem_final, reg_tx_mem_final & TX_MEM_AVAILABLE_MASK);
+    printf("[KSZ8851SNL]   LED_CTRL (0xC6):       0x%04X\r\n", reg_led_ctrl_final);
+    printf("[KSZ8851SNL]   PHY_STATUS (0xE6):     0x%04X\r\n", reg_phy_status_final);
+    
+    // Analysis and diagnosis
+    printf("[KSZ8851SNL] TRANSMISSION DIAGNOSIS:\r\n");
+    printf("[KSZ8851SNL]   - Frame written to FIFO: %s\r\n", 
+           (reg_tx_mem_final != tx_mem_info) ? "YES" : "NO");
+    printf("[KSZ8851SNL]   - TXQ_ENQUEUE triggered: %s\r\n", 
+           (reg_txq_cmd_final & 0x0001) ? "NO (still pending)" : "YES (cleared)");
+    printf("[KSZ8851SNL]   - TX interrupt fired: %s\r\n", 
+           tx_interrupt_fired ? "YES" : "NO");
+    printf("[KSZ8851SNL]   - TX total frame count changed: %s (0x%04X -> 0x%04X)\r\n", 
+           (reg_tx_total_frame != reg_tx_total_frame_final) ? "YES" : "NO",
+           reg_tx_total_frame, reg_tx_total_frame_final);
+    printf("[KSZ8851SNL]   - Link status: %s\r\n", 
+           (reg_port_status_final & 0x0020) ? "LINK UP" : "LINK DOWN");
+    
+    printf("[KSZ8851SNL] =============================================\r\n");
+    
+    // Step 15: Update transmission statistics
     context->tx_packets++;
     printf("[KSZ8851SNL] TX statistics updated: %lu packets sent\r\n", context->tx_packets);
     
