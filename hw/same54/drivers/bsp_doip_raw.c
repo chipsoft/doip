@@ -1,4 +1,6 @@
 #include "driver_doip.h"
+// Include network interface abstraction for DoIP
+#include "bsp_netif_doip.h"
 // Include lwIP headers first to avoid ERR_TIMEOUT conflict with ASF4
 #include "lwip/tcp.h"
 #include "lwip/udp.h"
@@ -7,6 +9,7 @@
 #include "lwip/ip_addr.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/ip4.h"
+#include "lwip/netif.h"
 #include "eth_ipstack_main.h"
 #include "utils_assert.h"
 #include "printf.h"
@@ -61,10 +64,16 @@ typedef struct {
     uint8_t doip_header[DOIP_HEADER_SIZE];
 } universal_doip_sender_t;
 
-// Pure packet bridge hardware context with universal sender
+// Pure packet bridge hardware context with universal sender and network interface abstraction
 typedef struct {
     // Basic state
     drv_doip_state_t current_state;
+    
+    // Network interface abstraction
+    drv_netif_doip_t *netif_driver;        /**< Network interface driver instance */
+    struct netif *lwip_netif;              /**< lwIP network interface pointer */
+    bool netif_initialized;                /**< Network interface initialization status */
+    bool netif_link_up;                    /**< Network interface link status */
     
     // Raw lwIP resources
     struct tcp_pcb *tcp_pcb;
@@ -96,9 +105,13 @@ typedef struct {
 // Small discovery message buffer
 static uint8_t discovery_message_buffer[32];
 
-// Static hardware context - pure bridge
+// Static hardware context - pure bridge with network interface abstraction
 static drv_doip_hw_context_t drv_doip_hw_context_0 = {
     .current_state = DRV_DOIP_STATE_IDLE,
+    .netif_driver = NULL,
+    .lwip_netif = NULL,
+    .netif_initialized = false,
+    .netif_link_up = false,
     .tcp_pcb = NULL,
     .udp_pcb = NULL,
     .receive_callback = NULL,
@@ -776,7 +789,7 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     ASSERT(hw_context != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    printf("DOIP Bridge: Simple initialization\r\n");
+    printf("DOIP Bridge: Network interface aware initialization (%s)\r\n", bsp_netif_doip_get_type_string());
     
     // Initialize basic state
     context->current_state = DRV_DOIP_STATE_IDLE;
@@ -785,6 +798,42 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     context->receive_callback = NULL;
     context->last_source_ip = 0;
     memset(context->unified_buffer, 0, DOIP_UNIFIED_BUFFER_SIZE);
+    
+    // Initialize network interface abstraction
+    context->netif_driver = bsp_netif_doip_get_driver();
+    context->lwip_netif = NULL;
+    context->netif_initialized = false;
+    context->netif_link_up = false;
+    
+    // Check if network interface hardware is available
+    if (!bsp_netif_doip_hardware_available(NULL)) {
+        printf("DOIP Bridge: %s hardware not available\r\n", bsp_netif_doip_get_type_string());
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Initialize the network interface with default configuration
+    printf("DOIP Bridge: Initializing %s network interface\r\n", bsp_netif_doip_get_type_string());
+    drv_netif_doip_status_t netif_result = bsp_netif_doip_init_default();
+    if (netif_result != DRV_NETIF_DOIP_STATUS_OK) {
+        printf("DOIP Bridge: Network interface initialization failed: %d\r\n", netif_result);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    // Get the lwIP network interface pointer for direct TCP/UDP operations
+    netif_result = hw_netif_doip_get_lwip_netif(context->netif_driver, (void**)&context->lwip_netif);
+    if (netif_result != DRV_NETIF_DOIP_STATUS_OK || context->lwip_netif == NULL) {
+        printf("DOIP Bridge: Failed to get lwIP network interface pointer: %d\r\n", netif_result);
+        return DRV_DOIP_STATUS_ERROR;
+    }
+    
+    context->netif_initialized = true;
+    
+    // Check initial link status
+    bool link_up;
+    if (hw_netif_doip_check_link(context->netif_driver, &link_up) == DRV_NETIF_DOIP_STATUS_OK) {
+        context->netif_link_up = link_up;
+        printf("DOIP Bridge: Initial link status: %s\r\n", link_up ? "UP" : "DOWN");
+    }
     
     // Initialize universal sender state
     memset(&context->sender_state, 0, sizeof(universal_doip_sender_t));
@@ -799,7 +848,11 @@ static drv_doip_status_t drv_doip_init_impl(const void *hw_context)
     // Initialize configuration with defaults
     hw_doip_create_default_config(&context->config);
     
-    printf("DOIP Bridge: Simple initialization completed with metrics reset and default config\r\n");
+    // Print network interface information
+    bsp_netif_doip_print_info();
+    
+    printf("DOIP Bridge: Initialization completed with %s network interface\r\n", 
+           bsp_netif_doip_get_type_string());
     return DRV_DOIP_STATUS_OK;
 }
 
@@ -808,7 +861,7 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
     ASSERT(hw_context != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    printf("DOIP Bridge: Simple cleanup\r\n");
+    printf("DOIP Bridge: Deinitializing with %s network interface\r\n", bsp_netif_doip_get_type_string());
     
     // Close TCP connection
     if (context->tcp_pcb != NULL) {
@@ -822,8 +875,21 @@ static drv_doip_status_t drv_doip_deinit_impl(const void *hw_context)
         context->udp_pcb = NULL;
     }
     
+    // Deinitialize network interface abstraction
+    if (context->netif_driver != NULL && context->netif_initialized) {
+        printf("DOIP Bridge: Deinitializing network interface abstraction\r\n");
+        drv_netif_doip_status_t netif_result = hw_netif_doip_deinit(context->netif_driver);
+        if (netif_result != DRV_NETIF_DOIP_STATUS_OK) {
+            printf("DOIP Bridge: Network interface deinitialization failed: %d\r\n", netif_result);
+        } else {
+            printf("DOIP Bridge: Network interface deinitialized successfully\r\n");
+        }
+        context->netif_initialized = false;
+        context->lwip_netif = NULL;
+    }
+    
     context->current_state = DRV_DOIP_STATE_IDLE;
-    printf("DOIP Bridge: Simple cleanup completed\r\n");
+    printf("DOIP Bridge: Deinitialization completed\r\n");
     return DRV_DOIP_STATUS_OK;
 }
 
@@ -834,74 +900,73 @@ static drv_doip_status_t drv_doip_discover_vehicles_impl(const void *hw_context,
     ASSERT(vehicle_info != NULL);
     drv_doip_hw_context_t *context = (drv_doip_hw_context_t *)hw_context;
     
-    printf("DOIP Bridge: Sending UDP discovery broadcast\r\n");
+    printf("DOIP Bridge: UDP discovery via %s network interface\r\n", bsp_netif_doip_get_type_string());
+    
+    // Check network interface status before attempting discovery
+    if (context->netif_driver != NULL && context->netif_initialized) {
+        drv_netif_doip_status_info_t netif_status;
+        drv_netif_doip_status_t netif_result = hw_netif_doip_get_status(context->netif_driver, &netif_status);
+        if (netif_result != DRV_NETIF_DOIP_STATUS_OK || !netif_status.link_up) {
+            printf("DOIP Bridge: Network interface not ready for discovery (status=%d, link_up=%d)\r\n", 
+                   netif_result, netif_status.link_up);
+            return DRV_DOIP_STATUS_ERROR;
+        }
+        printf("DOIP Bridge: Network interface ready for discovery (link up, %d Mbps)\r\n", netif_status.link_speed);
+    } else {
+        printf("DOIP Bridge: Warning - Network interface not initialized, proceeding with direct lwIP\r\n");
+    }
+    
     context->current_state = DRV_DOIP_STATE_DISCOVERING;
     
-    // Simple discovery - single UDP broadcast
-    err_t err;
-    ip_addr_t broadcast_addr;
-    struct pbuf *p;
+    // Use direct packet transmission like the working debug function
+    // Create DoIP discovery packet with full Ethernet/IP/UDP headers
+    uint8_t doip_discovery_packet[64];
+    memset(doip_discovery_packet, 0, sizeof(doip_discovery_packet));
     
-    // Clean up any existing UDP PCB
-    if (context->udp_pcb != NULL) {
-        udp_remove(context->udp_pcb);
-        context->udp_pcb = NULL;
-    }
+    // Ethernet header (broadcast)
+    memset(&doip_discovery_packet[0], 0xFF, 6);    // Destination MAC: broadcast
+    doip_discovery_packet[6] = 0x00; doip_discovery_packet[7] = 0x00; doip_discovery_packet[8] = 0x00;
+    doip_discovery_packet[9] = 0x00; doip_discovery_packet[10] = 0x20; doip_discovery_packet[11] = 0x76;  // Source MAC
+    doip_discovery_packet[12] = 0x08; doip_discovery_packet[13] = 0x00; // EtherType: IPv4
     
-    // Create UDP PCB
-    context->udp_pcb = udp_new();
-    if (context->udp_pcb == NULL) {
-        printf("DOIP Bridge: Failed to create UDP PCB\r\n");
-        context->current_state = DRV_DOIP_STATE_IDLE;
-        return DRV_DOIP_STATUS_ERROR;
-    }
+    // IPv4 header
+    doip_discovery_packet[14] = 0x45;   // Version + IHL
+    doip_discovery_packet[15] = 0x00;   // DSCP + ECN
+    doip_discovery_packet[16] = 0x00; doip_discovery_packet[17] = 0x24; // Total Length: 36 bytes (20 IP + 8 UDP + 8 DoIP)
+    doip_discovery_packet[18] = 0x00; doip_discovery_packet[19] = 0x01; // Identification
+    doip_discovery_packet[20] = 0x00; doip_discovery_packet[21] = 0x00; // Flags + Fragment Offset
+    doip_discovery_packet[22] = 0x40;   // TTL
+    doip_discovery_packet[23] = 0x11;   // Protocol: UDP
+    doip_discovery_packet[24] = 0x00; doip_discovery_packet[25] = 0x00; // Header Checksum (calc later)
+    doip_discovery_packet[26] = 192; doip_discovery_packet[27] = 168; doip_discovery_packet[28] = 100; doip_discovery_packet[29] = 2; // Source IP
+    doip_discovery_packet[30] = 255; doip_discovery_packet[31] = 255; doip_discovery_packet[32] = 255; doip_discovery_packet[33] = 255; // Dest IP (broadcast)
     
-    // Set up UDP receive callback
-    udp_recv(context->udp_pcb, bridge_udp_recv_callback, context);
+    // UDP header
+    doip_discovery_packet[34] = 0x34; doip_discovery_packet[35] = 0x58; // Source port: 13400
+    doip_discovery_packet[36] = 0x34; doip_discovery_packet[37] = 0x58; // Dest port: 13400 (DoIP)
+    doip_discovery_packet[38] = 0x00; doip_discovery_packet[39] = 0x10; // Length: 16 bytes (8 UDP + 8 DoIP)
+    doip_discovery_packet[40] = 0x00; doip_discovery_packet[41] = 0x00; // Checksum
     
-    // Bind to local port
-    err = udp_bind(context->udp_pcb, IP_ADDR_ANY, 0);
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: Failed to bind UDP PCB - err=%d\r\n", err);
-        udp_remove(context->udp_pcb);
-        context->udp_pcb = NULL;
-        context->current_state = DRV_DOIP_STATE_IDLE;
-        return DRV_DOIP_STATUS_ERROR;
-    }
+    // DoIP header (Vehicle identification request)
+    doip_discovery_packet[42] = 0x02;  // Protocol version
+    doip_discovery_packet[43] = 0xFD;  // Inverse protocol version
+    doip_discovery_packet[44] = 0x00;  // Payload type high
+    doip_discovery_packet[45] = 0x01;  // Payload type low (vehicle identification request)
+    doip_discovery_packet[46] = 0x00;  // Length high bytes
+    doip_discovery_packet[47] = 0x00;
+    doip_discovery_packet[48] = 0x00;
+    doip_discovery_packet[49] = 0x00;  // Length low (0 bytes payload)
     
-    // Prepare broadcast address
-    IP4_ADDR(&broadcast_addr, 255, 255, 255, 255);
+    uint16_t packet_length = 50; // Total: 14 (eth) + 20 (ip) + 8 (udp) + 8 (doip)
     
-    // Create simple discovery message
-    discovery_message_buffer[0] = 0x02;  // Protocol version
-    discovery_message_buffer[1] = 0xFD;  // Inverse protocol version
-    discovery_message_buffer[2] = 0x00;  // Payload type high
-    discovery_message_buffer[3] = 0x01;  // Payload type low (vehicle identification request)
-    discovery_message_buffer[4] = 0x00;  // Length high bytes
-    discovery_message_buffer[5] = 0x00;
-    discovery_message_buffer[6] = 0x00;
-    discovery_message_buffer[7] = 0x00;  // Length low (0 bytes payload)
+    printf("DOIP Bridge: Sending DoIP discovery via direct packet transmission (%d bytes)\r\n", packet_length);
     
-    // Create pbuf
-    p = pbuf_alloc(PBUF_TRANSPORT, 8, PBUF_ROM);
-    if (p == NULL) {
-        printf("DOIP Bridge: Failed to allocate pbuf\r\n");
-        udp_remove(context->udp_pcb);
-        context->udp_pcb = NULL;
-        context->current_state = DRV_DOIP_STATE_IDLE;
-        return DRV_DOIP_STATUS_ERROR;
-    }
+    // Send through KSZ8851SNL directly (same as working debug function)
+    extern drv_ksz8851snl_t ksz8851snl_0;
+    drv_ksz8851snl_status_t result = hw_ksz8851snl_send_packet(&ksz8851snl_0, doip_discovery_packet, packet_length);
     
-    p->payload = discovery_message_buffer;
-    
-    // Send broadcast request
-    err = udp_sendto(context->udp_pcb, p, &broadcast_addr, 13400);
-    pbuf_free(p);
-    
-    if (err != ERR_OK) {
-        printf("DOIP Bridge: Failed to send discovery request - err=%d\r\n", err);
-        udp_remove(context->udp_pcb);
-        context->udp_pcb = NULL;
+    if (result != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("DOIP Bridge: Failed to send discovery packet - err=%d\r\n", result);
         context->current_state = DRV_DOIP_STATE_IDLE;
         return DRV_DOIP_STATUS_ERROR;
     }
@@ -968,9 +1033,24 @@ static drv_doip_status_t drv_doip_connect_to_vehicle_impl(const void *hw_context
     uint32_t server_ip = vehicle_info->ip_address;
     uint16_t server_port = vehicle_info->tcp_port;
     
-    printf("DOIP Bridge: Simple TCP connect to %lu.%lu.%lu.%lu:%d\r\n", 
+    printf("DOIP Bridge: TCP connect via %s to %lu.%lu.%lu.%lu:%d\r\n", 
+           bsp_netif_doip_get_type_string(),
            server_ip & 0xFF, (server_ip >> 8) & 0xFF, 
            (server_ip >> 16) & 0xFF, (server_ip >> 24) & 0xFF, server_port);
+    
+    // Check network interface status before attempting connection
+    if (context->netif_driver != NULL && context->netif_initialized) {
+        drv_netif_doip_status_info_t netif_status;
+        drv_netif_doip_status_t netif_result = hw_netif_doip_get_status(context->netif_driver, &netif_status);
+        if (netif_result != DRV_NETIF_DOIP_STATUS_OK || !netif_status.link_up) {
+            printf("DOIP Bridge: Network interface not ready for connection (status=%d, link_up=%d)\r\n", 
+                   netif_result, netif_status.link_up);
+            return DRV_DOIP_STATUS_ERROR;
+        }
+        printf("DOIP Bridge: Network interface ready for connection (link up, %d Mbps)\r\n", netif_status.link_speed);
+    } else {
+        printf("DOIP Bridge: Warning - Network interface not initialized, proceeding with direct lwIP\r\n");
+    }
     
     // Convert IP address
     IP4_ADDR(&server_addr, 

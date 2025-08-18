@@ -215,8 +215,11 @@ ifeq ($(NETWORK_INTERFACE), KSZ8851SNL)
 DRIVER_CFILES += \
 $(DRIVERS_DIR)/driver_spi.c \
 $(DRIVERS_DIR)/driver_ksz8851snl.c \
+$(DRIVERS_DIR)/driver_netif_doip.c \
 $(BSP_DRIVERS_DIR)/bsp_spi.c \
 $(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
+$(BSP_DRIVERS_DIR)/bsp_netif_doip.c \
+$(BSP_DRIVERS_DIR)/bsp_netif_doip_ksz.c \
 $(LWIP_DIR)/port/ethif_ksz8851snl.c
 DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
 ASF4_CFILES += $(ASF4_DIR)/hal/src/hal_spi_m_sync.c

@@ -1409,64 +1409,39 @@ static void doip_client_task(void *pvParameters)
 		printf("🔍 [DEBUG] Current DOIP state: %d\r\n", current_state);
 		
 		if (current_state == DRV_DOIP_STATE_IDLE) {
-			printf("✅ [DEBUG] DOIP ready - now testing simple packet transmission\r\n");
+			printf("✅ [DEBUG] DOIP ready - now starting ECU discovery\r\n");
 			
-			// Simple packet transmission test (no mock ECU needed)
-			printf("=== Simple Ethernet Packet Test ===\r\n");
+			// Perform DoIP vehicle discovery
+			printf("=== DoIP Vehicle Discovery ===\r\n");
+			printf("🔍 Broadcasting DoIP vehicle identification request...\r\n");
 			
-			// Create a simple UDP broadcast packet for testing
-			uint8_t test_packet[64];
-			memset(test_packet, 0, sizeof(test_packet));
+			uint8_t discovered_ecu_count = doip_discover_all_ecus(doip_handle);
 			
-			// Ethernet header (broadcast)
-			memset(&test_packet[0], 0xFF, 6);    // Destination MAC: broadcast
-			memset(&test_packet[6], 0x00, 6);    // Source MAC: all zeros for now
-			test_packet[6] = 0x00; test_packet[7] = 0x00; test_packet[8] = 0x00;
-			test_packet[9] = 0x00; test_packet[10] = 0x20; test_packet[11] = 0x76;  // Simple MAC
-			test_packet[12] = 0x08; test_packet[13] = 0x00; // EtherType: IPv4
-			
-			// Simple IPv4 header
-			test_packet[14] = 0x45;   // Version + IHL
-			test_packet[15] = 0x00;   // DSCP + ECN
-			test_packet[16] = 0x00; test_packet[17] = 0x32; // Total Length: 50 bytes
-			test_packet[18] = 0x00; test_packet[19] = 0x01; // Identification
-			test_packet[20] = 0x00; test_packet[21] = 0x00; // Flags + Fragment Offset
-			test_packet[22] = 0x40;   // TTL
-			test_packet[23] = 0x11;   // Protocol: UDP
-			test_packet[24] = 0x00; test_packet[25] = 0x00; // Header Checksum (calc later)
-			test_packet[26] = 192; test_packet[27] = 168; test_packet[28] = 100; test_packet[29] = 2; // Source IP
-			test_packet[30] = 255; test_packet[31] = 255; test_packet[32] = 255; test_packet[33] = 255; // Dest IP (broadcast)
-			
-			// Simple UDP header
-			test_packet[34] = 0x13; test_packet[35] = 0x89; // Source port: 5001
-			test_packet[36] = 0x13; test_packet[37] = 0x89; // Dest port: 5001
-			test_packet[38] = 0x00; test_packet[39] = 0x12; // Length: 18 bytes (8 + 10)
-			test_packet[40] = 0x00; test_packet[41] = 0x00; // Checksum
-			
-			// UDP payload: "TEST PACKET"
-			const char* payload = "TEST PKT";
-			memcpy(&test_packet[42], payload, 8);
-			
-			uint16_t packet_length = 50; // Total: 14 (eth) + 20 (ip) + 8 (udp) + 8 (data)
-			
-			printf("📤 Sending simple test packet (%d bytes)...\r\n", packet_length);
-			
-			// Send through KSZ8851SNL directly
-			extern drv_ksz8851snl_t ksz8851snl_0;
-			drv_ksz8851snl_status_t result = hw_ksz8851snl_send_packet(&ksz8851snl_0, test_packet, packet_length);
-			
-			if (result == DRV_KSZ8851SNL_STATUS_OK) {
-				printf("✅ Test packet sent successfully!\r\n");
-				printf("🔍 Check Wireshark for UDP broadcast packet from 192.168.100.2\r\n");
+			if (discovered_ecu_count > 0) {
+				printf("✅ DoIP Discovery successful! Found %d ECUs\r\n", discovered_ecu_count);
+				printf("🔍 Discovered ECUs:\r\n");
+				
+				// Print discovered ECU information
+				for (int i = 0; i < discovered_ecu_count && i < MAX_DISCOVERED_ECUS; i++) {
+					printf("  ECU %d: IP=%d.%d.%d.%d, TCP Port=%d, Logical Address=0x%04X\r\n",
+					       i + 1,
+					       (discovered_ecus.vehicles[i].ip_address >> 0) & 0xFF,
+					       (discovered_ecus.vehicles[i].ip_address >> 8) & 0xFF,
+					       (discovered_ecus.vehicles[i].ip_address >> 16) & 0xFF,
+					       (discovered_ecus.vehicles[i].ip_address >> 24) & 0xFF,
+					       discovered_ecus.vehicles[i].tcp_port,
+					       discovered_ecus.vehicles[i].logical_address);
+				}
 			} else {
-				printf("❌ Test packet failed: %d\r\n", result);
+				printf("❌ DoIP Discovery failed or no ECUs found\r\n");
+				printf("🔍 Check network connection and ensure ECUs are available\r\n");
 			}
 			
-			printf("✅ Simple packet test completed\r\n");
-			printf("🔍 Check Wireshark to see if packets appear correctly\r\n");
+			printf("✅ DoIP Discovery cycle completed\r\n");
 			
-			// Break out of the while loop - test completed
-			vTaskDelete(NULL);
+			// Wait before next discovery cycle
+			printf("🔍 Waiting 10 seconds before next discovery...\r\n");
+			vTaskDelay(pdMS_TO_TICKS(10000));
 			
 		} else {
 			// Wait a bit and try again

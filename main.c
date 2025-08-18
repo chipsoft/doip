@@ -176,14 +176,14 @@ static void raw_tcp_test_send_packets(void)
     printf("🔍 Waiting for KSZ8851SNL to be ready...\r\n");
     vTaskDelay(pdMS_TO_TICKS(3000));
     
-    // Run minimal test once
-    minimal_packet_test();
+    // Minimal packet tests disabled - DoIP discovery handles network validation
+    printf("📡 Minimal packet tests disabled - DoIP client will handle network testing\r\n");
+    printf("🔍 Monitor DoIP client task for vehicle discovery broadcasts\r\n");
     
-    // Wait and try again every 10 seconds
+    // Just wait - let DoIP client task handle everything
     while (1) {
-        printf("\r\n=== RUNNING MINIMAL TEST AGAIN ===\r\n");
-        minimal_packet_test();
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        vTaskDelay(pdMS_TO_TICKS(30000)); // Check every 30 seconds
+        printf("🔍 TCP test task idle - DoIP client handling all network operations\r\n");
     }
 }
 
@@ -270,11 +270,7 @@ static void network_init_task(void *pvParameters)
 			// Run register test
 			ksz8851snl_debug_test_registers();
 			
-			// Run packet transmission test to validate fixes
-			ksz8851snl_debug_test_packet_transmission();
-			ksz8851snl_debug_test_packet_transmission();
-			ksz8851snl_debug_test_packet_transmission();
-			ksz8851snl_debug_test_packet_transmission();
+			// Debug packet transmission tests disabled - DoIP discovery will handle network testing
 			
 			printf("[MAIN] ================================================\r\n");
 			printf("[MAIN] KSZ8851SNL initialization and testing COMPLETE\r\n");
