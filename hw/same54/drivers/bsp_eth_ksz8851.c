@@ -61,11 +61,14 @@
 #define KSZ8851_P1CR                                    0xF6
 #define KSZ8851_P1SR                                    0xF8
 
-// SPI Command Definitions
-#define KSZ8851_CMD_READ                                ((0 << 14) | (0 << 13))
-#define KSZ8851_CMD_WRITE                               ((0 << 14) | (1 << 13))
+// SPI Command Definitions (based on KSZ8851 datasheet)
+#define KSZ8851_CMD_READ                                0x00
+#define KSZ8851_CMD_WRITE                               0x40
 #define KSZ8851_CMD_FIFO_READ                           0x80
 #define KSZ8851_CMD_FIFO_WRITE                          0xC0
+
+// Address mask for register access
+#define KSZ8851_ADDR_MASK                               0x3F
 
 // Register Bit Definitions
 #define KSZ8851_CCR_EEPROM                              0x0200
@@ -257,11 +260,15 @@ static drv_eth_ksz8851_status_t ksz8851_read_reg(drv_eth_ksz8851_hw_context_t *c
     uint8_t rx_buffer[4];
     drv_spi_status_t status;
     
-    // Prepare SPI command for register read
-    tx_buffer[0] = (uint8_t)((KSZ8851_CMD_READ | reg) >> 8);
-    tx_buffer[1] = (uint8_t)(KSZ8851_CMD_READ | reg);
-    tx_buffer[2] = 0x00;  // Dummy byte
+    // Prepare SPI command for register read (KSZ8851 format)
+    // Command format: [CMD][ADDR][DUMMY][DUMMY] -> [DATA_H][DATA_L] received
+    uint8_t addr = (reg >> 1) & KSZ8851_ADDR_MASK;  // Convert word address to byte address
+    tx_buffer[0] = KSZ8851_CMD_READ | addr;
+    tx_buffer[1] = 0x00;  // Dummy byte
+    tx_buffer[2] = 0x00;  // Dummy byte  
     tx_buffer[3] = 0x00;  // Dummy byte
+    
+    printf("[KSZ8851] Reading reg 0x%02X: CMD=0x%02X, addr=0x%02X\r\n", reg, tx_buffer[0], addr);
     
     // Assert CS
     hw_spi_cs_set_low(context->spi_handle);
@@ -273,10 +280,14 @@ static drv_eth_ksz8851_status_t ksz8851_read_reg(drv_eth_ksz8851_hw_context_t *c
     hw_spi_cs_set_high(context->spi_handle);
     
     if (status == DRV_SPI_STATUS_OK) {
+        // KSZ8851 returns data in bytes 2 and 3 (or 1 and 2 depending on alignment)
         *value = (rx_buffer[2] << 8) | rx_buffer[3];
+        printf("[KSZ8851] RX: [0x%02X 0x%02X 0x%02X 0x%02X] -> value=0x%04X\r\n",
+               rx_buffer[0], rx_buffer[1], rx_buffer[2], rx_buffer[3], *value);
         return DRV_ETH_KSZ8851_STATUS_OK;
     }
     
+    printf("[KSZ8851] SPI transfer failed: %d\r\n", status);
     return convert_spi_error(status);
 }
 
@@ -285,11 +296,15 @@ static drv_eth_ksz8851_status_t ksz8851_write_reg(drv_eth_ksz8851_hw_context_t *
     uint8_t tx_buffer[4];
     drv_spi_status_t status;
     
-    // Prepare SPI command for register write
-    tx_buffer[0] = (uint8_t)((KSZ8851_CMD_WRITE | reg) >> 8);
-    tx_buffer[1] = (uint8_t)(KSZ8851_CMD_WRITE | reg);
-    tx_buffer[2] = (uint8_t)(value >> 8);
-    tx_buffer[3] = (uint8_t)value;
+    // Prepare SPI command for register write (KSZ8851 format)
+    uint8_t addr = (reg >> 1) & KSZ8851_ADDR_MASK;  // Convert word address to byte address
+    tx_buffer[0] = KSZ8851_CMD_WRITE | addr;
+    tx_buffer[1] = 0x00;  // Dummy byte or additional addressing
+    tx_buffer[2] = (uint8_t)(value >> 8);   // Data high byte
+    tx_buffer[3] = (uint8_t)value;          // Data low byte
+    
+    printf("[KSZ8851] Writing reg 0x%02X: CMD=0x%02X, addr=0x%02X, value=0x%04X\r\n", 
+           reg, tx_buffer[0], addr, value);
     
     // Assert CS
     hw_spi_cs_set_low(context->spi_handle);
@@ -299,6 +314,10 @@ static drv_eth_ksz8851_status_t ksz8851_write_reg(drv_eth_ksz8851_hw_context_t *
     
     // Deassert CS
     hw_spi_cs_set_high(context->spi_handle);
+    
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851] SPI write failed: %d\r\n", status);
+    }
     
     return convert_spi_error(status);
 }

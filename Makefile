@@ -214,8 +214,10 @@ $(BSP_DRIVERS_DIR)/bsp_led.c
 ifeq ($(NETWORK_INTERFACE), KSZ8851SNL)
 DRIVER_CFILES += \
 $(DRIVERS_DIR)/driver_spi.c \
+$(DRIVERS_DIR)/driver_eth_ksz8851.c \
 $(DRIVERS_DIR)/driver_ksz8851snl.c \
 $(BSP_DRIVERS_DIR)/bsp_spi.c \
+$(BSP_DRIVERS_DIR)/bsp_eth_ksz8851.c \
 $(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
 $(LWIP_DIR)/port/ethif_ksz8851snl.c
 DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
