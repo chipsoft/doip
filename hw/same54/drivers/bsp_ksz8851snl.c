@@ -17,7 +17,7 @@
 #include <string.h>
 
 // Include existing register definitions
-#include "app_libs/FreeRTOS-Plus-TCP/source/portable/NetworkInterface/ksz8851snl/ksz8851snl_reg.h"
+#include "ksz8851snl_reg.h"
 
 // Hardware context structure
 typedef struct {

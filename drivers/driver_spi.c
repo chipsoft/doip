@@ -135,3 +135,27 @@ drv_spi_status_t hw_spi_register_callback(drv_spi_t *handle,
     
     return handle->register_callback(handle->hw_context, type, callback);
 }
+
+void hw_spi_cs_set_low(drv_spi_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->cs_set_low != NULL);
+    
+    if (!handle->is_init) {
+        return;
+    }
+    
+    handle->cs_set_low(handle->hw_context);
+}
+
+void hw_spi_cs_set_high(drv_spi_t *handle)
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->cs_set_high != NULL);
+    
+    if (!handle->is_init) {
+        return;
+    }
+    
+    handle->cs_set_high(handle->hw_context);
+}

@@ -45,6 +45,8 @@ static drv_spi_status_t drv_spi_set_baudrate_impl(const void *hw_context, uint32
 static drv_spi_status_t drv_spi_register_callback_impl(const void *hw_context, 
                                                        drv_spi_cb_type_t type, 
                                                        drv_spi_callback_t callback);
+static void drv_spi_cs_set_low_impl(const void *hw_context);
+static void drv_spi_cs_set_high_impl(const void *hw_context);
 
 // Direct SERCOM4 SPI transfer fallback (bypasses ASF4)
 static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t *rx_data, uint32_t length);
@@ -61,6 +63,8 @@ drv_spi_t spi_4 = {
     .transfer_async = drv_spi_transfer_async_impl,
     .set_baudrate = drv_spi_set_baudrate_impl,
     .register_callback = drv_spi_register_callback_impl,
+    .cs_set_low = drv_spi_cs_set_low_impl,
+    .cs_set_high = drv_spi_cs_set_high_impl,
 };
 
 static drv_spi_status_t convert_asf4_error(int32_t asf4_result)
@@ -383,4 +387,16 @@ static drv_spi_status_t drv_spi_direct_transfer(const uint8_t *tx_data, uint8_t 
     
     printf("[SPI4] Direct SERCOM4 transfer completed successfully\r\n");
     return DRV_SPI_STATUS_OK;
+}
+
+static void drv_spi_cs_set_low_impl(const void *hw_context)
+{
+    (void)hw_context; // Unused parameter
+    drv_spi_cs_set_low();
+}
+
+static void drv_spi_cs_set_high_impl(const void *hw_context)
+{
+    (void)hw_context; // Unused parameter
+    drv_spi_cs_set_high();
 }

@@ -47,6 +47,10 @@ typedef struct {
     drv_spi_status_t (*register_callback)(const void *hw_context, 
                                          drv_spi_cb_type_t type, 
                                          drv_spi_callback_t callback);
+    
+    // Chip select control
+    void (*cs_set_low)(const void *hw_context);
+    void (*cs_set_high)(const void *hw_context);
 } drv_spi_t;
 
 #ifdef __cplusplus
@@ -65,6 +69,10 @@ drv_spi_status_t hw_spi_set_baudrate(drv_spi_t *handle, uint32_t baudrate);
 drv_spi_status_t hw_spi_register_callback(drv_spi_t *handle, 
                                          drv_spi_cb_type_t type, 
                                          drv_spi_callback_t callback);
+
+// Chip select control functions
+void hw_spi_cs_set_low(drv_spi_t *handle);
+void hw_spi_cs_set_high(drv_spi_t *handle);
 
 #ifdef __cplusplus
 }
