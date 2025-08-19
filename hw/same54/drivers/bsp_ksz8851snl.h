@@ -13,6 +13,10 @@ extern drv_ksz8851snl_t ksz8851snl_0;
 void ksz8851snl_debug_test_registers(void);
 void ksz8851snl_debug_gpio_test(void);
 void ksz8851snl_debug_test_packet_transmission(void);
+void ksz8851snl_debug_performance_stats(void);
+void ksz8851snl_diagnose_false_interrupts(void);
+void ksz8851snl_reset_rxq_state(void);
+void ksz8851snl_emergency_reset(void);
 
 #ifdef __cplusplus
 }
