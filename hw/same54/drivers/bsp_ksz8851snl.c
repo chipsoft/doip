@@ -67,34 +67,78 @@ typedef struct {
 
 static ksz8851snl_irq_stats_t irq_stats = {0};
 
+// SPI register access functions forward declarations (must appear before first use)
+static uint16_t ksz8851_reg_read(uint16_t reg);
+static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata);
+
 // KSZ8851SNL interrupt handler callback
 static void ksz8851snl_irq_handler(void)
 {
+
+    //Save IER register value
+    uint16_t ier = ksz8851_reg_read(REG_INT_MASK);
+    //Disable interrupts to release the interrupt line
+    ksz8851_reg_write(REG_INT_MASK, 0);
     printf("[KSZ8851SNL] Interrupt handler called!!!\r\n");
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    
-    // Update interrupt statistics (ISR-safe operations only)
-    irq_stats.total_interrupts++;
-    irq_stats.last_interrupt_time = xTaskGetTickCountFromISR();
-    irq_stats.gpio_pin_state = gpio_get_pin_level(KSZ8851SNL_INT_PIN);
-    
-    // Visual indication that interrupt occurred (toggle LED if available)
-    // This helps confirm the interrupt handler is actually being called
-    
-    // Read interrupt status from KSZ8851SNL (quick ISR-safe operation)
-    // Note: We can't use SPI operations in ISR context with ASF4, so we just signal
-    // the task to handle the interrupt. The actual interrupt status reading will
-    // be done in task context.
-    
-    // Signal that an interrupt has occurred
-    if (ksz8851snl_interrupt_semaphore != NULL) {
-        if (xSemaphoreGiveFromISR(ksz8851snl_interrupt_semaphore, &xHigherPriorityTaskWoken) != pdTRUE) {
-            irq_stats.semaphore_timeouts++;
-        }
+
+    //Read interrupt status register
+    uint16_t isr = ksz8851_reg_read(REG_INT_STATUS);
+
+    //Link status change?
+    if(isr & INT_PHY)
+    {
+       printf("[KSZ8851SNL] Link status changed\r\n");
+       ksz8851_reg_write(REG_INT_STATUS, INT_PHY); // clear link
     }
+    //Re-enable interrupts once the interrupt has been serviced
+    ksz8851_reg_write(REG_INT_MASK, ier);
+
+//     //Packet transmission complete?
+//     if(isr & ISR_TXIS)
+// {
+// 00243       //Clear interrupt flag
+// 00244       ksz8851WriteReg(interface, KSZ8851_REG_ISR, ISR_TXIS);
+// 00245 
+// 00246       //Notify the TCP/IP stack that the transmitter is ready to send
+// 00247       flag |= osSetEventFromIsr(&interface->nicTxEvent);
+// 00248    }
+// 00249 
+// 00250    //Packet received?
+// 00251    if(isr & ISR_RXIS)
+// 00252    {
+// 00253       //Disable RXIE interrupt
+// 00254       ier &= ~IER_RXIE;
+// 00255 
+// 00256       //Set event flag
+// 00257       interface->nicEvent = TRUE;
+// 00258       //Notify the TCP/IP stack of the event
+// 00259       flag |= osSetEventFromIsr(&netEvent);
+// 00260    }    
+
+    // BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     
-    // Request context switch if higher priority task was woken
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    // // Update interrupt statistics (ISR-safe operations only)
+    // irq_stats.total_interrupts++;
+    // irq_stats.last_interrupt_time = xTaskGetTickCountFromISR();
+    // irq_stats.gpio_pin_state = gpio_get_pin_level(KSZ8851SNL_INT_PIN);
+    
+    // // Visual indication that interrupt occurred (toggle LED if available)
+    // // This helps confirm the interrupt handler is actually being called
+    
+    // // Read interrupt status from KSZ8851SNL (quick ISR-safe operation)
+    // // Note: We can't use SPI operations in ISR context with ASF4, so we just signal
+    // // the task to handle the interrupt. The actual interrupt status reading will
+    // // be done in task context.
+    
+    // // Signal that an interrupt has occurred
+    // if (ksz8851snl_interrupt_semaphore != NULL) {
+    //     if (xSemaphoreGiveFromISR(ksz8851snl_interrupt_semaphore, &xHigherPriorityTaskWoken) != pdTRUE) {
+    //         irq_stats.semaphore_timeouts++;
+    //     }
+    // }
+    
+    // // Request context switch if higher priority task was woken
+    // portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
 // Forward declarations (implementations after SPI functions)
@@ -214,10 +258,6 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
 static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void *hw_context, bool *rx_available);
 static drv_ksz8851snl_status_t drv_ksz8851snl_register_callback_impl(const void *hw_context, drv_ksz8851snl_cb_type_t type, drv_ksz8851snl_callback_t callback);
 
-// SPI register access functions forward declarations
-static uint16_t ksz8851_reg_read(uint16_t reg);
-static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata);
-
 // Global driver instance
 drv_ksz8851snl_t ksz8851snl_0 = {
     .is_init = false,
@@ -242,7 +282,7 @@ static uint16_t ksz8851_reg_read(uint16_t reg)
     uint8_t cmd_buf[4];
     uint8_t resp_buf[4] = {0};
     
-    printf("[KSZ8851SNL] Reading register 0x%02X\r\n", reg);
+    // printf("[KSZ8851SNL] Reading register 0x%02X\r\n", reg);
     
     // Build SPI command according to KSZ8851SNL datasheet
     // Bits [15:14] = 00 for read, [13:10] = byte enables, [9:2] = register address, [1:0] = 00
@@ -266,8 +306,8 @@ static uint16_t ksz8851_reg_read(uint16_t reg)
     cmd_buf[2] = 0x00; // Dummy byte for data phase
     cmd_buf[3] = 0x00; // Dummy byte for data phase
     
-    printf("[KSZ8851SNL] SPI CMD: [0x%02X 0x%02X 0x%02X 0x%02X] (cmd=0x%04X)\r\n", 
-           cmd_buf[0], cmd_buf[1], cmd_buf[2], cmd_buf[3], cmd);
+    // printf("[KSZ8851SNL] SPI CMD: [0x%02X 0x%02X 0x%02X 0x%02X] (cmd=0x%04X)\r\n", 
+    //        cmd_buf[0], cmd_buf[1], cmd_buf[2], cmd_buf[3], cmd);
     
     // Perform SPI transfer with proper CS timing
     drv_spi_cs_set_low();
@@ -285,17 +325,17 @@ static uint16_t ksz8851_reg_read(uint16_t reg)
         return 0xFFFF;
     }
     
-    printf("[KSZ8851SNL] SPI RSP: [0x%02X 0x%02X 0x%02X 0x%02X]\r\n", 
-           resp_buf[0], resp_buf[1], resp_buf[2], resp_buf[3]);
+    // printf("[KSZ8851SNL] SPI RSP: [0x%02X 0x%02X 0x%02X 0x%02X]\r\n", 
+    //        resp_buf[0], resp_buf[1], resp_buf[2], resp_buf[3]);
     
     // Extract result - KSZ8851SNL always returns data in bytes 2,3 regardless of byte enables
     // This matches the observed behavior: [0x00 0x00 0x72 0x88] -> chip ID 0x8872
     uint16_t result = (resp_buf[3] << 8) | resp_buf[2];
     
-    printf("[KSZ8851SNL] Data extraction: bytes[2,3] = [0x%02X, 0x%02X] -> 0x%04X\r\n", 
-           resp_buf[2], resp_buf[3], result);
+    // printf("[KSZ8851SNL] Data extraction: bytes[2,3] = [0x%02X, 0x%02X] -> 0x%04X\r\n", 
+    //        resp_buf[2], resp_buf[3], result);
     
-    printf("[KSZ8851SNL] Register 0x%02X = 0x%04X\r\n", reg, result);
+    // printf("[KSZ8851SNL] Register 0x%02X = 0x%04X\r\n", reg, result);
     return result;
 }
 
@@ -305,7 +345,7 @@ static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata)
     uint8_t cmd_buf[4];
     uint8_t resp_buf[4];
     
-    printf("[KSZ8851SNL] Writing register 0x%02X = 0x%04X\r\n", reg, wrdata);
+    // printf("[KSZ8851SNL] Writing register 0x%02X = 0x%04X\r\n", reg, wrdata);
     
     // Build SPI command according to KSZ8851SNL datasheet
     // Bits [15:14] = 01 for write, [13:10] = byte enables, [9:2] = register address, [1:0] = 00
@@ -332,11 +372,11 @@ static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata)
     cmd_buf[2] = wrdata & 0xFF;        // Low byte
     cmd_buf[3] = (wrdata >> 8) & 0xFF; // High byte
     
-    printf("[KSZ8851SNL] Data packing: 0x%04X -> bytes[2,3] = [0x%02X, 0x%02X]\r\n", 
-           wrdata, cmd_buf[2], cmd_buf[3]);
+    // printf("[KSZ8851SNL] Data packing: 0x%04X -> bytes[2,3] = [0x%02X, 0x%02X]\r\n", 
+    //        wrdata, cmd_buf[2], cmd_buf[3]);
     
-    printf("[KSZ8851SNL] SPI WRITE CMD: [0x%02X 0x%02X 0x%02X 0x%02X] (cmd=0x%04X)\r\n", 
-           cmd_buf[0], cmd_buf[1], cmd_buf[2], cmd_buf[3], cmd);
+    // printf("[KSZ8851SNL] SPI WRITE CMD: [0x%02X 0x%02X 0x%02X 0x%02X] (cmd=0x%04X)\r\n", 
+    //        cmd_buf[0], cmd_buf[1], cmd_buf[2], cmd_buf[3], cmd);
     
     // Perform SPI transfer with proper CS timing
     drv_spi_cs_set_low();
@@ -349,11 +389,11 @@ static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata)
     for (volatile int i = 0; i < 10; i++);
     drv_spi_cs_set_high();
     
-    if (status != DRV_SPI_STATUS_OK) {
-        printf("[KSZ8851SNL] SPI write error: %d\r\n", status);
-    } else {
-        printf("[KSZ8851SNL] Register write completed successfully\r\n");
-    }
+    // if (status != DRV_SPI_STATUS_OK) {
+    //     printf("[KSZ8851SNL] SPI write error: %d\r\n", status);
+    // } else {
+    //     printf("[KSZ8851SNL] Register write completed successfully\r\n");
+    // }
 }
 
 static void ksz8851_reg_setbits(uint16_t reg, uint16_t bits_to_set)
