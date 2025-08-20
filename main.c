@@ -55,6 +55,24 @@
 static void test_ksz8851snl_task(void *pvParameters)
 {
     (void)pvParameters;
+    // Initialize KSZ8851SNL
+    drv_ksz8851snl_config_t config = {
+        .mac_addr = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},
+        .auto_negotiation = true,
+        .link_speed = 100,
+        .full_duplex = true
+    };
+    drv_ksz8851snl_status_t init_result = hw_ksz8851snl_init(&ksz8851snl_0, &config);
+    if (init_result != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("🔍 KSZ8851SNL initialization failed: %d\r\n", init_result);
+        ASSERT(0);
+    }
+    // Enable KSZ8851SNL
+    drv_ksz8851snl_status_t enable_result = hw_ksz8851snl_enable(&ksz8851snl_0);
+    if (enable_result != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("🔍 KSZ8851SNL enable failed: %d\r\n", enable_result);
+        ASSERT(0);
+    }
     printf("🔍 KSZ8851SNL task started\r\n");
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000)); // Check every 1 second

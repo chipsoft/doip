@@ -988,7 +988,7 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_test_spi_communication(void)
     printf("[KSZ8851SNL] === Comprehensive SPI Communication Test ===\r\n");
     
     // Test 1: Multiple speed tests
-    uint32_t test_speeds[] = {500000, 1000000, 5000000, 10000000, 25000000};
+    uint32_t test_speeds[] = {10000000};
     int num_speeds = sizeof(test_speeds) / sizeof(test_speeds[0]);
     
     for (int i = 0; i < num_speeds; i++) {

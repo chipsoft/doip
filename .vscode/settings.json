@@ -4,6 +4,7 @@
         "ksz8851snl_reg.h": "c",
         "ethif_mac.h": "c",
         "hri_gmac_e54.h": "c",
-        "user_tasks.h": "c"
+        "user_tasks.h": "c",
+        "semphr.h": "c"
     }
 }
