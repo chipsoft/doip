@@ -205,6 +205,12 @@ static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
         ksz8851snl_interrupt_semaphore = NULL;
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
+
+    // Set interrupt priority (CRITICAL: Must be >= configMAX_SYSCALL_INTERRUPT_PRIORITY)
+    // configMAX_SYSCALL_INTERRUPT_PRIORITY = 4 (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
+    // Using priority 5 to be safe (lower number = higher priority, but must be >= 4)
+    NVIC_SetPriority(EIC_7_IRQn, 5);
+    printf("[KSZ8851SNL] Set EIC_7_IRQn priority to 5 (safe for FreeRTOS APIs)\r\n");
     
     // Register interrupt handler
     result = ext_irq_register(KSZ8851SNL_INT_PIN, ksz8851snl_irq_handler);
@@ -215,12 +221,6 @@ static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
         ksz8851snl_interrupt_semaphore = NULL;
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    // Set interrupt priority (CRITICAL: Must be >= configMAX_SYSCALL_INTERRUPT_PRIORITY)
-    // configMAX_SYSCALL_INTERRUPT_PRIORITY = 4 (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << (8 - configPRIO_BITS))
-    // Using priority 5 to be safe (lower number = higher priority, but must be >= 4)
-    NVIC_SetPriority(EIC_7_IRQn, 5);
-    printf("[KSZ8851SNL] Set EIC_7_IRQn priority to 5 (safe for FreeRTOS APIs)\r\n");
     
     // Enable external interrupt
     result = ext_irq_enable(KSZ8851SNL_INT_PIN);
