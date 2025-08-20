@@ -188,24 +188,14 @@ void vApplicationGetRandomHeapCanary(portPOINTER_SIZE_TYPE *pxHeapCanary)
 	printf("[HEAP_PROTECTOR] Generated canary: 0x%08lX\r\n", (unsigned long)*pxHeapCanary);
 }
 
-/**
- * FreeRTOS stack overflow hook - called when stack overflow is detected
- * Required when configCHECK_FOR_STACK_OVERFLOW is enabled
- */
-void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+void vApplicationMallocFailedHook(void)
 {
-	/* Critical error - stack overflow detected */
-	printf("\r\n*** CRITICAL ERROR: Stack overflow detected! ***\r\n");
-	printf("Task: %s (handle: %p)\r\n", pcTaskName ? pcTaskName : "Unknown", (void*)xTask);
-	printf("This could be the source of 0x55 frame corruption!\r\n");
-	printf("System halted for safety.\r\n");
-	
-	/* Disable interrupts and halt system */
-	taskDISABLE_INTERRUPTS();
-	
-	/* Infinite loop to prevent further corruption */
-	while(1) {
-		/* Optional: Flash LED or other indication */
-		/* In production, could trigger watchdog reset */
-	}
+  configASSERT(0)
+}
+
+void vApplicationStackOverflowHook(xTaskHandle pxTask, char *pcTaskName)
+{
+  (void)pxTask;
+  (void)pcTaskName;
+  configASSERT(0)
 }

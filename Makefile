@@ -42,21 +42,7 @@ ifeq ($(OS),Windows_NT)
 	OBJDUMP = arm-none-eabi-objdump.exe
 else
 	# Unix-like systems (Linux, macOS, Cygwin, MinGW)
-	ifeq ($(shell uname), Linux)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), CYGWIN)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), MINGW32)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), MINGW64)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), DARWIN)
-		MK_DIR = mkdir -p
-	endif
+	MK_DIR = mkdir -p
 	RM = rm -rf
 	C_COMPILER = arm-none-eabi-gcc
 	CPP_COMPILER = arm-none-eabi-g++
@@ -68,7 +54,7 @@ endif
 
 # Compiler Options
 CPU_OPTIONS = -mthumb -mcpu=cortex-m4 -mfloat-abi=softfp -mfpu=fpv4-sp-d16
-COMMON_OPTIONS = -DDEBUG -Os -ffunction-sections -mlong-calls -g3 -Wall -c -std=gnu99
+COMMON_OPTIONS = -DDEBUG -O0 -ffunction-sections -mlong-calls -g3 -Wall -c -std=gnu99
 C_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 ASM_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 
@@ -331,6 +317,12 @@ rebuild: clean all
 # Initialize build directories
 init:
 	@$(MK_DIR) $(BUILD_DIR) 2>/dev/null || true
+	@echo "Build directory created: $(BUILD_DIR)"
+
+# Ensure build directory exists before compilation
+$(BUILD_DIR):
+	@$(MK_DIR) $(BUILD_DIR) 2>/dev/null || true
+	@echo "Build directory ensured: $(BUILD_DIR)"
 
 # Linker target
 $(OUTPUT_FILE_PATH): $(OBJ_FILES)
@@ -356,21 +348,18 @@ $(OUTPUT_FILE_PATH): $(OBJ_FILES)
 	@$(OBJSIZE) $(OUTPUT_FILE_PATH)
 
 # Compilation rules with informative messages
-$(BUILD_DIR)/%.o: %.c
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(info Compiling: $<)
-	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(C_COMPILER)$(QUOTE) $(C_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 
-$(BUILD_DIR)/%.o: %.S
+$(BUILD_DIR)/%.o: %.S | $(BUILD_DIR)
 	$(info Assembling: $<)
-	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(C_COMPILER)$(QUOTE) $(ASM_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
 	$(info Compiling C++: $<)
-	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(CPP_COMPILER)$(QUOTE) $(C_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 

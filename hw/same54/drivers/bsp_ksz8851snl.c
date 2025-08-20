@@ -224,35 +224,35 @@ static drv_ksz8851snl_status_t ksz8851snl_irq_init(void)
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
 
-    // Create deferred interrupt handler task (processes KSZ IRQ in task context)
-    if (ksz8851snl_irq_task_handle == NULL) {
-        BaseType_t task_created = xTaskCreate(
-            ksz8851snl_interrupt_task,
-            "KSZ8851_INT",
-            configMINIMAL_STACK_SIZE + 256,
-            NULL,
-            tskIDLE_PRIORITY + 2,
-            &ksz8851snl_irq_task_handle
-        );
-        if (task_created != pdPASS) {
-            printf("[KSZ8851SNL] Failed to create interrupt task\r\n");
-            ext_irq_deinit();
-            vSemaphoreDelete(ksz8851snl_interrupt_semaphore);
-            ksz8851snl_interrupt_semaphore = NULL;
-            ksz8851snl_irq_task_handle = NULL;
-            return DRV_KSZ8851SNL_STATUS_ERROR;
-        }
-        printf("[KSZ8851SNL] Interrupt task created\r\n");
-    }
+    // // Create deferred interrupt handler task (processes KSZ IRQ in task context)
+    // if (ksz8851snl_irq_task_handle == NULL) {
+    //     BaseType_t task_created = xTaskCreate(
+    //         ksz8851snl_interrupt_task,
+    //         "KSZ8851_INT",
+    //         configMINIMAL_STACK_SIZE + 256,
+    //         NULL,
+    //         tskIDLE_PRIORITY + 2,
+    //         &ksz8851snl_irq_task_handle
+    //     );
+    //     if (task_created != pdPASS) {
+    //         printf("[KSZ8851SNL] Failed to create interrupt task\r\n");
+    //         ext_irq_deinit();
+    //         vSemaphoreDelete(ksz8851snl_interrupt_semaphore);
+    //         ksz8851snl_interrupt_semaphore = NULL;
+    //         ksz8851snl_irq_task_handle = NULL;
+    //         return DRV_KSZ8851SNL_STATUS_ERROR;
+    //     }
+    //     printf("[KSZ8851SNL] Interrupt task created\r\n");
+    // }
     
-    ksz8851snl_irq_initialized = true;
-    printf("[KSZ8851SNL] Interrupt system initialized successfully\r\n");
-    printf("[KSZ8851SNL] PB7 pin level after setup: %s\r\n", 
-           gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
+    // ksz8851snl_irq_initialized = true;
+    // printf("[KSZ8851SNL] Interrupt system initialized successfully\r\n");
+    // printf("[KSZ8851SNL] PB7 pin level after setup: %s\r\n", 
+    //        gpio_get_pin_level(KSZ8851SNL_INT_PIN) ? "HIGH" : "LOW");
     
     // Initial register test
-    printf("[KSZ8851SNL] Running initial register test...\r\n");
-    ksz8851snl_test_registers();
+    // printf("[KSZ8851SNL] Running initial register test...\r\n");
+    // ksz8851snl_test_registers();
     
     return DRV_KSZ8851SNL_STATUS_OK;
 }
@@ -658,15 +658,13 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
         return reset_status;
     }
     
-    // Test chip ID first (SPI communication test)
-    drv_ksz8851snl_id_info_t id_info;
-    drv_ksz8851snl_status_t id_status = drv_ksz8851snl_get_chip_id_impl(hw_context, &id_info);
-    if (id_status != DRV_KSZ8851SNL_STATUS_OK || !id_info.chip_detected) {
+    // Read ChipID
+    uint16_t chip_id = ksz8851_reg_read(REG_CHIP_ID);
+    printf("[KSZ8851SNL] Chip ID: 0x%04X\r\n", chip_id);
+    if ((chip_id & 0xFFF0) != KSZ8851SNL_CHIP_ID_EXPECTED) {
         printf("[KSZ8851SNL] Chip ID verification failed\r\n");
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
-    
-    printf("[KSZ8851SNL] Chip ID verified: 0x%04X\r\n", id_info.chip_id);
     
     // Initialize interrupt system
     drv_ksz8851snl_status_t irq_status = ksz8851snl_irq_init();
@@ -738,16 +736,16 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_enable_impl(const void *hw_context
         return DRV_KSZ8851SNL_STATUS_ERROR;
     }
     
-    if (context->is_enabled) {
-        return DRV_KSZ8851SNL_STATUS_OK;
-    }
+    // if (context->is_enabled) {
+    //     return DRV_KSZ8851SNL_STATUS_OK;
+    // }
     
-    printf("[KSZ8851SNL] Enabling KSZ8851SNL controller\r\n");
+    // printf("[KSZ8851SNL] Enabling KSZ8851SNL controller\r\n");
     
-    // TODO: Enable TX/RX operations
+    // // TODO: Enable TX/RX operations
     
-    context->is_enabled = true;
-    printf("[KSZ8851SNL] KSZ8851SNL enabled successfully\r\n");
+    // context->is_enabled = true;
+    // printf("[KSZ8851SNL] KSZ8851SNL enabled successfully\r\n");
     
     return DRV_KSZ8851SNL_STATUS_OK;
 }
@@ -873,7 +871,7 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_chip_id_impl(const void *hw_co
     printf("[KSZ8851SNL] SPI initialized and enabled\r\n");
     
     // Run comprehensive SPI communication tests
-    drv_ksz8851snl_test_spi_communication();
+    // drv_ksz8851snl_test_spi_communication();
     
     // Initialize result structure
     memset(id_info, 0, sizeof(drv_ksz8851snl_id_info_t));
