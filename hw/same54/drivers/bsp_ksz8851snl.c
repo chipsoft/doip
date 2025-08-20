@@ -74,14 +74,13 @@ static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata);
 // KSZ8851SNL interrupt handler callback
 static void ksz8851snl_irq_handler(void)
 {
-
-    //Save IER register value
+    // Save IER register value
     uint16_t ier = ksz8851_reg_read(REG_INT_MASK);
     //Disable interrupts to release the interrupt line
     ksz8851_reg_write(REG_INT_MASK, 0);
     printf("[KSZ8851SNL] Interrupt handler called!!!\r\n");
 
-    //Read interrupt status register
+    // Read interrupt status register
     uint16_t isr = ksz8851_reg_read(REG_INT_STATUS);
 
     //Link status change?
@@ -89,6 +88,18 @@ static void ksz8851snl_irq_handler(void)
     {
        printf("[KSZ8851SNL] Link status changed\r\n");
        ksz8851_reg_write(REG_INT_STATUS, INT_PHY); // clear link
+    }
+    // Packet transmission complete?
+    if(isr & INT_TX)
+    {
+        printf("[KSZ8851SNL] TX interrupt\r\n");
+        ksz8851_reg_write(REG_INT_STATUS, INT_TX); // clear TX
+    }
+    // Packet received?
+    if(isr & INT_RX)
+    {
+        printf("[KSZ8851SNL] RX interrupt\r\n");
+        ksz8851_reg_write(REG_INT_STATUS, INT_RX); // clear RX
     }
     //Re-enable interrupts once the interrupt has been serviced
     ksz8851_reg_write(REG_INT_MASK, ier);
