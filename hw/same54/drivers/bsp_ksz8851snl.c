@@ -675,6 +675,11 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
         return irq_status;
     }
     
+    // Enable RX engine - THIS WAS MISSING!
+    printf("[KSZ8851SNL] Enabling RX engine\r\n");
+    ksz8851_reg_write(REG_RX_CTRL1, RX_CTRL_ENABLE | RX_CTRL_PROMISCUOUS);
+    ksz8851_reg_write(REG_RXQ_CMD, RXQ_START | RXQ_AUTO_DEQUEUE);
+
     // Configure KSZ8851SNL chip interrupts
     printf("[KSZ8851SNL] Configuring chip interrupts\r\n");
     
