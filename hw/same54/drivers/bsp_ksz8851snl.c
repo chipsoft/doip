@@ -2245,44 +2245,6 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
-// False interrupt detection and filtering (Oryx-style robustness)
-static bool ksz8851snl_detect_false_interrupt(void)
-{
-    // Check if this is a false interrupt by validating chip state
-    uint16_t chip_id = ksz8851_reg_read(REG_CHIP_ID);
-    
-    // If chip ID is corrupted, this is definitely a false interrupt
-    if (chip_id != 0x8872 && chip_id != 0x0000 && chip_id != 0xFFFF) {
-        printf("[KSZ8851SNL] 🚨 FALSE INTERRUPT DETECTED: Chip ID corrupted (0x%04X)\r\n", chip_id);
-        drv_ksz8851snl_hw_context_0.false_interrupts++;
-        return true;
-    }
-    
-    // Check if RXQ actually has valid frames
-    uint16_t rxq_status = ksz8851_reg_read(REG_RXQ_CMD);
-    uint8_t frame_count = (rxq_status & RX_FRAME_CNT_MASK) >> 8;
-    
-    if (frame_count > 0) {
-        // Try to read frame header to validate it's real data
-        uint16_t frame_header_0 = ksz8851_reg_read(REG_QDR_DUMMY);
-        uint16_t frame_header_1 = ksz8851_reg_read(REG_QDR_DUMMY);
-        
-        // Check for corruption patterns
-        if (frame_header_0 == frame_header_1 && 
-            (frame_header_0 == 0x0000 || frame_header_0 == 0xFFFF || 
-             frame_header_0 == 0x5555 || frame_header_0 == 0x3333)) {
-            printf("[KSZ8851SNL] 🚨 FALSE INTERRUPT DETECTED: Corrupted frame header (0x%04X, 0x%04X)\r\n", 
-                   frame_header_0, frame_header_1);
-            drv_ksz8851snl_hw_context_0.false_interrupts++;
-            return true;
-        }
-        
-        // Reset RXQ pointer after validation check
-        ksz8851_reg_write(REG_RXQ_CMD, RXQ_START);
-    }
-    
-    return false;
-}
 
 // Enhanced RX available check with false interrupt filtering
 static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void *hw_context, bool *rx_available)

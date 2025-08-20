@@ -7,6 +7,8 @@
  */
 #include <eth_ipstack_main.h>
 #include <hal_mac_async.h>
+// Resolve macro clash between ASF and lwIP
+#undef ERR_TIMEOUT
 
 /* External peripheral descriptors */
 extern struct mac_async_descriptor COMMUNICATION_IO;

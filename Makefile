@@ -115,7 +115,8 @@ DIR_INCLUDES = \
 -I"$(SEGGER_RTT_DIR)/Config" \
 -I"$(PRINTF_DIR)" \
 -I"$(DRIVERS_DIR)" \
--I"$(BSP_DRIVERS_DIR)"
+-I"$(BSP_DRIVERS_DIR)" \
+-I"etc/port"
 
 # Source Files organized by library
 # FreeRTOS Files
@@ -132,44 +133,6 @@ $(FREERTOS_DIR)/portable/GCC/ARM_CM4F/port.c
 
 # LwIP Files
 LWIP_CFILES = \
-$(LWIP_DIR)/src/core/ipv4/icmp.c \
-$(LWIP_DIR)/src/core/def.c \
-$(LWIP_DIR)/src/api/netbuf.c \
-$(LWIP_DIR)/src/core/sys.c \
-$(LWIP_DIR)/src/core/ipv4/autoip.c \
-$(LWIP_DIR)/src/core/timeouts.c \
-$(LWIP_DIR)/src/api/err.c \
-$(LWIP_DIR)/src/api/api_msg.c \
-$(LWIP_DIR)/src/core/tcp_out.c \
-$(LWIP_DIR)/src/core/ipv4/ip4_frag.c \
-$(LWIP_DIR)/src/core/pbuf.c \
-$(LWIP_DIR)/src/core/tcp_in.c \
-$(LWIP_DIR)/src/core/udp.c \
-$(LWIP_DIR)/src/api/netdb.c \
-$(LWIP_DIR)/src/core/memp.c \
-$(LWIP_DIR)/src/core/ipv4/etharp.c \
-$(LWIP_DIR)/src/core/ipv4/dhcp.c \
-$(LWIP_DIR)/src/core/raw.c \
-$(LWIP_DIR)/src/core/ipv4/ip4.c \
-$(LWIP_DIR)/src/core/mem.c \
-$(LWIP_DIR)/src/core/tcp.c \
-$(LWIP_DIR)/src/netif/slipif.c \
-$(LWIP_DIR)/contrib/ports/freertos/sys_arch.c \
-$(LWIP_DIR)/src/core/init.c \
-$(LWIP_DIR)/src/core/inet_chksum.c \
-$(LWIP_DIR)/src/core/ip.c \
-$(LWIP_DIR)/src/core/dns.c \
-$(LWIP_DIR)/src/core/ipv4/igmp.c \
-$(LWIP_DIR)/src/core/stats.c \
-$(LWIP_DIR)/src/core/ipv4/ip4_addr.c \
-$(LWIP_DIR)/src/core/ipv4/acd.c \
-$(LWIP_DIR)/src/netif/ethernet.c \
-$(LWIP_DIR)/src/api/netifapi.c \
-$(LWIP_DIR)/src/api/sockets.c \
-$(LWIP_DIR)/src/core/netif.c \
-$(LWIP_DIR)/src/api/tcpip.c \
-$(LWIP_DIR)/src/api/api_lib.c \
-$(LWIP_DIR)/port/ethif_mac.c
 
 # ASF4 Files
 ASF4_CFILES = \
@@ -238,21 +201,16 @@ endif
 
 # DOIP BSP Implementation Selection
 ifeq ($(DOIP_USE_RAW_LWIP), 1)
-DRIVER_CFILES += $(BSP_DRIVERS_DIR)/bsp_doip_raw.c
 DEFINES += -DDOIP_USE_RAW_LWIP=1
 else
-DRIVER_CFILES += $(BSP_DRIVERS_DIR)/bsp_doip_socket.c
 DEFINES += -DDOIP_USE_RAW_LWIP=0
 endif
 
 # Application Files
 APP_CFILES = \
 main.c \
-eth_ipstack_main.c \
 user_tasks.c \
 rtt_printf.c \
-network_events.c \
-minimal_packet_test.c
 
 # Simple Test Application Files (no LwIP)
 SIMPLE_APP_CFILES = \
@@ -400,19 +358,19 @@ $(OUTPUT_FILE_PATH): $(OBJ_FILES)
 # Compilation rules with informative messages
 $(BUILD_DIR)/%.o: %.c
 	$(info Compiling: $<)
-	@mkdir -p $(BUILD_DIR)
+	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(C_COMPILER)$(QUOTE) $(C_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 
 $(BUILD_DIR)/%.o: %.S
 	$(info Assembling: $<)
-	@mkdir -p $(BUILD_DIR)
+	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(C_COMPILER)$(QUOTE) $(ASM_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 
 $(BUILD_DIR)/%.o: %.cpp
 	$(info Compiling C++: $<)
-	@mkdir -p $(BUILD_DIR)
+	@$(MK_DIR) $(BUILD_DIR) 2>nul || true
 	@$(QUOTE)$(CPP_COMPILER)$(QUOTE) $(C_OPTIONS) $(DEFINES) $(DIR_INCLUDES) \
 	-MD -MP -MF "$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -MT"$(@:%.o=%.o)" -o "$@" "$<"
 

@@ -14,7 +14,7 @@ extern "C" {
 
 #include <lwip/init.h>
 
-#include <ethif_mac.h>
+// #include <ethif_mac.h>
 
 extern struct netif TCPIP_STACK_INTERFACE_0_desc;
 
