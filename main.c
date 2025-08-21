@@ -51,6 +51,30 @@
 #include <hal_gpio.h>
 #include "bsp_ksz8851snl.h"  // KSZ8851SNL driver with debug functions
 
+// Example function to set custom MAC address
+void set_custom_mac_address(void)
+{
+    // Example MAC address: 02:00:11:22:33:44 (locally administered)
+    uint8_t custom_mac[6] = {0x02, 0x00, 0x11, 0x22, 0x33, 0x44};
+    
+    printf("[MAIN] Setting custom MAC address...\r\n");
+    
+    drv_ksz8851snl_status_t status = bsp_ksz8851snl_set_mac_address(custom_mac);
+    if (status == DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[MAIN] MAC address set successfully!\r\n");
+        
+        // Verify by reading back the MAC address
+        uint8_t read_mac[6];
+        status = bsp_ksz8851snl_get_mac_address(read_mac);
+        if (status == DRV_KSZ8851SNL_STATUS_OK) {
+            printf("[MAIN] Verified MAC address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+                   read_mac[0], read_mac[1], read_mac[2], read_mac[3], read_mac[4], read_mac[5]);
+        }
+    } else {
+        printf("[MAIN] Failed to set MAC address, status: %d\r\n", status);
+    }
+}
+
 
 static void test_ksz8851snl_task(void *pvParameters)
 {
@@ -74,6 +98,10 @@ static void test_ksz8851snl_task(void *pvParameters)
         ASSERT(0);
     }
     printf("🔍 KSZ8851SNL task started\r\n");
+    
+    // Test MAC address configuration
+    set_custom_mac_address();
+    
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000)); // Check every 1 second
         printf("🔍 KSZ8851SNL task running\r\n");

@@ -9,6 +9,10 @@ extern "C" {
 
 extern drv_ksz8851snl_t ksz8851snl_0;
 
+// MAC address configuration functions
+drv_ksz8851snl_status_t bsp_ksz8851snl_set_mac_address(const uint8_t mac_addr[6]);
+drv_ksz8851snl_status_t bsp_ksz8851snl_get_mac_address(uint8_t mac_addr[6]);
+
 // Debug and test functions
 void ksz8851snl_debug_test_registers(void);
 void ksz8851snl_debug_gpio_test(void);

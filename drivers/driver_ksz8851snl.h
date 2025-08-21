@@ -11,6 +11,7 @@ typedef enum {
     DRV_KSZ8851SNL_STATUS_TIMEOUT = 3,
     DRV_KSZ8851SNL_STATUS_INVALID_PARAM = 4,
     DRV_KSZ8851SNL_STATUS_NO_LINK = 5,
+    DRV_KSZ8851SNL_STATUS_INVALID_MAC = 6,
 } drv_ksz8851snl_status_t;
 
 typedef enum {
@@ -66,6 +67,10 @@ typedef struct {
     drv_ksz8851snl_status_t (*register_callback)(const void *hw_context, 
                                                  drv_ksz8851snl_cb_type_t type, 
                                                  drv_ksz8851snl_callback_t callback);
+    
+    // MAC address configuration
+    drv_ksz8851snl_status_t (*set_mac_address)(const void *hw_context, const uint8_t mac_addr[6]);
+    drv_ksz8851snl_status_t (*get_mac_address)(const void *hw_context, uint8_t mac_addr[6]);
 } drv_ksz8851snl_t;
 
 #ifdef __cplusplus
@@ -87,6 +92,13 @@ drv_ksz8851snl_status_t hw_ksz8851snl_check_rx_available(drv_ksz8851snl_t *handl
 drv_ksz8851snl_status_t hw_ksz8851snl_register_callback(drv_ksz8851snl_t *handle, 
                                                        drv_ksz8851snl_cb_type_t type, 
                                                        drv_ksz8851snl_callback_t callback);
+
+// MAC address configuration
+drv_ksz8851snl_status_t hw_ksz8851snl_set_mac_address(drv_ksz8851snl_t *handle, const uint8_t mac_addr[6]);
+drv_ksz8851snl_status_t hw_ksz8851snl_get_mac_address(drv_ksz8851snl_t *handle, uint8_t mac_addr[6]);
+
+// MAC address validation helper
+bool hw_ksz8851snl_is_mac_valid(const uint8_t mac_addr[6]);
 
 #ifdef __cplusplus
 }

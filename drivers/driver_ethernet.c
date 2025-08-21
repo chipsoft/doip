@@ -264,3 +264,51 @@ drv_eth_status_t hw_eth_stop_link_monitor(drv_eth_t *handle)
     
     return handle->stop_link_monitor(handle->hw_context);
 }
+
+drv_eth_status_t hw_eth_set_mac_address(drv_eth_t *handle, const uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN])
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->set_mac_address != NULL);
+    ASSERT(mac_addr != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    // Validate MAC address
+    if (!hw_eth_is_mac_valid(mac_addr)) {
+        return DRV_ETH_STATUS_INVALID_MAC;
+    }
+    
+    return handle->set_mac_address(handle->hw_context, mac_addr);
+}
+
+drv_eth_status_t hw_eth_get_mac_address(drv_eth_t *handle, uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN])
+{
+    ASSERT(handle != NULL);
+    ASSERT(handle->get_mac_address != NULL);
+    ASSERT(mac_addr != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_ETH_STATUS_ERROR;
+    }
+    
+    return handle->get_mac_address(handle->hw_context, mac_addr);
+}
+
+bool hw_eth_is_mac_valid(const uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN])
+{
+    ASSERT(mac_addr != NULL);
+    
+    // Check for all-zero MAC address
+    if (DRV_ETH_MAC_IS_ZERO(mac_addr)) {
+        return false;
+    }
+    
+    // Check for multicast MAC address (first bit of first byte)
+    if (DRV_ETH_MAC_IS_MULTICAST(mac_addr)) {
+        return false;
+    }
+    
+    return true;
+}

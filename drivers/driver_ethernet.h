@@ -4,12 +4,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// MAC address length in bytes
+#define DRV_ETH_MAC_ADDR_LEN 6
+
 typedef enum
 {
     DRV_ETH_STATUS_OK = 0,    ///< Success
     DRV_ETH_STATUS_ERROR = 1, ///< Generic error
     DRV_ETH_STATUS_BUSY = 2,  ///< Device busy
     DRV_ETH_STATUS_TIMEOUT = 3, ///< Operation timeout
+    DRV_ETH_STATUS_INVALID_MAC = 4, ///< Invalid MAC address
 } drv_eth_status_t;
 
 typedef enum
@@ -20,6 +24,17 @@ typedef enum
 
 typedef void (*drv_eth_callback_t)(void);
 typedef void (*drv_eth_tcpip_init_done_fn)(void *arg);
+
+// MAC address configuration structure
+typedef struct
+{
+    uint8_t addr[DRV_ETH_MAC_ADDR_LEN];  ///< MAC address bytes
+    bool is_valid;                        ///< MAC address validity flag
+} drv_eth_mac_config_t;
+
+// MAC address validation macros
+#define DRV_ETH_MAC_IS_MULTICAST(mac) ((mac)[0] & 0x01)
+#define DRV_ETH_MAC_IS_ZERO(mac) (((mac)[0] | (mac)[1] | (mac)[2] | (mac)[3] | (mac)[4] | (mac)[5]) == 0)
 
 typedef struct
 {
@@ -64,6 +79,10 @@ typedef struct
     // Link monitoring
     drv_eth_status_t (*start_link_monitor)(const void *hw_context);
     drv_eth_status_t (*stop_link_monitor)(const void *hw_context);
+    
+    // MAC address configuration
+    drv_eth_status_t (*set_mac_address)(const void *hw_context, const uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN]);
+    drv_eth_status_t (*get_mac_address)(const void *hw_context, uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN]);
 } drv_eth_t;
 
 #ifdef __cplusplus
@@ -108,6 +127,13 @@ drv_eth_tcpip_init_done_fn hw_eth_get_tcpip_init_done_fn(drv_eth_t *handle);
 // Link monitoring
 drv_eth_status_t hw_eth_start_link_monitor(drv_eth_t *handle);
 drv_eth_status_t hw_eth_stop_link_monitor(drv_eth_t *handle);
+
+// MAC address configuration
+drv_eth_status_t hw_eth_set_mac_address(drv_eth_t *handle, const uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN]);
+drv_eth_status_t hw_eth_get_mac_address(drv_eth_t *handle, uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN]);
+
+// MAC address validation helper
+bool hw_eth_is_mac_valid(const uint8_t mac_addr[DRV_ETH_MAC_ADDR_LEN]);
 
 #ifdef __cplusplus
 }

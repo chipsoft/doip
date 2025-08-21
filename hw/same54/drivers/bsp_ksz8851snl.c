@@ -31,6 +31,7 @@ typedef struct {
     uint32_t tx_packets;
     uint32_t rx_errors;
     uint32_t tx_errors;
+    uint8_t mac_address[6];  // Current MAC address
 } drv_ksz8851snl_hw_context_t;
 
 static drv_ksz8851snl_hw_context_t drv_ksz8851snl_hw_context_0 = {
@@ -44,6 +45,7 @@ static drv_ksz8851snl_hw_context_t drv_ksz8851snl_hw_context_0 = {
     .tx_packets = 0,
     .rx_errors = 0,
     .tx_errors = 0,
+    .mac_address = {0x00, 0x00, 0x00, 0x00, 0x20, 0x76},  // Default MAC address
 };
 
 // Interrupt handling variables
@@ -257,6 +259,8 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
 static drv_ksz8851snl_status_t drv_ksz8851snl_receive_packet_impl(const void *hw_context, uint8_t *data, uint16_t *length);
 static drv_ksz8851snl_status_t drv_ksz8851snl_check_rx_available_impl(const void *hw_context, bool *rx_available);
 static drv_ksz8851snl_status_t drv_ksz8851snl_register_callback_impl(const void *hw_context, drv_ksz8851snl_cb_type_t type, drv_ksz8851snl_callback_t callback);
+static drv_ksz8851snl_status_t drv_ksz8851snl_set_mac_address_impl(const void *hw_context, const uint8_t mac_addr[6]);
+static drv_ksz8851snl_status_t drv_ksz8851snl_get_mac_address_impl(const void *hw_context, uint8_t mac_addr[6]);
 
 // Global driver instance
 drv_ksz8851snl_t ksz8851snl_0 = {
@@ -273,6 +277,8 @@ drv_ksz8851snl_t ksz8851snl_0 = {
     .receive_packet = drv_ksz8851snl_receive_packet_impl,
     .check_rx_available = drv_ksz8851snl_check_rx_available_impl,
     .register_callback = drv_ksz8851snl_register_callback_impl,
+    .set_mac_address = drv_ksz8851snl_set_mac_address_impl,
+    .get_mac_address = drv_ksz8851snl_get_mac_address_impl,
 };
 
 // SPI communication helper functions (adapted from existing FreeRTOS driver)
@@ -1047,6 +1053,78 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_register_callback_impl(const void 
     }
     
     return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+static drv_ksz8851snl_status_t drv_ksz8851snl_set_mac_address_impl(const void *hw_context, const uint8_t mac_addr[6])
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(mac_addr != NULL);
+    
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    
+    printf("[KSZ8851SNL] Setting MAC address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    
+    // Validate MAC address
+    if (!hw_ksz8851snl_is_mac_valid(mac_addr)) {
+        printf("[KSZ8851SNL] ERROR: Invalid MAC address\r\n");
+        return DRV_KSZ8851SNL_STATUS_INVALID_MAC;
+    }
+    
+    // Write MAC address to KSZ8851SNL registers
+    // The KSZ8851SNL stores MAC address in registers 0x10-0x15 (REG_MAC_ADDR_0 to REG_MAC_ADDR_5)
+    // The format is: MARL (0x10,0x11), MARM (0x12,0x13), MARH (0x14,0x15)
+    // Each register pair stores 2 bytes in little-endian format
+    
+    ksz8851_reg_write(REG_MAC_ADDR_0, (mac_addr[1] << 8) | mac_addr[0]);  // MARL
+    ksz8851_reg_write(REG_MAC_ADDR_2, (mac_addr[3] << 8) | mac_addr[2]);  // MARM
+    ksz8851_reg_write(REG_MAC_ADDR_4, (mac_addr[5] << 8) | mac_addr[4]);  // MARH
+    
+    // Store MAC address in context
+    memcpy(context->mac_address, mac_addr, 6);
+    
+    printf("[KSZ8851SNL] MAC address set successfully\r\n");
+    return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+static drv_ksz8851snl_status_t drv_ksz8851snl_get_mac_address_impl(const void *hw_context, uint8_t mac_addr[6])
+{
+    ASSERT(hw_context != NULL);
+    ASSERT(mac_addr != NULL);
+    
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    
+    // Read MAC address from KSZ8851SNL registers
+    uint16_t marl = ksz8851_reg_read(REG_MAC_ADDR_0);
+    uint16_t marm = ksz8851_reg_read(REG_MAC_ADDR_2);
+    uint16_t marh = ksz8851_reg_read(REG_MAC_ADDR_4);
+    
+    // Extract bytes from register pairs (little-endian format)
+    mac_addr[0] = marl & 0xFF;
+    mac_addr[1] = (marl >> 8) & 0xFF;
+    mac_addr[2] = marm & 0xFF;
+    mac_addr[3] = (marm >> 8) & 0xFF;
+    mac_addr[4] = marh & 0xFF;
+    mac_addr[5] = (marh >> 8) & 0xFF;
+    
+    // Update context with current MAC
+    memcpy(context->mac_address, mac_addr, 6);
+    
+    printf("[KSZ8851SNL] Current MAC address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+    
+    return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+// Public MAC address configuration functions
+drv_ksz8851snl_status_t bsp_ksz8851snl_set_mac_address(const uint8_t mac_addr[6])
+{
+    return hw_ksz8851snl_set_mac_address(&ksz8851snl_0, mac_addr);
+}
+
+drv_ksz8851snl_status_t bsp_ksz8851snl_get_mac_address(uint8_t mac_addr[6])
+{
+    return hw_ksz8851snl_get_mac_address(&ksz8851snl_0, mac_addr);
 }
 
 // Public debug and test functions

@@ -159,3 +159,51 @@ drv_ksz8851snl_status_t hw_ksz8851snl_register_callback(drv_ksz8851snl_t *handle
     
     return handle->register_callback(handle->hw_context, type, callback);
 }
+
+drv_ksz8851snl_status_t hw_ksz8851snl_set_mac_address(drv_ksz8851snl_t *handle, const uint8_t mac_addr[6])
+{
+    ASSERT(handle != NULL);
+    ASSERT(mac_addr != NULL);
+    ASSERT(handle->set_mac_address != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Validate MAC address
+    if (!hw_ksz8851snl_is_mac_valid(mac_addr)) {
+        return DRV_KSZ8851SNL_STATUS_INVALID_MAC;
+    }
+    
+    return handle->set_mac_address(handle->hw_context, mac_addr);
+}
+
+drv_ksz8851snl_status_t hw_ksz8851snl_get_mac_address(drv_ksz8851snl_t *handle, uint8_t mac_addr[6])
+{
+    ASSERT(handle != NULL);
+    ASSERT(mac_addr != NULL);
+    ASSERT(handle->get_mac_address != NULL);
+    
+    if (!handle->is_init) {
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    return handle->get_mac_address(handle->hw_context, mac_addr);
+}
+
+bool hw_ksz8851snl_is_mac_valid(const uint8_t mac_addr[6])
+{
+    ASSERT(mac_addr != NULL);
+    
+    // Check for all-zero MAC address
+    if ((mac_addr[0] | mac_addr[1] | mac_addr[2] | mac_addr[3] | mac_addr[4] | mac_addr[5]) == 0) {
+        return false;
+    }
+    
+    // Check for multicast MAC address (first bit of first byte)
+    if (mac_addr[0] & 0x01) {
+        return false;
+    }
+    
+    return true;
+}
