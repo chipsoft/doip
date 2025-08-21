@@ -93,7 +93,21 @@ static void ksz8851snl_irq_handler(void)
     // Handle RX interrupt
     if (int_status & INT_RX) {
         irq_stats.rx_interrupts++;
-        printf("[KSZ8851SNL] RX IRQ!\r\n");
+        
+        // Read RX frame count from queue status register
+        uint16_t rx_frame_count_reg = ksz8851_reg_read(REG_RX_FRAME_CNT_THRES);
+        uint8_t frame_count = (rx_frame_count_reg & RX_FRAME_CNT_MASK) >> 8;
+        
+        // Read RX queue command register status
+        uint16_t rxq_status = ksz8851_reg_read(REG_RXQ_CMD);
+        
+        printf("[KSZ8851SNL] RX IRQ! Frames in queue: %d, RXQ_STATUS: 0x%04X\r\n", 
+               frame_count, rxq_status);
+        
+        // If multiple frames are queued, show additional info
+        if (frame_count > 1) {
+            printf("[KSZ8851SNL] Multiple frames queued (%d) - processing...\r\n", frame_count);
+        }
     }
     
     // Handle TX interrupt
