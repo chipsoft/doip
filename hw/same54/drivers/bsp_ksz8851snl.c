@@ -76,71 +76,43 @@ static void ksz8851_reg_write(uint16_t reg, uint16_t wrdata);
 // KSZ8851SNL interrupt handler callback
 static void ksz8851snl_irq_handler(void)
 {
-
-    //Save IER register value
-    uint16_t ier = ksz8851_reg_read(REG_INT_MASK);
-    //Disable interrupts to release the interrupt line
-    ksz8851_reg_write(REG_INT_MASK, 0);
-    printf("[KSZ8851SNL] Interrupt handler called!!!\r\n");
-
-    //Read interrupt status register
-    uint16_t isr = ksz8851_reg_read(REG_INT_STATUS);
-
-    //Link status change?
-    if(isr & INT_PHY)
-    {
-       printf("[KSZ8851SNL] Link status changed\r\n");
-       ksz8851_reg_write(REG_INT_STATUS, INT_PHY); // clear link
+    // Update interrupt statistics
+    irq_stats.total_interrupts++;
+    irq_stats.gpio_pin_state = gpio_get_pin_level(KSZ8851SNL_INT_PIN);
+    
+    printf("[KSZ8851SNL] IRQ #%lu! PIN=%s\r\n", 
+           irq_stats.total_interrupts, 
+           irq_stats.gpio_pin_state ? "HIGH" : "LOW");
+    
+    // Read interrupt status register
+    uint16_t int_status = ksz8851_reg_read(REG_INT_STATUS);
+    irq_stats.last_interrupt_status = int_status;
+    
+    printf("[KSZ8851SNL] INT_STATUS: 0x%04X\r\n", int_status);
+    
+    // Handle RX interrupt
+    if (int_status & INT_RX) {
+        irq_stats.rx_interrupts++;
+        printf("[KSZ8851SNL] RX IRQ!\r\n");
     }
-    //Re-enable interrupts once the interrupt has been serviced
-    ksz8851_reg_write(REG_INT_MASK, ier);
-
-//     //Packet transmission complete?
-//     if(isr & ISR_TXIS)
-// {
-// 00243       //Clear interrupt flag
-// 00244       ksz8851WriteReg(interface, KSZ8851_REG_ISR, ISR_TXIS);
-// 00245 
-// 00246       //Notify the TCP/IP stack that the transmitter is ready to send
-// 00247       flag |= osSetEventFromIsr(&interface->nicTxEvent);
-// 00248    }
-// 00249 
-// 00250    //Packet received?
-// 00251    if(isr & ISR_RXIS)
-// 00252    {
-// 00253       //Disable RXIE interrupt
-// 00254       ier &= ~IER_RXIE;
-// 00255 
-// 00256       //Set event flag
-// 00257       interface->nicEvent = TRUE;
-// 00258       //Notify the TCP/IP stack of the event
-// 00259       flag |= osSetEventFromIsr(&netEvent);
-// 00260    }    
-
-    // BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     
-    // // Update interrupt statistics (ISR-safe operations only)
-    // irq_stats.total_interrupts++;
-    // irq_stats.last_interrupt_time = xTaskGetTickCountFromISR();
-    // irq_stats.gpio_pin_state = gpio_get_pin_level(KSZ8851SNL_INT_PIN);
+    // Handle TX interrupt
+    if (int_status & INT_TX) {
+        irq_stats.tx_interrupts++;
+        printf("[KSZ8851SNL] TX IRQ!\r\n");
+    }
     
-    // // Visual indication that interrupt occurred (toggle LED if available)
-    // // This helps confirm the interrupt handler is actually being called
+    // Handle PHY interrupt
+    if (int_status & INT_PHY) {
+        irq_stats.phy_interrupts++;
+        printf("[KSZ8851SNL] PHY IRQ!\r\n");
+    }
     
-    // // Read interrupt status from KSZ8851SNL (quick ISR-safe operation)
-    // // Note: We can't use SPI operations in ISR context with ASF4, so we just signal
-    // // the task to handle the interrupt. The actual interrupt status reading will
-    // // be done in task context.
-    
-    // // Signal that an interrupt has occurred
-    // if (ksz8851snl_interrupt_semaphore != NULL) {
-    //     if (xSemaphoreGiveFromISR(ksz8851snl_interrupt_semaphore, &xHigherPriorityTaskWoken) != pdTRUE) {
-    //         irq_stats.semaphore_timeouts++;
-    //     }
-    // }
-    
-    // // Request context switch if higher priority task was woken
-    // portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    // Clear handled interrupts
+    if (int_status != 0) {
+        ksz8851_reg_write(REG_INT_STATUS, int_status);
+        printf("[KSZ8851SNL] Cleared IRQ: 0x%04X\r\n", int_status);
+    }
 }
 
 // Forward declarations (implementations after SPI functions)
@@ -467,19 +439,13 @@ static void ksz8851snl_process_interrupt(void)
     ksz8851_reg_write(REG_INT_STATUS, int_status);
 }
 
-// Deferred interrupt handler task: clears KSZ interrupt sources in task context
+// Deferred interrupt handler task: not used in simple mode
 static void ksz8851snl_interrupt_task(void *param)
 {
     (void)param;
+    // Not used - interrupt processing is done directly in ISR
     for (;;) {
-        if (xSemaphoreTake(ksz8851snl_interrupt_semaphore, portMAX_DELAY) == pdTRUE) {
-            // Process all pending causes while INT pin remains asserted (active low)
-            do {
-                ksz8851snl_process_interrupt();
-                // Yield briefly to allow other tasks to run if a storm occurs
-                taskYIELD();
-            } while (gpio_get_pin_level(KSZ8851SNL_INT_PIN) == 0);
-        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -681,6 +647,35 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     ksz8851_reg_write(REG_INT_MASK, interrupt_mask);
     
     printf("[KSZ8851SNL] Interrupts enabled: RX, TX, PHY (mask: 0x%04X)\r\n", interrupt_mask);
+    
+    // Configure RX Control Register 1 (RXCR1) - enable required RX modes
+    printf("[KSZ8851SNL] Configuring RX Control Register 1 (RXCR1)\r\n");
+    uint16_t rx_ctrl1 = RX_CTRL_ENABLE | RX_CTRL_BROADCAST | 
+                        RX_CTRL_UNICAST | RX_CTRL_FLOW_ENABLE;
+    ksz8851_reg_write(REG_RX_CTRL1, rx_ctrl1);
+    printf("[KSZ8851SNL] RX Control 1 configured: 0x%04X\r\n", rx_ctrl1);
+    
+    // Configure RX Control Register 2 (RXCR2) - set burst length for SPI
+    printf("[KSZ8851SNL] Configuring RX Control Register 2 (RXCR2)\r\n");
+    uint16_t rx_ctrl2 = RX_CTRL_BURST_LEN_FRAME;
+    ksz8851_reg_write(REG_RX_CTRL2, rx_ctrl2);
+    printf("[KSZ8851SNL] RX Control 2 configured: 0x%04X\r\n", rx_ctrl2);
+    
+    // Configure RX Queue Control Register (RXQCR) - enable frame count interrupt and auto dequeue
+    printf("[KSZ8851SNL] Configuring RX Queue Control Register (RXQCR)\r\n");
+    uint16_t rx_queue_ctrl = RXQ_FRAME_CNT_INT | RXQ_AUTO_DEQUEUE;
+    ksz8851_reg_write(REG_RXQ_CMD, rx_queue_ctrl);
+    printf("[KSZ8851SNL] RX Queue Control configured: 0x%04X\r\n", rx_queue_ctrl);
+    
+    // Enable auto-increment for RX frame data pointer
+    printf("[KSZ8851SNL] Configuring RX Frame Data Pointer (RXFDPR)\r\n");
+    ksz8851_reg_write(REG_RX_ADDR_PTR, ADDR_PTR_AUTO_INC);
+    printf("[KSZ8851SNL] RX Frame Pointer configured with auto-increment\r\n");
+    
+    // Set RX frame count threshold to 1 frame
+    printf("[KSZ8851SNL] Configuring RX Frame Count Threshold\r\n");
+    ksz8851_reg_write(REG_RX_FRAME_CNT_THRES, 1);
+    printf("[KSZ8851SNL] RX Frame Count Threshold set to 1 frame\r\n");
     
     // TODO: Add full initialization sequence from existing FreeRTOS driver
     // This would include MAC address setup, TX/RX configuration, etc.
