@@ -54,7 +54,7 @@ endif
 
 # Compiler Options
 CPU_OPTIONS = -mthumb -mcpu=cortex-m4 -mfloat-abi=softfp -mfpu=fpv4-sp-d16
-COMMON_OPTIONS = -DDEBUG -Os -ffunction-sections -mlong-calls -g3 -Wall -c -std=gnu99
+COMMON_OPTIONS = -DDEBUG -O0 -ffunction-sections -mlong-calls -g3 -Wall -c -std=gnu99
 C_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 ASM_OPTIONS = $(COMMON_OPTIONS) $(CPU_OPTIONS) -x c
 
@@ -150,13 +150,9 @@ $(ASF4_DIR)/hal/src/hal_cache.c \
 $(ASF4_DIR)/hal/src/hal_ext_irq.c \
 $(ASF4_DIR)/hpl/eic/hpl_eic.c
 
-# DOIP Configuration - Set to 1 for raw lwIP, 0 for socket implementation
-DOIP_USE_RAW_LWIP ?= 1
-
 # Common Driver Files
 DRIVER_CFILES = \
 $(DRIVERS_DIR)/driver_led.c \
-$(DRIVERS_DIR)/driver_doip.c \
 $(BSP_DRIVERS_DIR)/bsp_led.c
 
 # Network Interface Selection
@@ -164,11 +160,8 @@ ifeq ($(NETWORK_INTERFACE), KSZ8851SNL)
 DRIVER_CFILES += \
 $(DRIVERS_DIR)/driver_spi.c \
 $(DRIVERS_DIR)/driver_ksz8851snl.c \
-$(DRIVERS_DIR)/driver_netif_doip.c \
 $(BSP_DRIVERS_DIR)/bsp_spi.c \
 $(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
-$(BSP_DRIVERS_DIR)/bsp_netif_doip.c \
-$(BSP_DRIVERS_DIR)/bsp_netif_doip_ksz.c \
 etc/port/ethif_ksz8851snl.c
 DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
 ASF4_CFILES += $(ASF4_DIR)/hal/src/hal_spi_m_sync.c
@@ -183,13 +176,6 @@ $(BSP_DRIVERS_DIR)/bsp_ethernet.c \
 $(BSP_DRIVERS_DIR)/bsp_net.c
 DEFINES += -DUSE_GMAC_INTERFACE=1
 $(info Building with GMAC Ethernet interface)
-endif
-
-# DOIP BSP Implementation Selection
-ifeq ($(DOIP_USE_RAW_LWIP), 1)
-DEFINES += -DDOIP_USE_RAW_LWIP=1
-else
-DEFINES += -DDOIP_USE_RAW_LWIP=0
 endif
 
 # Application Files

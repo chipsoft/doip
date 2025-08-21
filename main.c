@@ -83,41 +83,7 @@ static void test_ksz8851snl_task(void *pvParameters)
 /* RTT printf integration */
 extern void rtt_printf_init(void);
 
-// Raw TCP test function using KSZ8851SNL hardware directly (bypasses lwIP)
-static void raw_tcp_test_send_packets(void)
-{
-    printf("\r\n=== SWITCHING TO MINIMAL PACKET TEST ===\r\n");
-    printf("Running simplified test to isolate packet transmission issues\r\n");
-    
-    // Wait a bit for KSZ8851SNL to be fully ready
-    printf("🔍 Waiting for KSZ8851SNL to be ready...\r\n");
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    
-    // Minimal packet tests disabled - DoIP discovery handles network validation
-    printf("📡 Minimal packet tests disabled - DoIP client will handle network testing\r\n");
-    printf("🔍 Monitor DoIP client task for vehicle discovery broadcasts\r\n");
-    
-    // Just wait - let DoIP client task handle everything
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(30000)); // Check every 30 seconds
-        printf("🔍 TCP test task idle - DoIP client handling all network operations\r\n");
-    }
-}
 
-// Task wrapper for raw TCP test
-static void raw_tcp_test_task_wrapper(void *pvParameters)
-{
-    (void)pvParameters; // Unused parameter
-    
-    printf("🔍 Raw TCP Test Task: Starting...\r\n");
-    
-    // Run the raw TCP test
-    raw_tcp_test_send_packets();
-    
-    // This should never reach here, but just in case
-    printf("🔍 Raw TCP Test Task: Unexpected exit\r\n");
-    vTaskDelete(NULL);
-}
 
 /*
  * NOTE:
@@ -145,8 +111,8 @@ int main(void)
 	task_led_create();
 
     if (xTaskCreate(test_ksz8851snl_task,
-        	                "KSZ_LINK",
-        	                256,  // Stack size
+        	                "KSZ_TEST",
+        	                512,  // Stack size
         	                NULL,
         	                (tskIDLE_PRIORITY + 1),  // Low priority
         	                NULL)
@@ -154,7 +120,7 @@ int main(void)
         		printf("Failed to create KSZ8851SNL task\r\n");
         	} else {
         		printf("KSZ8851SNL task created\r\n");
-        	}    
+        	}
 	
 
 	/* Start FreeRTOS scheduler */
