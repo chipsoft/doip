@@ -42,21 +42,7 @@ ifeq ($(OS),Windows_NT)
 	OBJDUMP = arm-none-eabi-objdump.exe
 else
 	# Unix-like systems (Linux, macOS, Cygwin, MinGW)
-	ifeq ($(shell uname), Linux)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), CYGWIN)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), MINGW32)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), MINGW64)
-		MK_DIR = mkdir -p
-	endif
-	ifeq ($(shell uname | cut -d _ -f 1), DARWIN)
-		MK_DIR = mkdir -p
-	endif
+	MK_DIR = mkdir -p
 	RM = rm -rf
 	C_COMPILER = arm-none-eabi-gcc
 	CPP_COMPILER = arm-none-eabi-g++
@@ -183,10 +169,10 @@ $(BSP_DRIVERS_DIR)/bsp_spi.c \
 $(BSP_DRIVERS_DIR)/bsp_ksz8851snl.c \
 $(BSP_DRIVERS_DIR)/bsp_netif_doip.c \
 $(BSP_DRIVERS_DIR)/bsp_netif_doip_ksz.c \
-$(LWIP_DIR)/port/ethif_ksz8851snl.c
+etc/port/ethif_ksz8851snl.c
 DEFINES += -DUSE_KSZ8851SNL_INTERFACE=1
 ASF4_CFILES += $(ASF4_DIR)/hal/src/hal_spi_m_sync.c
-DIR_INCLUDES += -I"$(LWIP_DIR)/port/include"
+DIR_INCLUDES += -I"etc/port/include"
 $(info Building with KSZ8851SNL SPI-Ethernet interface)
 else
 DRIVER_CFILES += \
