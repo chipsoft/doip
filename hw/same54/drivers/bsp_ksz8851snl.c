@@ -15,6 +15,7 @@
 #include <hri_mclk_e54.h>
 #include <peripheral_clk_config.h>
 #include <string.h>
+#include <stdlib.h>
 
 // Include existing register definitions
 #include "app_libs/FreeRTOS-Plus-TCP/source/portable/NetworkInterface/ksz8851snl/ksz8851snl_reg.h"
@@ -691,8 +692,35 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     ksz8851_reg_write(REG_RX_FRAME_CNT_THRES, 1);
     printf("[KSZ8851SNL] RX Frame Count Threshold set to 1 frame\r\n");
     
-    // TODO: Add full initialization sequence from existing FreeRTOS driver
-    // This would include MAC address setup, TX/RX configuration, etc.
+    // Configure TX Control Register (TXCR) - enable transmission features
+    printf("[KSZ8851SNL] Configuring TX Control Register (TXCR)\r\n");
+    uint16_t tx_ctrl = TX_CTRL_ENABLE |           // Enable transmit
+                       TX_CTRL_CRC_ENABLE |       // Enable CRC generation
+                       TX_CTRL_PAD_ENABLE |       // Enable padding for short frames
+                       TX_CTRL_FLOW_ENABLE |      // Enable flow control
+                       TX_CTRL_IP_CHECKSUM |      // Enable IP checksum generation
+                       TX_CTRL_TCP_CHECKSUM |     // Enable TCP checksum generation
+                       TX_CTRL_UDP_CHECKSUM |     // Enable UDP checksum generation
+                       TX_CTRL_ICMP_CHECKSUM;     // Enable ICMP checksum generation
+    ksz8851_reg_write(REG_TX_CTRL, tx_ctrl);
+    printf("[KSZ8851SNL] TX Control configured: 0x%04X\r\n", tx_ctrl);
+    
+    // Configure TX Queue Control Register (TXQCR) 
+    printf("[KSZ8851SNL] Configuring TX Queue Control Register (TXQCR)\r\n");
+    uint16_t tx_queue_ctrl = TXQ_MEM_AVAILABLE_INT; // Enable TX memory available interrupt
+    ksz8851_reg_write(REG_TXQ_CMD, tx_queue_ctrl);
+    printf("[KSZ8851SNL] TX Queue Control configured: 0x%04X\r\n", tx_queue_ctrl);
+    
+    // Set MAC address from configuration
+    if (config != NULL && hw_ksz8851snl_is_mac_valid(config->mac_addr)) {
+        printf("[KSZ8851SNL] Setting MAC address from configuration\r\n");
+        drv_ksz8851snl_status_t mac_status = drv_ksz8851snl_set_mac_address_impl(hw_context, config->mac_addr);
+        if (mac_status != DRV_KSZ8851SNL_STATUS_OK) {
+            printf("[KSZ8851SNL] Warning: Failed to set MAC address: %d\r\n", mac_status);
+        }
+    } else {
+        printf("[KSZ8851SNL] Using default MAC address\r\n");
+    }
     
     context->is_initialized = true;
     printf("[KSZ8851SNL] KSZ8851SNL initialization completed successfully\r\n");
@@ -984,15 +1012,188 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_status_impl(const void *hw_con
     return DRV_KSZ8851SNL_STATUS_OK;
 }
 
-// Placeholder implementations for packet operations
+// TX FIFO write helper functions
+static void ksz8851_fifo_write_begin(void)
+{
+    uint8_t cmd_buf[2];
+    uint8_t resp_buf[2];
+    
+    // Send FIFO write command (0xC0)
+    cmd_buf[0] = FIFO_WRITE;
+    cmd_buf[1] = 0x00;  // Dummy byte
+    
+    // Start SPI transaction for FIFO write
+    drv_spi_cs_set_low();
+    
+    // Send FIFO write command
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, cmd_buf, resp_buf, 2);
+    if (status != DRV_SPI_STATUS_OK) {
+        printf("[KSZ8851SNL] FIFO write begin failed: %d\r\n", status);
+        drv_spi_cs_set_high();
+    }
+    // Note: CS remains low for continued data transfer
+}
+
+static void ksz8851_fifo_write_end(void)
+{
+    // End SPI transaction for FIFO write
+    drv_spi_cs_set_high();
+}
+
+static drv_ksz8851snl_status_t ksz8851_fifo_write_data(const uint8_t *data, uint16_t length)
+{
+    ASSERT(data != NULL);
+    ASSERT(length > 0);
+    
+    // Write data in chunks that are compatible with SPI transfer
+    uint16_t bytes_written = 0;
+    const uint16_t max_chunk_size = 256; // Reasonable chunk size for SPI
+    
+    while (bytes_written < length) {
+        uint16_t chunk_size = length - bytes_written;
+        if (chunk_size > max_chunk_size) {
+            chunk_size = max_chunk_size;
+        }
+        
+        // Create dummy response buffer for SPI transfer
+        uint8_t *dummy_resp = malloc(chunk_size);
+        if (dummy_resp == NULL) {
+            printf("[KSZ8851SNL] Failed to allocate memory for SPI transfer\r\n");
+            return DRV_KSZ8851SNL_STATUS_ERROR;
+        }
+        
+        drv_spi_status_t status = hw_spi_transfer(&spi_4, &data[bytes_written], dummy_resp, chunk_size);
+        
+        free(dummy_resp);
+        
+        if (status != DRV_SPI_STATUS_OK) {
+            printf("[KSZ8851SNL] FIFO write data failed at offset %d: %d\r\n", bytes_written, status);
+            return DRV_KSZ8851SNL_STATUS_ERROR;
+        }
+        
+        bytes_written += chunk_size;
+    }
+    
+    return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+static drv_ksz8851snl_status_t ksz8851_check_tx_space(uint16_t required_bytes)
+{
+    // Read TX memory info register to check available space
+    uint16_t tx_mem_info = ksz8851_reg_read(REG_TX_MEM_INFO);
+    uint16_t available_bytes = tx_mem_info & TX_MEM_AVAILABLE_MASK;
+    
+    printf("[KSZ8851SNL] TX memory available: %d bytes, required: %d bytes\r\n", 
+           available_bytes, required_bytes);
+    
+    if (available_bytes < required_bytes) {
+        printf("[KSZ8851SNL] Insufficient TX memory space\r\n");
+        return DRV_KSZ8851SNL_STATUS_BUSY;
+    }
+    
+    return DRV_KSZ8851SNL_STATUS_OK;
+}
+
+// Packet transmission implementation
 static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_context, const uint8_t *data, uint16_t length)
 {
     ASSERT(hw_context != NULL);
     ASSERT(data != NULL);
     ASSERT(length > 0);
     
-    // TODO: Implement packet transmission using existing FIFO write functions
-    printf("[KSZ8851SNL] Send packet - length: %d (TODO: implement)\r\n", length);
+    drv_ksz8851snl_hw_context_t *context = (drv_ksz8851snl_hw_context_t *)hw_context;
+    
+    printf("[KSZ8851SNL] Sending packet - length: %d bytes\r\n", length);
+    
+    // Validate packet length (Ethernet frame size limits)
+    if (length < 60 || length > 1518) {
+        printf("[KSZ8851SNL] Invalid packet length: %d (must be 60-1518 bytes)\r\n", length);
+        context->tx_errors++;
+        return DRV_KSZ8851SNL_STATUS_INVALID_PARAM;
+    }
+    
+    // Calculate required TX memory: packet + 4-byte TX header + alignment
+    uint16_t required_bytes = length + 4;  // 4 bytes for TX control header
+    if (required_bytes & 1) {
+        required_bytes++;  // Ensure even byte count for proper alignment
+    }
+    
+    // Check TX memory availability
+    drv_ksz8851snl_status_t space_status = ksz8851_check_tx_space(required_bytes);
+    if (space_status != DRV_KSZ8851SNL_STATUS_OK) {
+        context->tx_errors++;
+        return space_status;
+    }
+    
+    // Prepare TX control header (4 bytes)
+    // Based on KSZ8851SNL datasheet: [Control Word][Byte Count]
+    uint8_t tx_header[4];
+    
+    // TX Control Word (bits 15-0):
+    // Bit 15: TXIC (TX Interrupt on Completion) - set to enable TX interrupt
+    // Bits 14-0: Reserved/frame ID
+    uint16_t tx_control = TX_CTRL_INTERRUPT_ON; // Enable TX completion interrupt
+    
+    // TX Byte Count (packet length)
+    uint16_t tx_byte_count = length;
+    
+    // Pack header in little-endian format (as expected by KSZ8851SNL)
+    tx_header[0] = tx_control & 0xFF;
+    tx_header[1] = (tx_control >> 8) & 0xFF;
+    tx_header[2] = tx_byte_count & 0xFF;
+    tx_header[3] = (tx_byte_count >> 8) & 0xFF;
+    
+    printf("[KSZ8851SNL] TX header: [0x%02X 0x%02X 0x%02X 0x%02X] (ctrl=0x%04X, len=%d)\r\n",
+           tx_header[0], tx_header[1], tx_header[2], tx_header[3], tx_control, tx_byte_count);
+    
+    // Start TX FIFO write operation
+    ksz8851_fifo_write_begin();
+    
+    // Write TX header to FIFO
+    drv_ksz8851snl_status_t header_status = ksz8851_fifo_write_data(tx_header, 4);
+    if (header_status != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[KSZ8851SNL] Failed to write TX header\r\n");
+        ksz8851_fifo_write_end();
+        context->tx_errors++;
+        return header_status;
+    }
+    
+    // Write packet data to FIFO
+    drv_ksz8851snl_status_t data_status = ksz8851_fifo_write_data(data, length);
+    if (data_status != DRV_KSZ8851SNL_STATUS_OK) {
+        printf("[KSZ8851SNL] Failed to write packet data\r\n");
+        ksz8851_fifo_write_end();
+        context->tx_errors++;
+        return data_status;
+    }
+    
+    // If odd packet length, write one padding byte for alignment
+    if (length & 1) {
+        uint8_t padding = 0x00;
+        drv_ksz8851snl_status_t pad_status = ksz8851_fifo_write_data(&padding, 1);
+        if (pad_status != DRV_KSZ8851SNL_STATUS_OK) {
+            printf("[KSZ8851SNL] Failed to write padding byte\r\n");
+            ksz8851_fifo_write_end();
+            context->tx_errors++;
+            return pad_status;
+        }
+        printf("[KSZ8851SNL] Added padding byte for alignment\r\n");
+    }
+    
+    // End TX FIFO write operation
+    ksz8851_fifo_write_end();
+    
+    // Enable transmission by setting TXQ_ENQUEUE bit
+    // This tells the KSZ8851SNL to start transmitting the frame
+    printf("[KSZ8851SNL] Enabling transmission...\r\n");
+    ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
+    
+    // Update statistics
+    context->tx_packets++;
+    
+    printf("[KSZ8851SNL] Packet transmission initiated successfully\r\n");
+    printf("[KSZ8851SNL] TX Statistics: %lu packets sent, %lu errors\r\n", 
+           context->tx_packets, context->tx_errors);
     
     return DRV_KSZ8851SNL_STATUS_OK;
 }

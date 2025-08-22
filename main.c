@@ -102,9 +102,63 @@ static void test_ksz8851snl_task(void *pvParameters)
     // Test MAC address configuration
     set_custom_mac_address();
     
+    // Create a simple Ethernet frame for testing
+    // Format: [Destination MAC][Source MAC][EtherType][Payload][Padding if needed]
+    uint8_t test_ethernet_frame[] = {
+        // Destination MAC (broadcast address)
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        // Source MAC (our device MAC)
+        0x00, 0x00, 0x00, 0x00, 0x20, 0x76,
+        // EtherType (0x0800 = IPv4, using custom test type 0x88B7)
+        0x88, 0xB7,
+        // Test payload: "Hello KSZ8851SNL Test Frame!"
+        'H', 'e', 'l', 'l', 'o', ' ', 'K', 'S', 'Z', '8', '8', '5', '1', 'S', 'N', 'L',
+        ' ', 'T', 'e', 's', 't', ' ', 'F', 'r', 'a', 'm', 'e', '!', '\0',
+        // Padding to reach minimum Ethernet frame size (60 bytes total)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+        0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    
+    uint16_t frame_length = sizeof(test_ethernet_frame);
+    uint32_t packet_counter = 0;
+    
+    printf("🔍 Test Ethernet frame prepared: %d bytes\r\n", frame_length);
+    printf("🔍 Starting periodic frame transmission every 1 second\r\n");
+    
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Check every 1 second
-        printf("🔍 KSZ8851SNL task running\r\n");
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait 1 second
+        
+        packet_counter++;
+        printf("🔍 Sending test packet #%lu\r\n", packet_counter);
+        
+        // Send the test Ethernet frame
+        drv_ksz8851snl_status_t send_result = hw_ksz8851snl_send_packet(&ksz8851snl_0, 
+                                                                        test_ethernet_frame, 
+                                                                        frame_length);
+        
+        if (send_result == DRV_KSZ8851SNL_STATUS_OK) {
+            printf("✅ Test packet #%lu sent successfully\r\n", packet_counter);
+        } else {
+            printf("❌ Test packet #%lu send failed: %d\r\n", packet_counter, send_result);
+        }
+        
+        // Check and display status every 10 packets
+        if (packet_counter % 10 == 0) {
+            drv_ksz8851snl_status_info_t status_info;
+            drv_ksz8851snl_status_t status_result = hw_ksz8851snl_get_status(&ksz8851snl_0, &status_info);
+            
+            if (status_result == DRV_KSZ8851SNL_STATUS_OK) {
+                printf("📊 Status after %lu packets:\r\n", packet_counter);
+                printf("   Link: %s, Speed: %d Mbps, Duplex: %s\r\n",
+                       status_info.link_up ? "UP" : "DOWN",
+                       status_info.link_speed,
+                       status_info.full_duplex ? "Full" : "Half");
+                printf("   TX: %lu packets, %lu errors\r\n",
+                       status_info.tx_packets, status_info.tx_errors);
+                printf("   RX: %lu packets, %lu errors\r\n",
+                       status_info.rx_packets, status_info.rx_errors);
+            }
+        }
     }
 }
 
