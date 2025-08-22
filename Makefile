@@ -183,6 +183,7 @@ APP_CFILES = \
 main.c \
 user_tasks.c \
 rtt_printf.c \
+minimal_packet_test.c \
 
 # Simple Test Application Files (no LwIP)
 SIMPLE_APP_CFILES = \

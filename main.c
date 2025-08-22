@@ -50,6 +50,7 @@
 #include <hal_init.h>
 #include <hal_gpio.h>
 #include "bsp_ksz8851snl.h"  // KSZ8851SNL driver with debug functions
+#include "minimal_packet_test.h"  // Simple TX test
 
 // Example function to set custom MAC address
 void set_custom_mac_address(void)
@@ -101,6 +102,11 @@ static void test_ksz8851snl_task(void *pvParameters)
     
     // Test MAC address configuration
     set_custom_mac_address();
+    
+    // Run minimal packet test to verify TX functionality with RXQ_SDA fix
+    printf("🔍 Running minimal packet test with fixed TX implementation...\r\n");
+    minimal_packet_test();
+    printf("🔍 Minimal packet test completed, continuing with periodic transmission...\r\n");
     
     // Create a simple Ethernet frame for testing
     // Format: [Destination MAC][Source MAC][EtherType][Payload][Padding if needed]
@@ -158,6 +164,10 @@ static void test_ksz8851snl_task(void *pvParameters)
                 printf("   RX: %lu packets, %lu errors\r\n",
                        status_info.rx_packets, status_info.rx_errors);
             }
+            
+            // Also display interrupt statistics
+            printf("🔔 Interrupt Statistics:\r\n");
+            ksz8851snl_debug_print_irq_stats();
         }
     }
 }

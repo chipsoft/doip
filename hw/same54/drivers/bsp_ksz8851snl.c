@@ -20,6 +20,9 @@
 // Include existing register definitions
 #include "app_libs/FreeRTOS-Plus-TCP/source/portable/NetworkInterface/ksz8851snl/ksz8851snl_reg.h"
 
+// CRITICAL MISSING DEFINITION: TXQ Access Control bit (from working commit d39de28)
+#define RXQ_SDA                   0x0008    /* Enable TXQ write access (SDA = Start DMA Access) - bit 3 */
+
 // Hardware context structure
 typedef struct {
     drv_ksz8851snl_callback_t rx_callback;
@@ -129,6 +132,13 @@ static void ksz8851snl_irq_handler(void)
     if (int_status & INT_PHY) {
         irq_stats.phy_interrupts++;
         printf("[KSZ8851SNL] PHY IRQ!\r\n");
+    }
+    
+    // Handle SPI errors specifically
+    if (int_status & INT_RX_SPI_ERROR) {
+        printf("[KSZ8851SNL] ⚠️ SPI ERROR in interrupt handler! This indicates SPI communication issues.\r\n");
+        printf("[KSZ8851SNL] SPI errors can prevent FIFO writes from working properly.\r\n");
+        // Don't increment error counter here - this is just notification
     }
     
     // Clear handled interrupts
@@ -407,7 +417,7 @@ static void ksz8851_reg_setbits(uint16_t reg, uint16_t bits_to_set)
 static void ksz8851_reg_clrbits(uint16_t reg, uint16_t bits_to_clr)
 {
     uint16_t temp = ksz8851_reg_read(reg);
-    temp &= ~(uint32_t)bits_to_clr;
+    temp &= ~bits_to_clr;  // Fixed: keep as uint16_t, no cast to uint32_t
     ksz8851_reg_write(reg, temp);
 }
 
@@ -714,11 +724,11 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     printf("[KSZ8851SNL] TX Control configured: 0x%04X\r\n", tx_ctrl);
     
     // Configure TX Queue Control Register (TXQCR) 
+    // Try manual enqueue mode instead of auto-enqueue for better control
     printf("[KSZ8851SNL] Configuring TX Queue Control Register (TXQCR)\r\n");
-    uint16_t tx_queue_ctrl = TXQ_AUTO_ENQUEUE |     // Enable auto-enqueue mode
-                            TXQ_MEM_AVAILABLE_INT; // Enable TX memory available interrupt
+    uint16_t tx_queue_ctrl = TXQ_MEM_AVAILABLE_INT; // Enable TX memory available interrupt only
     ksz8851_reg_write(REG_TXQ_CMD, tx_queue_ctrl);
-    printf("[KSZ8851SNL] TX Queue Control configured: 0x%04X (AUTO_ENQUEUE + MEM_INT)\r\n", tx_queue_ctrl);
+    printf("[KSZ8851SNL] TX Queue Control configured: 0x%04X (MANUAL_ENQUEUE + MEM_INT)\r\n", tx_queue_ctrl);
     
     // Set MAC address from configuration
     if (config != NULL && hw_ksz8851snl_is_mac_valid(config->mac_addr)) {
@@ -1024,21 +1034,22 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_get_status_impl(const void *hw_con
 // TX FIFO write helper functions
 static void ksz8851_fifo_write_begin(void)
 {
-    uint8_t cmd_buf[2];
-    uint8_t resp_buf[2];
+    // CRITICAL FIX: Send only 1-byte FIFO_WRITE command (0xC0) as per working commit d39de28
+    // The extra dummy byte was confusing the KSZ8851SNL FIFO state machine!
+    uint8_t cmd = FIFO_WRITE;  // 0xC0 only
     
-    // Send FIFO write command (0xC0)
-    cmd_buf[0] = FIFO_WRITE;
-    cmd_buf[1] = 0x00;  // Dummy byte
+    printf("[KSZ8851SNL] FIFO_WRITE_BEGIN: Sending command 0x%02X (1 byte only)\r\n", cmd);
     
     // Start SPI transaction for FIFO write
     drv_spi_cs_set_low();
     
-    // Send FIFO write command
-    drv_spi_status_t status = hw_spi_transfer(&spi_4, cmd_buf, resp_buf, 2);
+    // Send FIFO write command (1 byte only!)
+    drv_spi_status_t status = hw_spi_transfer(&spi_4, &cmd, NULL, 1);
     if (status != DRV_SPI_STATUS_OK) {
         printf("[KSZ8851SNL] FIFO write begin failed: %d\r\n", status);
         drv_spi_cs_set_high();
+    } else {
+        printf("[KSZ8851SNL] FIFO_WRITE_BEGIN: Command sent successfully - ready for data\r\n");
     }
     // Note: CS remains low for continued data transfer
 }
@@ -1046,6 +1057,7 @@ static void ksz8851_fifo_write_begin(void)
 static void ksz8851_fifo_write_end(void)
 {
     // End SPI transaction for FIFO write
+    printf("[KSZ8851SNL] FIFO_WRITE_END: Ending SPI transaction\r\n");
     drv_spi_cs_set_high();
 }
 
@@ -1053,6 +1065,8 @@ static drv_ksz8851snl_status_t ksz8851_fifo_write_data(const uint8_t *data, uint
 {
     ASSERT(data != NULL);
     ASSERT(length > 0);
+    
+    printf("[KSZ8851SNL] FIFO_WRITE_DATA: Writing %d bytes\r\n", length);
     
     // Write data in chunks that are compatible with SPI transfer
     uint16_t bytes_written = 0;
@@ -1063,6 +1077,9 @@ static drv_ksz8851snl_status_t ksz8851_fifo_write_data(const uint8_t *data, uint
         if (chunk_size > max_chunk_size) {
             chunk_size = max_chunk_size;
         }
+        
+        printf("[KSZ8851SNL] FIFO_WRITE_DATA: Chunk at offset %d, size %d\r\n", 
+               bytes_written, chunk_size);
         
         // Create dummy response buffer for SPI transfer
         uint8_t *dummy_resp = malloc(chunk_size);
@@ -1164,7 +1181,26 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     printf("[KSZ8851SNL] TX header: [0x%02X 0x%02X 0x%02X 0x%02X] (ctrl=0x%04X, len=%d)\r\n",
            tx_header[0], tx_header[1], tx_header[2], tx_header[3], tx_control, tx_byte_count);
     
-    // Start TX FIFO write operation
+    // Check TX FIFO state before writing
+    uint16_t tx_mem_before = ksz8851_reg_read(REG_TX_MEM_INFO);
+    printf("[KSZ8851SNL] TX memory before FIFO write: %d bytes\r\n", tx_mem_before & TX_MEM_AVAILABLE_MASK);
+    
+    // Clear any existing SPI errors before FIFO write
+    uint16_t pre_int_status = ksz8851_reg_read(REG_INT_STATUS);
+    if (pre_int_status & INT_RX_SPI_ERROR) {
+        printf("[KSZ8851SNL] Clearing pre-existing SPI error before FIFO write\r\n");
+        ksz8851_reg_write(REG_INT_STATUS, INT_RX_SPI_ERROR);
+    }
+    
+    // CRITICAL FIX: Enable TXQ write access (RXQ_SDA) as per working commit d39de28
+    printf("[KSZ8851SNL] Step 1: Enabling TXQ write access (RXQ_SDA)\r\n");
+    uint16_t rxq_before = ksz8851_reg_read(REG_RXQ_CMD);
+    ksz8851_reg_setbits(REG_RXQ_CMD, RXQ_SDA);
+    uint16_t rxq_after = ksz8851_reg_read(REG_RXQ_CMD);
+    printf("[KSZ8851SNL]   RXQ_CMD: 0x%04X -> 0x%04X (RXQ_SDA enabled)\r\n", rxq_before, rxq_after);
+    
+    // Step 2: FIFO write sequence (CS low for entire operation)
+    printf("[KSZ8851SNL] Step 2: Beginning FIFO write sequence\r\n");
     ksz8851_fifo_write_begin();
     
     // Write TX header to FIFO
@@ -1198,23 +1234,59 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
         printf("[KSZ8851SNL] Added padding byte for alignment\r\n");
     }
     
-    // End TX FIFO write operation
     ksz8851_fifo_write_end();
+    printf("[KSZ8851SNL] FIFO write operation completed\r\n");
     
-    // With TXQ_AUTO_ENQUEUE enabled, transmission should start automatically
-    // But let's also manually trigger it to be sure
-    printf("[KSZ8851SNL] Triggering transmission (AUTO_ENQUEUE mode)...\r\n");
+    // CRITICAL FIX: Disable TXQ write access (RXQ_SDA) as per working commit d39de28
+    printf("[KSZ8851SNL] Step 3: Disabling TXQ write access (RXQ_SDA)\r\n");
+    ksz8851_reg_clrbits(REG_RXQ_CMD, RXQ_SDA);
+    uint16_t rxq_final = ksz8851_reg_read(REG_RXQ_CMD);
+    printf("[KSZ8851SNL]   RXQ_CMD after disable: 0x%04X (RXQ_SDA cleared)\r\n", rxq_final);
+    
+    // Check for SPI errors immediately after FIFO write
+    uint16_t post_fifo_status = ksz8851_reg_read(REG_INT_STATUS);
+    if (post_fifo_status & INT_RX_SPI_ERROR) {
+        printf("[KSZ8851SNL] ⚠️ SPI ERROR occurred during FIFO write!\r\n");
+        ksz8851_reg_write(REG_INT_STATUS, INT_RX_SPI_ERROR);
+        context->tx_errors++;
+        return DRV_KSZ8851SNL_STATUS_ERROR;
+    }
+    
+    // Check TX FIFO state after writing
+    uint16_t tx_mem_after = ksz8851_reg_read(REG_TX_MEM_INFO);
+    printf("[KSZ8851SNL] TX memory after FIFO write: %d bytes\r\n", tx_mem_after & TX_MEM_AVAILABLE_MASK);
+    printf("[KSZ8851SNL] TX memory used: %d bytes\r\n", (tx_mem_before & TX_MEM_AVAILABLE_MASK) - (tx_mem_after & TX_MEM_AVAILABLE_MASK));
+    
+    // Manual enqueue mode - trigger transmission with ENQUEUE bit
+    printf("[KSZ8851SNL] Triggering transmission (MANUAL_ENQUEUE mode)...\r\n");
     
     // Read current TXQ command register
     uint16_t current_txq = ksz8851_reg_read(REG_TXQ_CMD);
     printf("[KSZ8851SNL] Current TXQ_CMD: 0x%04X\r\n", current_txq);
     
-    // Set ENQUEUE bit to trigger transmission
-    ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
+    // First, verify TX is enabled in TXCR register
+    uint16_t tx_ctrl_check = ksz8851_reg_read(REG_TX_CTRL);
+    printf("[KSZ8851SNL] TX_CTRL register: 0x%04X (TX enabled: %s)\r\n", 
+           tx_ctrl_check, (tx_ctrl_check & TX_CTRL_ENABLE) ? "YES" : "NO");
+    
+    // Use ONLY TXQ_ENQUEUE (0x0001) as per working commit d39de28
+    uint16_t enqueue_cmd = TXQ_ENQUEUE;
+    printf("[KSZ8851SNL] Writing ENQUEUE command: 0x%04X (TXQ_ENQUEUE only)\r\n", enqueue_cmd);
+    ksz8851_reg_write(REG_TXQ_CMD, enqueue_cmd);
+    
+    // Small delay for register write to take effect
+    vTaskDelay(pdMS_TO_TICKS(1));
     
     // Read back to confirm
     uint16_t new_txq = ksz8851_reg_read(REG_TXQ_CMD);
     printf("[KSZ8851SNL] TXQ_CMD after ENQUEUE: 0x%04X\r\n", new_txq);
+    
+    // If ENQUEUE bit is still there, it means the command didn't execute
+    if (new_txq & TXQ_ENQUEUE) {
+        printf("[KSZ8851SNL] ⚠️ ENQUEUE bit still set - command not executed\r\n");
+    } else if (new_txq == 0x0000) {
+        printf("[KSZ8851SNL] ⚠️ TXQ register cleared - possible transmission started\r\n");
+    }
     
     // Check interrupt status immediately after transmission trigger
     uint16_t int_status_before = ksz8851_reg_read(REG_INT_STATUS);
@@ -1227,17 +1299,58 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     uint16_t int_status_after = ksz8851_reg_read(REG_INT_STATUS);
     printf("[KSZ8851SNL] INT_STATUS after transmission: 0x%04X\r\n", int_status_after);
     
+    // Check for SPI errors specifically
+    if (int_status_after & INT_RX_SPI_ERROR) {
+        printf("[KSZ8851SNL] ⚠️ SPI ERROR detected (0x0002) - this may explain FIFO write failures!\r\n");
+        // Clear SPI error
+        ksz8851_reg_write(REG_INT_STATUS, INT_RX_SPI_ERROR);
+        printf("[KSZ8851SNL] SPI error cleared\r\n");
+    }
+    
+    // Also check TX status register for detailed transmission info
+    uint16_t tx_status = ksz8851_reg_read(REG_TX_STATUS);
+    printf("[KSZ8851SNL] TX_STATUS register: 0x%04X\r\n", tx_status);
+    
+    // Check TX memory info again to see if packet was consumed
+    uint16_t tx_mem_final = ksz8851_reg_read(REG_TX_MEM_INFO);
+    printf("[KSZ8851SNL] TX memory final: %d bytes (vs %d before)\r\n", 
+           tx_mem_final & TX_MEM_AVAILABLE_MASK, tx_mem_before & TX_MEM_AVAILABLE_MASK);
+    
+    // Check interrupt mask to ensure TX interrupts are enabled
+    uint16_t int_mask = ksz8851_reg_read(REG_INT_MASK);
+    printf("[KSZ8851SNL] INT_MASK register: 0x%04X (TX enabled: %s)\r\n", 
+           int_mask, (int_mask & INT_TX) ? "YES" : "NO");
+    
     if (int_status_after & INT_TX) {
         printf("[KSZ8851SNL] ✅ TX interrupt detected in status register!\r\n");
         // Clear the TX interrupt
         ksz8851_reg_write(REG_INT_STATUS, INT_TX);
+        printf("[KSZ8851SNL] TX interrupt cleared\r\n");
     } else {
         printf("[KSZ8851SNL] ⚠️  TX interrupt NOT detected in status register\r\n");
+        
+        // Check if any other interrupts are set that might be masking TX
+        if (int_status_after != 0) {
+            printf("[KSZ8851SNL] Other interrupts present: 0x%04X\r\n", int_status_after);
+        }
+        
+        // Additional debugging - try reading TX status multiple times
+        printf("[KSZ8851SNL] Extended TX debugging:\r\n");
+        for (int i = 0; i < 5; i++) {
+            vTaskDelay(pdMS_TO_TICKS(5)); // 5ms delay
+            uint16_t int_check = ksz8851_reg_read(REG_INT_STATUS);
+            uint16_t tx_check = ksz8851_reg_read(REG_TX_STATUS);
+            uint16_t txq_check = ksz8851_reg_read(REG_TXQ_CMD);
+            printf("[KSZ8851SNL]   [%d] INT: 0x%04X, TX_STATUS: 0x%04X, TXQ: 0x%04X\r\n", 
+                   i, int_check, tx_check, txq_check);
+            
+            if (int_check & INT_TX) {
+                printf("[KSZ8851SNL] ✅ TX interrupt detected on check %d!\r\n", i);
+                ksz8851_reg_write(REG_INT_STATUS, INT_TX);
+                break;
+            }
+        }
     }
-    
-    // Also check TX status register for transmission result
-    uint16_t tx_status = ksz8851_reg_read(REG_TX_STATUS);
-    printf("[KSZ8851SNL] TX_STATUS register: 0x%04X\r\n", tx_status);
     
     if (tx_status & TX_STAT_ERRORS) {
         printf("[KSZ8851SNL] ❌ TX errors detected: 0x%04X\r\n", tx_status & TX_STAT_ERRORS);
