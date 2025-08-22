@@ -21,6 +21,8 @@ void ksz8851snl_debug_performance_stats(void);
 void ksz8851snl_diagnose_false_interrupts(void);
 void ksz8851snl_reset_rxq_state(void);
 void ksz8851snl_emergency_reset(void);
+void ksz8851snl_debug_print_irq_stats(void);
+void ksz8851snl_debug_force_interrupt_test(void);
 
 #ifdef __cplusplus
 }

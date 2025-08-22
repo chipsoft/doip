@@ -114,7 +114,15 @@ static void ksz8851snl_irq_handler(void)
     // Handle TX interrupt
     if (int_status & INT_TX) {
         irq_stats.tx_interrupts++;
-        printf("[KSZ8851SNL] TX IRQ!\r\n");
+        printf("[KSZ8851SNL] 🚀 TX IRQ! Packet transmission completed (IRQ #%lu)\r\n", irq_stats.tx_interrupts);
+        
+        // Read TX status register for transmission details
+        uint16_t tx_status = ksz8851_reg_read(REG_TX_STATUS);
+        printf("[KSZ8851SNL] TX_STATUS in IRQ: 0x%04X\r\n", tx_status);
+        
+        if (tx_status & TX_STAT_ERRORS) {
+            printf("[KSZ8851SNL] TX errors in IRQ: 0x%04X\r\n", tx_status & TX_STAT_ERRORS);
+        }
     }
     
     // Handle PHY interrupt
@@ -707,9 +715,10 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_init_impl(const void *hw_context, 
     
     // Configure TX Queue Control Register (TXQCR) 
     printf("[KSZ8851SNL] Configuring TX Queue Control Register (TXQCR)\r\n");
-    uint16_t tx_queue_ctrl = TXQ_MEM_AVAILABLE_INT; // Enable TX memory available interrupt
+    uint16_t tx_queue_ctrl = TXQ_AUTO_ENQUEUE |     // Enable auto-enqueue mode
+                            TXQ_MEM_AVAILABLE_INT; // Enable TX memory available interrupt
     ksz8851_reg_write(REG_TXQ_CMD, tx_queue_ctrl);
-    printf("[KSZ8851SNL] TX Queue Control configured: 0x%04X\r\n", tx_queue_ctrl);
+    printf("[KSZ8851SNL] TX Queue Control configured: 0x%04X (AUTO_ENQUEUE + MEM_INT)\r\n", tx_queue_ctrl);
     
     // Set MAC address from configuration
     if (config != NULL && hw_ksz8851snl_is_mac_valid(config->mac_addr)) {
@@ -1118,6 +1127,15 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
         required_bytes++;  // Ensure even byte count for proper alignment
     }
     
+    // Check link status first - don't try to send if link is down
+    drv_ksz8851snl_status_info_t status_info;
+    drv_ksz8851snl_status_t link_status = drv_ksz8851snl_get_status_impl(hw_context, &status_info);
+    if (link_status == DRV_KSZ8851SNL_STATUS_OK && !status_info.link_up) {
+        printf("[KSZ8851SNL] ⚠️ Cannot send packet: Link is DOWN\r\n");
+        context->tx_errors++;
+        return DRV_KSZ8851SNL_STATUS_NO_LINK;
+    }
+    
     // Check TX memory availability
     drv_ksz8851snl_status_t space_status = ksz8851_check_tx_space(required_bytes);
     if (space_status != DRV_KSZ8851SNL_STATUS_OK) {
@@ -1183,15 +1201,52 @@ static drv_ksz8851snl_status_t drv_ksz8851snl_send_packet_impl(const void *hw_co
     // End TX FIFO write operation
     ksz8851_fifo_write_end();
     
-    // Enable transmission by setting TXQ_ENQUEUE bit
-    // This tells the KSZ8851SNL to start transmitting the frame
-    printf("[KSZ8851SNL] Enabling transmission...\r\n");
+    // With TXQ_AUTO_ENQUEUE enabled, transmission should start automatically
+    // But let's also manually trigger it to be sure
+    printf("[KSZ8851SNL] Triggering transmission (AUTO_ENQUEUE mode)...\r\n");
+    
+    // Read current TXQ command register
+    uint16_t current_txq = ksz8851_reg_read(REG_TXQ_CMD);
+    printf("[KSZ8851SNL] Current TXQ_CMD: 0x%04X\r\n", current_txq);
+    
+    // Set ENQUEUE bit to trigger transmission
     ksz8851_reg_setbits(REG_TXQ_CMD, TXQ_ENQUEUE);
     
-    // Update statistics
-    context->tx_packets++;
+    // Read back to confirm
+    uint16_t new_txq = ksz8851_reg_read(REG_TXQ_CMD);
+    printf("[KSZ8851SNL] TXQ_CMD after ENQUEUE: 0x%04X\r\n", new_txq);
     
-    printf("[KSZ8851SNL] Packet transmission initiated successfully\r\n");
+    // Check interrupt status immediately after transmission trigger
+    uint16_t int_status_before = ksz8851_reg_read(REG_INT_STATUS);
+    printf("[KSZ8851SNL] INT_STATUS before transmission: 0x%04X\r\n", int_status_before);
+    
+    // Longer delay to allow transmission to complete
+    vTaskDelay(pdMS_TO_TICKS(10)); // 10ms should be enough for 100Mbps transmission
+    
+    // Check interrupt status after short delay
+    uint16_t int_status_after = ksz8851_reg_read(REG_INT_STATUS);
+    printf("[KSZ8851SNL] INT_STATUS after transmission: 0x%04X\r\n", int_status_after);
+    
+    if (int_status_after & INT_TX) {
+        printf("[KSZ8851SNL] ✅ TX interrupt detected in status register!\r\n");
+        // Clear the TX interrupt
+        ksz8851_reg_write(REG_INT_STATUS, INT_TX);
+    } else {
+        printf("[KSZ8851SNL] ⚠️  TX interrupt NOT detected in status register\r\n");
+    }
+    
+    // Also check TX status register for transmission result
+    uint16_t tx_status = ksz8851_reg_read(REG_TX_STATUS);
+    printf("[KSZ8851SNL] TX_STATUS register: 0x%04X\r\n", tx_status);
+    
+    if (tx_status & TX_STAT_ERRORS) {
+        printf("[KSZ8851SNL] ❌ TX errors detected: 0x%04X\r\n", tx_status & TX_STAT_ERRORS);
+        context->tx_errors++;
+    } else {
+        context->tx_packets++;
+    }
+    
+    printf("[KSZ8851SNL] Packet transmission completed\r\n");
     printf("[KSZ8851SNL] TX Statistics: %lu packets sent, %lu errors\r\n", 
            context->tx_packets, context->tx_errors);
     
